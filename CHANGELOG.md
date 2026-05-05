@@ -4,7 +4,10 @@ All notable changes to XPowers are documented in this file.
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-05-05
+
 ### Added
+- Third-party installer support for Beads Rust (`br`), Beads Viewer (`bv`), Graphify, and Claude-Mem across supported hosts.
 - **`tm` flag translation**: `tm create` now automatically maps `--design` and `--design-file` to `--description` when using the `br` backend, ensuring compatibility with standard XPowers skills (hyper-miy).
 - **Safety hooks** with mandatory fail-closed behavior on parse errors (hyper-c8d).
 - **Hook integration tests** covering stdin/stdout JSON contracts for all blocking hooks (hyper-c8d).
@@ -13,7 +16,13 @@ All notable changes to XPowers are documented in this file.
 - **Testing guide** (`docs/TESTING.md`) covering Node.js built-in runner, Bun tests, Gemini extension tests, and hook testing methodology (hyper-d8f).
 - **Standard project files**: MIT license, changelog, code owners, issue templates, and pull request template (hyper-d8f).
 
+### Fixed
+- Third-party uninstall now tracks installed tool ownership, cleans up manifest-only installs, and uses `claude-mem uninstall --all`.
+- Pi delegation preserves conflict overrides and keeps default third-party installs behind explicit `--yes` behavior.
+- Installer manifest parsing falls back across available runtimes when a preferred runtime fails.
+
 ### Security
+- Beads Rust and Beads Viewer bootstrap installers are pinned to immutable upstream refs and use `pipefail` for `curl | bash` pipelines.
 - Pre-tool-use hooks block direct reads of `.beads/issues.jsonl` and edits to `.git/hooks/pre-commit`.
 - Post-tool-use hooks block truncation markers in `bd` output and Bash modifications to pre-commit hooks.
 - Dangerous Bash and env-write hooks block destructive commands and sensitive file writes.
