@@ -47,6 +47,35 @@ function installEnv(home, extra = {}) {
   }
 }
 
+function findExecutable(name) {
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, name)
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // Keep searching PATH.
+    }
+  }
+  return null
+}
+
+function linkManifestRuntime(binDir) {
+  const nodePath = process.versions.bun ? findExecutable("node") : process.execPath
+  if (nodePath) {
+    fs.symlinkSync(nodePath, path.join(binDir, "node"))
+  } else {
+    fs.symlinkSync(process.execPath, path.join(binDir, "bun"))
+  }
+}
+
+function linkCommand(binDir, name) {
+  const commandPath = findExecutable(name)
+  assert.ok(commandPath, `expected ${name} to be available on PATH`)
+  fs.symlinkSync(commandPath, path.join(binDir, name))
+}
+
 function makeBootstrapRepo(installShContent = fs.readFileSync(path.join(repoRoot, "scripts", "install.sh"), "utf8")) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-bootstrap-source-"))
   fs.mkdirSync(path.join(repo, "scripts"), { recursive: true })
@@ -795,6 +824,113 @@ test("install.sh uninstall removes tracked third-party tools", { timeout: 120000
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
+test("install.sh uninstall removes manifest-only third-party tools", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-uninstall-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  const npxLog = path.join(home, "npx-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-05-05T00:00:00.000Z",
+      hosts: {},
+      features: {
+        br: { installed: true },
+        bv: { installed: true },
+        graphify: { installed: true },
+        "claude-mem": { installed: true },
+      },
+    }) + "\n",
+    "utf8",
+  )
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+  linkManifestRuntime(tmpBinDir)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall/)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features.br.installed, false)
+  assert.equal(manifest.features.bv.installed, false)
+  assert.equal(manifest.features.graphify.installed, false)
+  assert.equal(manifest.features["claude-mem"].installed, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh manifest fallback reads pretty manifest without js or python runtimes", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-bin-"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify(
+      {
+        version: "test",
+        installedAt: "2026-05-05T00:00:00.000Z",
+        hosts: {},
+        features: {
+          br: { installed: true },
+          bv: { installed: true },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  )
+  for (const command of ["awk", "basename", "bash", "dirname", "grep", "rm", "rmdir", "tr"]) {
+    linkCommand(tmpBinDir, command)
+  }
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: tmpBinDir,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.match(output, /Could not update third-party entries/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
 test("install.sh uninstall preserves third-party state when cleanup fails", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-fail-home-"))
   const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-fail-bin-"))
@@ -820,7 +956,7 @@ test("install.sh uninstall preserves third-party state when cleanup fails", { ti
   assert.equal(result.status, 0, output)
   assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
   assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "graphify\n")
-  assert.match(output, /Keeping third-party state file for retry/)
+  assert.match(output, /Keeping third-party tracking for retry/)
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
@@ -902,6 +1038,63 @@ test("install.sh partial uninstall preserves tracked third-party tools", { timeo
   assert.equal(fs.existsSync(pipLog), false)
   assert.equal(fs.existsSync(npxLog), false)
   assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "br\nbv\ngraphify\nclaude-mem\n")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh partial uninstall compares selected and detected host sets before third-party cleanup", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-mismatched-host-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-mismatched-host-uninstall-bin-"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "gemini", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), true)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), true)
+  assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "br\nbv\n")
+  assert.doesNotMatch(output, /Removing tracked third-party tool bundle/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh explicit purge cleans shared tools when no hosts are detected", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-detected-host-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-detected-host-uninstall-bin-"))
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes", "--purge"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
+  assert.match(output, /Removing tracked third-party tool bundle/)
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })

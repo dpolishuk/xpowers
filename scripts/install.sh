@@ -1264,6 +1264,50 @@ third_party_state_file() {
   printf "%s\n" "${HOME}/.xpowers/third-party-tools"
 }
 
+third_party_manifest_file() {
+  printf "%s\n" "${HOME}/.xpowers/manifest.json"
+}
+
+third_party_manifest_has_installed() {
+  local tool="$1"
+  local manifest_file
+  manifest_file="$(third_party_manifest_file)"
+  [[ -f "$manifest_file" ]] || return 1
+
+  if command -v node >/dev/null 2>&1; then
+    node -e 'const fs = require("fs"); const [manifestPath, tool] = process.argv.slice(1); const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); process.exit(manifest.features?.[tool]?.installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1
+  elif command -v bun >/dev/null 2>&1; then
+    bun -e 'const fs = require("fs"); const [manifestPath, tool] = process.argv.slice(1); const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); process.exit(manifest.features?.[tool]?.installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys; data = json.load(open(sys.argv[1])); sys.exit(0 if data.get("features", {}).get(sys.argv[2], {}).get("installed") is True else 1)' "$manifest_file" "$tool" >/dev/null 2>&1
+  elif command -v awk >/dev/null 2>&1; then
+    awk -v tool="$tool" '
+      index($0, "\"" tool "\"") && $0 ~ /:[[:space:]]*[{]/ { in_tool = 1 }
+      in_tool && $0 ~ /"installed"[[:space:]]*:[[:space:]]*true/ { found = 1 }
+      in_tool && $0 ~ /^[[:space:]]*[}][,]?[[:space:]]*$/ { exit }
+      END { exit(found ? 0 : 1) }
+    ' "$manifest_file"
+  else
+    return 1
+  fi
+}
+
+third_party_clear_manifest_features() {
+  local manifest_file
+  manifest_file="$(third_party_manifest_file)"
+  [[ -f "$manifest_file" ]] || return 0
+
+  if command -v node >/dev/null 2>&1; then
+    node -e 'const fs = require("fs"); const manifestPath = process.argv[1]; const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); for (const tool of ["br", "bv", "graphify", "claude-mem"]) { if (manifest.features?.[tool]) manifest.features[tool].installed = false } fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1
+  elif command -v bun >/dev/null 2>&1; then
+    bun -e 'const fs = require("fs"); const manifestPath = process.argv[1]; const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); for (const tool of ["br", "bv", "graphify", "claude-mem"]) { if (manifest.features?.[tool]) manifest.features[tool].installed = false } fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys; path = sys.argv[1]; data = json.load(open(path)); [data.get("features", {}).get(tool, {}).update({"installed": False}) for tool in ("br", "bv", "graphify", "claude-mem") if tool in data.get("features", {})]; open(path, "w").write(json.dumps(data, indent=2) + "\n")' "$manifest_file" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
 third_party_mark_installed() {
   local tool="$1"
   local state_file
@@ -1278,7 +1322,45 @@ third_party_was_installed() {
   local tool="$1"
   local state_file
   state_file="$(third_party_state_file)"
-  [[ -f "$state_file" ]] && grep -qxF "$tool" "$state_file"
+  if [[ -f "$state_file" ]] && grep -qxF "$tool" "$state_file"; then
+    return 0
+  fi
+  third_party_manifest_has_installed "$tool"
+}
+
+third_party_has_tracked_install() {
+  local tool
+  for tool in br bv graphify claude-mem; do
+    if third_party_was_installed "$tool"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+selected_agents_cover_detected_agents() {
+  local detected_count=0
+  local detected_agent
+  local selected_agent
+
+  for detected_agent in "${AGENT_ORDER[@]}"; do
+    [[ -n "${AGENT_PATHS[$detected_agent]:-}" ]] || continue
+    detected_count=$((detected_count + 1))
+    local selected=false
+    for selected_agent in "${SELECTED_AGENTS[@]}"; do
+      if [[ "$selected_agent" == "$detected_agent" ]]; then
+        selected=true
+        break
+      fi
+    done
+    [[ "$selected" == true ]] || return 1
+  done
+
+  if [[ $detected_count -eq 0 ]]; then
+    [[ ${#SELECTED_AGENTS[@]} -gt 0 ]]
+  else
+    return 0
+  fi
 }
 
 pi_feature_succeeded_this_run() {
@@ -1430,7 +1512,7 @@ install_third_party_tools() {
 uninstall_third_party_tools() {
   local state_file
   state_file="$(third_party_state_file)"
-  [[ -f "$state_file" ]] || return 0
+  third_party_has_tracked_install || return 0
 
   if [[ "$DRY_RUN" == true ]]; then
     info "Would remove tracked third-party tool bundle"
@@ -1493,8 +1575,11 @@ uninstall_third_party_tools() {
   fi
 
   if [[ "$failed" == true ]]; then
-    warn "Keeping third-party state file for retry: ${state_file}"
+    warn "Keeping third-party tracking for retry: ${state_file} / $(third_party_manifest_file)"
   else
+    if ! third_party_clear_manifest_features; then
+      warn "Could not update third-party entries in $(third_party_manifest_file)"
+    fi
     rm -f "$state_file"
     rmdir "$(dirname "$state_file")" 2>/dev/null || true
   fi
@@ -1878,16 +1963,6 @@ main() {
     exit 1
   fi
 
-  local total_detected_agents=${#SELECTED_AGENTS[@]}
-  if [[ ${#AGENT_PATHS[@]} -gt 0 ]]; then
-    total_detected_agents=0
-    for agent in "${AGENT_ORDER[@]}"; do
-      if [[ -n "${AGENT_PATHS[$agent]:-}" ]]; then
-        total_detected_agents=$((total_detected_agents + 1))
-      fi
-    done
-  fi
-
   # --- Install tm CLI tool (shared across all agents) ---
   if [[ "$MODE" == "install" ]]; then
     install_tm_cli
@@ -1948,7 +2023,7 @@ main() {
 
   if [[ ${#FAILED_AGENTS[@]} -eq 0 ]]; then
     if [[ "$MODE" == "uninstall" ]]; then
-      if [[ ${#SELECTED_AGENTS[@]} -eq $total_detected_agents ]]; then
+      if selected_agents_cover_detected_agents; then
         uninstall_third_party_tools
         uninstall_tm_cli
       fi
