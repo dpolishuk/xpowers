@@ -679,6 +679,82 @@ test("install.sh does not run third-party tool bundle without --yes", { timeout:
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
+test("install.sh skips third-party tool bundle when all selected hosts fail", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-all-hosts-fail-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-all-hosts-fail-bin-"))
+  const markerPath = path.join(home, "third-party-called")
+
+  for (const name of ["curl", "python3", "npx"]) {
+    fs.writeFileSync(
+      path.join(tmpBinDir, name),
+      "#!/usr/bin/env bash\nprintf '%s\\n' \"${0##*/} $*\" >> \"$THIRD_PARTY_MARKER\"\nexit 0\n",
+      "utf8",
+    )
+    fs.chmodSync(path.join(tmpBinDir, name), 0o755)
+  }
+  fs.writeFileSync(path.join(tmpBinDir, "npm"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npm"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "gemini"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "gemini"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "gemini", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      THIRD_PARTY_MARKER: markerPath,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  assert.match(output, /Skipping third-party tool bundle because no selected agents installed successfully/)
+  assert.equal(fs.existsSync(markerPath), false, "third-party installer shims should not run after all host installs fail")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh runs claude-mem only for successfully installed selected hosts", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-successful-hosts-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-successful-hosts-bin-"))
+  const npxMarker = path.join(home, "npx-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ statusline: "existing" }) + "\n", "utf8")
+
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npm"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npm"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "gemini"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "gemini"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,gemini", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NPX_MARKER: npxMarker,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  const npxCalls = fs.readFileSync(npxMarker, "utf8").trim().split("\n")
+  assert.equal(npxCalls.length, 1)
+  assert.match(npxCalls[0], /claude-mem install$/)
+  assert.doesNotMatch(npxCalls[0], /gemini-cli/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
 test("install.sh uninstall removes tracked third-party tools", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-home-"))
   const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-bin-"))

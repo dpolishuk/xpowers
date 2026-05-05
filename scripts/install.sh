@@ -1722,6 +1722,7 @@ main() {
   fi
 
   local -a FAILED_AGENTS=()
+  local -a SUCCESSFUL_AGENTS=()
 
   # Pi delegation: TypeScript installer handles Pi install only
   # (run AFTER resolution so --all auto-detected Pi is included)
@@ -1762,6 +1763,7 @@ main() {
           # shell wrapper can keep third-party uninstall ownership in sync.
           local pi_output=""
           if pi_output="$(cd "${REPO_ROOT}" && bun scripts/install.ts "${PI_ARGS[@]}" --json)"; then
+            SUCCESSFUL_AGENTS+=("pi")
             if record_pi_host_independent_third_party_state "$pi_output"; then
               pi_host_independent_features_succeeded=true
             fi
@@ -1776,6 +1778,7 @@ main() {
         # Pi is one of multiple — run without exec, capture exit code, then continue
         local pi_output=""
         if pi_output="$(cd "${REPO_ROOT}" && bun scripts/install.ts "${PI_ARGS[@]}" --json)"; then
+          SUCCESSFUL_AGENTS+=("pi")
           if record_pi_host_independent_third_party_state "$pi_output"; then
             pi_host_independent_features_succeeded=true
           fi
@@ -1899,9 +1902,11 @@ main() {
       fi
     elif [[ "$DRY_RUN" == true ]]; then
       echo -e "  ${DIM}Would install to ${BOLD}${label}${RESET}${DIM} (dry-run)${RESET}"
+      SUCCESSFUL_AGENTS+=("$agent")
     else
       printf "  Installing to ${BOLD}%-16s${RESET} " "$label..."
       if "install_${agent}" 2>/dev/null; then
+        SUCCESSFUL_AGENTS+=("$agent")
         if "validate_${agent}" 2>/dev/null; then
           echo -e "${GREEN}✓${RESET}"
         else
@@ -1915,10 +1920,12 @@ main() {
   done
 
   if [[ "$MODE" == "install" && "$FORCE" == true ]]; then
-    if [[ "$pi_host_independent_features_succeeded" == true ]]; then
-      install_third_party_tools --skip-host-independent "${SELECTED_AGENTS[@]}"
+    if [[ ${#SUCCESSFUL_AGENTS[@]} -eq 0 ]]; then
+      warn "Skipping third-party tool bundle because no selected agents installed successfully."
+    elif [[ "$pi_host_independent_features_succeeded" == true ]]; then
+      install_third_party_tools --skip-host-independent "${SUCCESSFUL_AGENTS[@]}"
     else
-      install_third_party_tools "${SELECTED_AGENTS[@]}"
+      install_third_party_tools "${SUCCESSFUL_AGENTS[@]}"
     fi
   fi
 
