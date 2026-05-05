@@ -612,9 +612,9 @@ const FEATURES: FeatureConfig[] = [
         p.log.warn("npx not found — skipping claude-mem uninstall")
         return
       }
-      const result = Bun.spawnSync(["npx", "--yes", "claude-mem", "uninstall"], { stdout: "pipe", stderr: "pipe" })
+      const result = Bun.spawnSync(["npx", "--yes", "claude-mem", "uninstall", "--all"], { stdout: "pipe", stderr: "pipe" })
       if (result.exitCode !== 0) {
-        p.log.warn("claude-mem uninstall failed — try: npx --yes claude-mem uninstall")
+        p.log.warn("claude-mem uninstall failed — try: npx --yes claude-mem uninstall --all")
       }
     },
   },

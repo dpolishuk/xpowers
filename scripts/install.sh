@@ -1622,7 +1622,7 @@ uninstall_third_party_tools() {
       echo "  Would run: python3 -m pip uninstall -y graphifyy"
     fi
     if third_party_was_installed "claude-mem"; then
-      echo "  Would run: npx --yes claude-mem uninstall"
+      echo "  Would run: npx --yes claude-mem uninstall --all"
     fi
     return 0
   fi
@@ -1656,10 +1656,10 @@ uninstall_third_party_tools() {
 
   if third_party_was_installed "claude-mem"; then
     if command -v npx >/dev/null 2>&1; then
-      if npx --yes claude-mem uninstall >/dev/null 2>&1; then
+      if npx --yes claude-mem uninstall --all >/dev/null 2>&1; then
         success "claude-mem removed"
       else
-        warn "claude-mem uninstall failed — try: npx --yes claude-mem uninstall"
+        warn "claude-mem uninstall failed — try: npx --yes claude-mem uninstall --all"
         failed=true
       fi
     else

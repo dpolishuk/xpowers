@@ -1047,7 +1047,7 @@ test("install.sh uninstall removes tracked third-party tools", { timeout: 120000
   assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
   assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
   assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
-  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
   assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
@@ -1101,7 +1101,7 @@ test("install.sh uninstall removes manifest-only third-party tools", { timeout: 
   assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
   assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
   assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
-  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
   assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
   const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
   assert.equal(manifest.features.br.installed, false)
@@ -1723,7 +1723,7 @@ test("bun installer uninstall runs claude-mem cleanup", { timeout: 60000 }, () =
   })
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
-  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
   assert.equal(fs.existsSync(path.join(manifestDir, "manifest.json")), false)
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
