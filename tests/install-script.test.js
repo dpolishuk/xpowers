@@ -1083,6 +1083,54 @@ test("install.sh uninstall removes manifest-only third-party tools", { timeout: 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
+test("install.sh manifest probes fall back when node runtime fails", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-node-fail-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-node-fail-bin-"))
+  const nodeLog = path.join(home, "node-probe")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-05-05T00:00:00.000Z",
+      hosts: {},
+      features: {
+        br: { installed: true },
+        bv: { installed: true },
+      },
+    }) + "\n",
+    "utf8",
+  )
+  fs.writeFileSync(path.join(tmpBinDir, "node"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NODE_LOG\"\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "node"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NODE_LOG: nodeLog,
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(fs.readFileSync(nodeLog, "utf8"), /manifest\.features/)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features.br.installed, false)
+  assert.equal(manifest.features.bv.installed, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
 test("install.sh manifest fallback reads pretty manifest without js or python runtimes", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-home-"))
   const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-bin-"))

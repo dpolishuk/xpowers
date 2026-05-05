@@ -1285,21 +1285,23 @@ third_party_manifest_has_installed() {
   [[ -f "$manifest_file" ]] || return 1
 
   if command -v node >/dev/null 2>&1; then
-    node -e 'const fs = require("fs"); const [manifestPath, tool] = process.argv.slice(1); const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); process.exit(manifest.features?.[tool]?.installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1
-  elif command -v bun >/dev/null 2>&1; then
-    bun -e 'const fs = require("fs"); const [manifestPath, tool] = process.argv.slice(1); const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); process.exit(manifest.features?.[tool]?.installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json, sys; data = json.load(open(sys.argv[1])); sys.exit(0 if data.get("features", {}).get(sys.argv[2], {}).get("installed") is True else 1)' "$manifest_file" "$tool" >/dev/null 2>&1
-  elif command -v awk >/dev/null 2>&1; then
+    node -e 'var fs = require("fs"); var manifestPath = process.argv[1]; var tool = process.argv[2]; var manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); var features = manifest.features || {}; process.exit(features[tool] && features[tool].installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1 && return 0
+  fi
+  if command -v bun >/dev/null 2>&1; then
+    bun -e 'var fs = require("fs"); var manifestPath = process.argv[1]; var tool = process.argv[2]; var manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); var features = manifest.features || {}; process.exit(features[tool] && features[tool].installed === true ? 0 : 1)' "$manifest_file" "$tool" >/dev/null 2>&1 && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys; data = json.load(open(sys.argv[1])); sys.exit(0 if data.get("features", {}).get(sys.argv[2], {}).get("installed") is True else 1)' "$manifest_file" "$tool" >/dev/null 2>&1 && return 0
+  fi
+  if command -v awk >/dev/null 2>&1; then
     awk -v tool="$tool" '
       index($0, "\"" tool "\"") && $0 ~ /:[[:space:]]*[{]/ { in_tool = 1 }
       in_tool && $0 ~ /"installed"[[:space:]]*:[[:space:]]*true/ { found = 1 }
       in_tool && $0 ~ /^[[:space:]]*[}][,]?[[:space:]]*$/ { exit }
       END { exit(found ? 0 : 1) }
-    ' "$manifest_file"
-  else
-    return 1
+    ' "$manifest_file" && return 0
   fi
+  return 1
 }
 
 third_party_clear_manifest_features() {
@@ -1308,14 +1310,15 @@ third_party_clear_manifest_features() {
   [[ -f "$manifest_file" ]] || return 0
 
   if command -v node >/dev/null 2>&1; then
-    node -e 'const fs = require("fs"); const manifestPath = process.argv[1]; const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); for (const tool of ["br", "bv", "graphify", "claude-mem"]) { if (manifest.features?.[tool]) manifest.features[tool].installed = false } fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1
-  elif command -v bun >/dev/null 2>&1; then
-    bun -e 'const fs = require("fs"); const manifestPath = process.argv[1]; const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); for (const tool of ["br", "bv", "graphify", "claude-mem"]) { if (manifest.features?.[tool]) manifest.features[tool].installed = false } fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json, sys; path = sys.argv[1]; data = json.load(open(path)); [data.get("features", {}).get(tool, {}).update({"installed": False}) for tool in ("br", "bv", "graphify", "claude-mem") if tool in data.get("features", {})]; open(path, "w").write(json.dumps(data, indent=2) + "\n")' "$manifest_file" >/dev/null 2>&1
-  else
-    return 1
+    node -e 'var fs = require("fs"); var manifestPath = process.argv[1]; var manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); var features = manifest.features || {}; ["br", "bv", "graphify", "claude-mem"].forEach(function (tool) { if (features[tool]) features[tool].installed = false }); fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1 && return 0
   fi
+  if command -v bun >/dev/null 2>&1; then
+    bun -e 'var fs = require("fs"); var manifestPath = process.argv[1]; var manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); var features = manifest.features || {}; ["br", "bv", "graphify", "claude-mem"].forEach(function (tool) { if (features[tool]) features[tool].installed = false }); fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")' "$manifest_file" >/dev/null 2>&1 && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys; path = sys.argv[1]; data = json.load(open(path)); [data.get("features", {}).get(tool, {}).update({"installed": False}) for tool in ("br", "bv", "graphify", "claude-mem") if tool in data.get("features", {})]; open(path, "w").write(json.dumps(data, indent=2) + "\n")' "$manifest_file" >/dev/null 2>&1 && return 0
+  fi
+  return 1
 }
 
 third_party_mark_installed() {
