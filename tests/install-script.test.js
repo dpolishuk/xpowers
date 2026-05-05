@@ -203,7 +203,7 @@ test("install.sh mixed claude+pi install does not replay host-independent third-
 
   fs.writeFileSync(
     path.join(binDir, "bun"),
-    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
     "utf8",
   )
   fs.chmodSync(path.join(binDir, "bun"), 0o755)
@@ -259,7 +259,7 @@ test("install.sh mixed claude+pi install retries host-independent tools when Pi 
 
   fs.writeFileSync(
     path.join(binDir, "bun"),
-    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":false,\"bv\":false,\"graphify\":false}}'\nexit 0\n",
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":false,\"bv\":false,\"graphify\":false}}'\nexit 0\n",
     "utf8",
   )
   fs.chmodSync(path.join(binDir, "bun"), 0o755)
@@ -318,7 +318,7 @@ test("install.sh mixed claude+pi install records partial Pi third-party success 
 
   fs.writeFileSync(
     path.join(binDir, "bun"),
-    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":false}}'\nexit 0\n",
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":false}}'\nexit 0\n",
     "utf8",
   )
   fs.chmodSync(path.join(binDir, "bun"), 0o755)
@@ -359,7 +359,7 @@ test("install.sh pi-only install records delegated third-party ownership", { tim
 
   fs.writeFileSync(
     path.join(binDir, "bun"),
-    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
     "utf8",
   )
   fs.chmodSync(path.join(binDir, "bun"), 0o755)
@@ -623,6 +623,7 @@ test("bun installer preserves installed state when third-party features are skip
   assert.equal(result.status, 0, output)
   const payload = JSON.parse(result.stdout.trim())
   assert.equal(payload.features.br, true)
+  assert.equal(payload.featureResults.br, false)
   const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
   assert.equal(manifest.features.br.installed, true)
   assert.equal(manifest.features.br.metadata.lastResult, "skipped (XPOWERS_SKIP_THIRD_PARTY_FEATURES=1)")

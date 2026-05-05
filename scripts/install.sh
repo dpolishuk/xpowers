@@ -1281,20 +1281,30 @@ third_party_was_installed() {
   [[ -f "$state_file" ]] && grep -qxF "$tool" "$state_file"
 }
 
+pi_feature_succeeded_this_run() {
+  local pi_output="$1"
+  local tool="$2"
+  local marker='"featureResults":{'
+  local feature_results="${pi_output#*${marker}}"
+  [[ "$feature_results" != "$pi_output" ]] || return 1
+  feature_results="${feature_results%%\}*}"
+  [[ "$feature_results" == *"\"${tool}\":true"* ]]
+}
+
 record_pi_host_independent_third_party_state() {
   local pi_output="$1"
   local all_succeeded=true
-  if [[ "$pi_output" == *'"br":true'* ]]; then
+  if pi_feature_succeeded_this_run "$pi_output" "br"; then
     third_party_mark_installed "br"
   else
     all_succeeded=false
   fi
-  if [[ "$pi_output" == *'"bv":true'* ]]; then
+  if pi_feature_succeeded_this_run "$pi_output" "bv"; then
     third_party_mark_installed "bv"
   else
     all_succeeded=false
   fi
-  if [[ "$pi_output" == *'"graphify":true'* ]]; then
+  if pi_feature_succeeded_this_run "$pi_output" "graphify"; then
     third_party_mark_installed "graphify"
   else
     all_succeeded=false

@@ -1130,9 +1130,11 @@ Options:
   const featuresWereExplicitlyRequested = args.features.length > 0
   const shouldInstallFeatures = featuresWereExplicitlyRequested || successfulHostIds.length > 0
   const featureHostIds = featuresWereExplicitlyRequested ? selectedHostIds : successfulHostIds
+  const featureResults: Record<string, boolean> = {}
 
   if (!shouldInstallFeatures && selectedFeatureIds.length > 0) {
     p.log.warn("Skipping default feature setup because no selected hosts installed successfully.")
+    for (const featureId of selectedFeatureIds) featureResults[featureId] = false
   }
 
   const selectedThirdPartyFeatureIds = selectedFeatureIds.filter((id) => THIRD_PARTY_FEATURES.has(id))
@@ -1144,12 +1146,14 @@ Options:
     const feature = FEATURES.find((f) => f.id === featureId)
     if (!feature) {
       p.log.warn(`Unknown feature "${featureId}" — skipping. Supported: ${FEATURES.map((f) => f.id).join(", ")}`)
+      featureResults[featureId] = false
       continue
     }
 
     s.start(`Setting up ${feature.name}...`)
     const result = await feature.install(featureHostIds, REPO_ROOT)
     const success = !result.includes("failed") && !result.includes("not found") && !result.includes("skipped")
+    featureResults[featureId] = success
     const existingFeature = manifest.features[featureId]
     manifest.features[featureId] = {
       installed: success || existingFeature?.installed === true,
@@ -1170,6 +1174,7 @@ Options:
       features: Object.fromEntries(
         Object.entries(manifest.features).map(([k, v]) => [k, v.installed]),
       ),
+      featureResults,
       manifestPath: manifestPath(),
     }))
   } else {
