@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-  <a href=".claude-plugin/plugin.json"><img alt="Version" src="https://img.shields.io/badge/version-2.13.0-green.svg"></a>
+  <a href=".claude-plugin/plugin.json"><img alt="Version" src="https://img.shields.io/badge/version-2.13.1-green.svg"></a>
   <a href="https://claude.ai/code"><img alt="Claude Code Plugin" src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg"></a>
   <a href="https://github.com/dpolishuk/xpowers/pulls"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
 </p>
