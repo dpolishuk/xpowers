@@ -42,8 +42,38 @@ function installEnv(home, extra = {}) {
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
     NO_COLOR: "1",
+    XPOWERS_SKIP_THIRD_PARTY_FEATURES: "1",
     ...extra,
   }
+}
+
+function findExecutable(name) {
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, name)
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // Keep searching PATH.
+    }
+  }
+  return null
+}
+
+function linkManifestRuntime(binDir) {
+  const nodePath = process.versions.bun ? findExecutable("node") : process.execPath
+  if (nodePath) {
+    fs.symlinkSync(nodePath, path.join(binDir, "node"))
+  } else {
+    fs.symlinkSync(process.execPath, path.join(binDir, "bun"))
+  }
+}
+
+function linkCommand(binDir, name) {
+  const commandPath = findExecutable(name)
+  assert.ok(commandPath, `expected ${name} to be available on PATH`)
+  fs.symlinkSync(commandPath, path.join(binDir, name))
 }
 
 function makeBootstrapRepo(installShContent = fs.readFileSync(path.join(repoRoot, "scripts", "install.sh"), "utf8")) {
@@ -138,7 +168,7 @@ test("install.sh --hosts pi delegates through the Bun installer entrypoint", { t
   )
   fs.chmodSync(bunShim, 0o755)
 
-  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "pi", "--yes", "--allow-conflicts"], {
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "pi", "--allow-conflicts"], {
     cwd: repoRoot,
     encoding: "utf8",
     env: installEnv(home, {
@@ -154,7 +184,8 @@ test("install.sh --hosts pi delegates through the Bun installer entrypoint", { t
     "scripts/install.ts",
     "--hosts",
     "pi",
-    "--yes",
+    "--features",
+    "tm-cli",
     "--allow-conflicts",
   ])
   assert.doesNotMatch(output, /setup-pi\.sh/)
@@ -190,6 +221,203 @@ test("install.sh mixed claude+pi install reports both agents in summary", { time
   assert.match(output, /2 agent\(s\)/)
   assert.match(output, /Claude Code/)
   assert.match(output, /Pi Agent/)
+})
+
+test("install.sh mixed claude+pi install keeps br/bv delegated but installs graphify for non-Pi hosts", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-home-"))
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-bin-"))
+  const hostIndependentMarker = path.join(home, "host-independent-third-party-called")
+  const graphifyMarker = path.join(home, "graphify-called")
+  const npxMarker = path.join(home, "npx-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+
+  fs.writeFileSync(
+    path.join(binDir, "bun"),
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "bun"), 0o755)
+
+  fs.writeFileSync(path.join(binDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$0 $*\" >> \"$HOST_INDEPENDENT_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "curl"), 0o755)
+  fs.writeFileSync(
+    path.join(binDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "case \"$*\" in",
+      "  *'pip install --user graphifyy'*) printf '%s\\n' \"$0 $*\" >> \"$GRAPHIFY_MARKER\" ;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(binDir, "graphify"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$GRAPHIFY_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "graphify"), 0o755)
+  fs.writeFileSync(path.join(binDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,pi", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      HOST_INDEPENDENT_MARKER: hostIndependentMarker,
+      GRAPHIFY_MARKER: graphifyMarker,
+      NPX_MARKER: npxMarker,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(hostIndependentMarker), false, "Pi delegation should own br/bv for mixed installs")
+  const graphifyCalls = fs.readFileSync(graphifyMarker, "utf8")
+  assert.match(graphifyCalls, /pip install --user graphifyy/)
+  assert.match(graphifyCalls, /^install$/m)
+  assert.match(fs.readFileSync(npxMarker, "utf8"), /claude-mem install/)
+  assert.equal(
+    fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"),
+    "br\nbv\ngraphify\nclaude-mem\n",
+  )
+
+  fs.rmSync(binDir, { recursive: true, force: true })
+})
+
+test("install.sh mixed claude+pi install retries host-independent tools when Pi features fail", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-retry-home-"))
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-retry-bin-"))
+  const hostIndependentMarker = path.join(home, "host-independent-third-party-called")
+  const npxMarker = path.join(home, "npx-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+
+  fs.writeFileSync(
+    path.join(binDir, "bun"),
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":false,\"bv\":false,\"graphify\":false}}'\nexit 0\n",
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "bun"), 0o755)
+  fs.writeFileSync(path.join(binDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$0 $*\" >> \"$HOST_INDEPENDENT_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "curl"), 0o755)
+  fs.writeFileSync(
+    path.join(binDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "case \"$*\" in",
+      "  *'pip install --user graphifyy'*) printf '%s\\n' \"$0 $*\" >> \"$HOST_INDEPENDENT_MARKER\" ;;",
+      "esac",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(binDir, "graphify"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "graphify"), 0o755)
+  fs.writeFileSync(path.join(binDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,pi", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      HOST_INDEPENDENT_MARKER: hostIndependentMarker,
+      NPX_MARKER: npxMarker,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const hostIndependentCalls = fs.readFileSync(hostIndependentMarker, "utf8")
+  assert.match(hostIndependentCalls, /beads_rust/)
+  assert.match(hostIndependentCalls, /beads_viewer/)
+  assert.match(hostIndependentCalls, /graphifyy/)
+  assert.match(fs.readFileSync(npxMarker, "utf8"), /claude-mem install/)
+  assert.equal(
+    fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"),
+    "br\nbv\ngraphify\nclaude-mem\n",
+  )
+
+  fs.rmSync(binDir, { recursive: true, force: true })
+})
+
+test("install.sh mixed claude+pi install records partial Pi third-party success before retry", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-partial-home-"))
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-partial-bin-"))
+  const npxMarker = path.join(home, "npx-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+
+  fs.writeFileSync(
+    path.join(binDir, "bun"),
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":false}}'\nexit 0\n",
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "bun"), 0o755)
+  fs.writeFileSync(path.join(binDir, "curl"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(binDir, "curl"), 0o755)
+  fs.writeFileSync(path.join(binDir, "python3"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(binDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(binDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,pi", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NPX_MARKER: npxMarker,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(output, /br install failed/)
+  assert.match(output, /bv install failed/)
+  assert.equal(
+    fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"),
+    "br\nbv\nclaude-mem\n",
+  )
+  assert.match(fs.readFileSync(npxMarker, "utf8"), /claude-mem install/)
+
+  fs.rmSync(binDir, { recursive: true, force: true })
+})
+
+test("install.sh pi-only install records delegated third-party ownership", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pi-only-third-party-state-home-"))
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pi-only-third-party-state-bin-"))
+
+  fs.writeFileSync(
+    path.join(binDir, "bun"),
+    "#!/usr/bin/env bash\nprintf '%s\\n' '{\"features\":{\"br\":true,\"bv\":true,\"graphify\":true},\"featureResults\":{\"br\":true,\"bv\":true,\"graphify\":true}}'\nexit 0\n",
+    "utf8",
+  )
+  fs.chmodSync(path.join(binDir, "bun"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "pi", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(
+    fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"),
+    "br\nbv\ngraphify\n",
+  )
+
+  fs.rmSync(binDir, { recursive: true, force: true })
 })
 
 test("install.sh --all detects Pi when pi executable is in PATH even without ~/.pi", { timeout: 120000 }, () => {
@@ -253,6 +481,899 @@ test("install.sh deduplicates duplicate --hosts entries", { timeout: 120000 }, (
   // Should only mention one Claude Code install, not two
   const matches = output.match(/Would install to Claude Code/g)
   assert.equal(matches ? matches.length : 0, 1, `Expected exactly one Claude mention, got: ${output}`)
+})
+
+test("bun installer --yes includes third-party tool features by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-features-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-bin-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, { PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}` }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  for (const feature of ["br", "bv", "graphify", "claude-mem"]) {
+    assert.equal(Object.hasOwn(payload.features, feature), true, `${feature} should be part of the default feature set`)
+  }
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer pins br and bv upstream installer refs by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-pinned-third-party-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-pinned-third-party-bin-"))
+  const curlLog = path.join(home, "curl-calls")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--features", "br,bv", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      CURL_LOG: curlLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const curlCalls = fs.readFileSync(curlLog, "utf8")
+  assert.match(curlCalls, /beads_rust\/f4687e51a5aa155fe27cb8ea6d7fdae942b0154f\/install\.sh/)
+  assert.match(curlCalls, /beads_viewer\/bb977f5b812b2987d77544872287b502b5b3a444\/install\.sh/)
+  assert.doesNotMatch(curlCalls, /beads_(rust|viewer)\/main\/install\.sh/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer treats failed br and bv downloads as feature failures", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-pipefail-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-pipefail-bin-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--features", "br,bv", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(payload.featureResults.br, false)
+  assert.equal(payload.featureResults.bv, false)
+  assert.equal(payload.features.br, false)
+  assert.equal(payload.features.bv, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer omits claude-mem for unsupported hosts by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-unsupported-claude-mem-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".config", "agents"), { recursive: true })
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "kimi", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(Object.hasOwn(payload.features, "claude-mem"), false, "claude-mem should not be selected for Kimi-only installs")
+})
+
+test("bun installer omits graphify for unsupported hosts by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-unsupported-graphify-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".config", "agents"), { recursive: true })
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "kimi", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(Object.hasOwn(payload.features, "graphify"), false, "graphify should not be selected for hosts without upstream platform support")
+})
+
+test("bun installer skips default features when selected hosts are invalid", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-invalid-host-default-features-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-invalid-host-default-features-bin-"))
+  const markerPath = path.join(home, "feature-tool-called")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+
+  for (const name of ["curl", "python3", "npx", "npm"]) {
+    fs.writeFileSync(
+      path.join(tmpBinDir, name),
+      "#!/usr/bin/env bash\nprintf '%s\\n' \"${0##*/} $*\" >> \"$FEATURE_TOOL_MARKER\"\nexit 0\n",
+      "utf8",
+    )
+    fs.chmodSync(path.join(tmpBinDir, name), 0o755)
+  }
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "not-a-host", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      FEATURE_TOOL_MARKER: markerPath,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(payload.ok, false)
+  assert.deepEqual(payload.hosts, [])
+  assert.deepEqual(payload.features, {})
+  assert.equal(fs.existsSync(markerPath), false, "default feature installers should not run after invalid host selection")
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.deepEqual(manifest.features, {})
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer runs graphify platform setup for each supported selected host", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-graphify-platforms-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-graphify-platforms-bin-"))
+  const graphifyLog = path.join(home, "graphify-calls")
+  const pythonLog = path.join(home, "python-calls")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.symlinkSync("/bin/bash", path.join(tmpBinDir, "bash"))
+  fs.writeFileSync(
+    path.join(tmpBinDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "graphify"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$GRAPHIFY_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "graphify"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude,opencode,gemini,pi", "--features", "graphify", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      GRAPHIFY_LOG: graphifyLog,
+      PYTHON_LOG: pythonLog,
+      PATH: tmpBinDir,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  assert.match(fs.readFileSync(pythonLog, "utf8"), /pip install --user graphifyy --quiet/)
+  const graphifyCalls = fs.readFileSync(graphifyLog, "utf8").trim().split("\n")
+  assert.deepEqual(graphifyCalls, [
+    "install",
+    "install --platform opencode",
+    "install --platform gemini",
+    "install --platform pi",
+  ])
+})
+
+test("bun installer reports claude-mem skipped before requiring npx for unsupported hosts", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-skip-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-skip-bin-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".config", "agents"), { recursive: true })
+  fs.symlinkSync("/bin/bash", path.join(tmpBinDir, "bash"))
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "kimi", "--features", "claude-mem", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, { PATH: tmpBinDir, XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0" }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features["claude-mem"].metadata.lastResult, "skipped (Claude Code, OpenCode, or Gemini CLI not selected)")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer attempts all claude-mem targets before reporting failures", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-all-targets-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-all-targets-bin-"))
+  const npxLog = path.join(home, "npx-calls")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(
+    path.join(tmpBinDir, "npx"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$NPX_LOG\"",
+      "case \"$*\" in",
+      "  *'--ide opencode'*) exit 0 ;;",
+      "  *) exit 7 ;;",
+      "esac",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude,opencode", "--features", "claude-mem", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NPX_LOG: npxLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const calls = fs.readFileSync(npxLog, "utf8").trim().split("\n")
+  assert.equal(calls.length, 2)
+  assert.match(calls[0], /claude-mem install$/)
+  assert.match(calls[1], /claude-mem install --ide opencode$/)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.match(manifest.features["claude-mem"].metadata.lastResult, /installed for OpenCode/)
+  assert.match(manifest.features["claude-mem"].metadata.lastResult, /Claude Code/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer preserves installed state when third-party features are skipped", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-preserve-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-05-04T00:00:00.000Z",
+      hosts: {},
+      features: {
+        br: { installed: true, metadata: { lastResult: "br installed" } },
+      },
+    }) + "\n",
+    "utf8",
+  )
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--features", "br", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(payload.features.br, true)
+  assert.equal(payload.featureResults.br, false)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features.br.installed, true)
+  assert.equal(manifest.features.br.metadata.lastResult, "skipped (XPOWERS_SKIP_THIRD_PARTY_FEATURES=1)")
+})
+
+test("install.sh skips third-party tool bundle when requested by environment", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-skip-"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--claude", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(output, /Skipping third-party tool bundle/)
+})
+
+test("install.sh does not run third-party tool bundle without --yes", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-force-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-force-bin-"))
+  const markerPath = path.join(home, "third-party-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ statusline: "existing" }) + "\n", "utf8")
+  for (const name of ["curl", "npx"]) {
+    fs.writeFileSync(
+      path.join(tmpBinDir, name),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$0 $*" >> "$THIRD_PARTY_MARKER"\nexit 0\n`,
+      "utf8",
+    )
+    fs.chmodSync(path.join(tmpBinDir, name), 0o755)
+  }
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nexit 1\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--claude", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      THIRD_PARTY_MARKER: markerPath,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(markerPath), false, "third-party installer shims should not run without --yes")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh skips third-party tool bundle when all selected hosts fail", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-all-hosts-fail-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-all-hosts-fail-bin-"))
+  const markerPath = path.join(home, "third-party-called")
+
+  for (const name of ["curl", "python3", "npx"]) {
+    fs.writeFileSync(
+      path.join(tmpBinDir, name),
+      "#!/usr/bin/env bash\nprintf '%s\\n' \"${0##*/} $*\" >> \"$THIRD_PARTY_MARKER\"\nexit 0\n",
+      "utf8",
+    )
+    fs.chmodSync(path.join(tmpBinDir, name), 0o755)
+  }
+  fs.writeFileSync(path.join(tmpBinDir, "npm"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npm"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "gemini"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "gemini"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "gemini", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      THIRD_PARTY_MARKER: markerPath,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  assert.match(output, /Skipping third-party tool bundle because no selected agents installed successfully/)
+  assert.equal(fs.existsSync(markerPath), false, "third-party installer shims should not run after all host installs fail")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh runs claude-mem only for successfully installed selected hosts", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-successful-hosts-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-successful-hosts-bin-"))
+  const npxMarker = path.join(home, "npx-called")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ statusline: "existing" }) + "\n", "utf8")
+
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npm"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npm"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "gemini"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "gemini"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,gemini", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NPX_MARKER: npxMarker,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  const npxCalls = fs.readFileSync(npxMarker, "utf8").trim().split("\n")
+  assert.equal(npxCalls.length, 1)
+  assert.match(npxCalls[0], /claude-mem install$/)
+  assert.doesNotMatch(npxCalls[0], /gemini-cli/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh runs graphify Codex platform setup for Codex installs", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-graphify-codex-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-graphify-codex-bin-"))
+  const graphifyLog = path.join(home, "graphify-calls")
+  const pythonLog = path.join(home, "python-calls")
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true })
+
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "graphify"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$GRAPHIFY_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "graphify"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "codex", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      GRAPHIFY_LOG: graphifyLog,
+      PYTHON_LOG: pythonLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(fs.readFileSync(pythonLog, "utf8"), /pip install --user graphifyy/)
+  assert.deepEqual(fs.readFileSync(graphifyLog, "utf8").trim().split("\n"), ["install --platform codex"])
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh supports pinned third-party installer ref overrides", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pinned-third-party-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pinned-third-party-bin-"))
+  const curlLog = path.join(home, "curl-calls")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ statusline: "existing" }) + "\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      CURL_LOG: curlLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_BEADS_RUST_INSTALL_REF: "rust-test-ref",
+      XPOWERS_BEADS_VIEWER_INSTALL_REF: "viewer-test-ref",
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const curlCalls = fs.readFileSync(curlLog, "utf8")
+  assert.match(curlCalls, /beads_rust\/rust-test-ref\/install\.sh/)
+  assert.match(curlCalls, /beads_viewer\/viewer-test-ref\/install\.sh/)
+  assert.doesNotMatch(curlCalls, /beads_(rust|viewer)\/main\/install\.sh/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh uninstall removes tracked third-party tools", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  const npxLog = path.join(home, "npx-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\ngraphify\nclaude-mem\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh uninstall removes manifest-only third-party tools", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-uninstall-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  const npxLog = path.join(home, "npx-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-05-05T00:00:00.000Z",
+      hosts: {},
+      features: {
+        br: { installed: true },
+        bv: { installed: true },
+        graphify: { installed: true },
+        "claude-mem": { installed: true },
+      },
+    }) + "\n",
+    "utf8",
+  )
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+  linkManifestRuntime(tmpBinDir)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features.br.installed, false)
+  assert.equal(manifest.features.bv.installed, false)
+  assert.equal(manifest.features.graphify.installed, false)
+  assert.equal(manifest.features["claude-mem"].installed, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh manifest probes fall back when node runtime fails", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-node-fail-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-node-fail-bin-"))
+  const nodeLog = path.join(home, "node-probe")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-05-05T00:00:00.000Z",
+      hosts: {},
+      features: {
+        br: { installed: true },
+        bv: { installed: true },
+      },
+    }) + "\n",
+    "utf8",
+  )
+  fs.writeFileSync(path.join(tmpBinDir, "node"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NODE_LOG\"\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "node"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      NODE_LOG: nodeLog,
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(fs.readFileSync(nodeLog, "utf8"), /manifest\.features/)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.equal(manifest.features.br.installed, false)
+  assert.equal(manifest.features.bv.installed, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh manifest fallback reads pretty manifest without js or python runtimes", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-manifest-awk-bin-"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(
+    path.join(home, ".xpowers", "manifest.json"),
+    JSON.stringify(
+      {
+        version: "test",
+        installedAt: "2026-05-05T00:00:00.000Z",
+        hosts: {},
+        features: {
+          br: { installed: true },
+          bv: { installed: true },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  )
+  for (const command of ["awk", "basename", "bash", "dirname", "grep", "rm", "rmdir", "tr"]) {
+    linkCommand(tmpBinDir, command)
+  }
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: tmpBinDir,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.match(output, /Could not update third-party entries/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh uninstall preserves third-party state when cleanup fails", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-fail-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-uninstall-fail-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "graphify\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(fs.readFileSync(pipLog, "utf8"), /pip uninstall -y graphifyy/)
+  assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "graphify\n")
+  assert.match(output, /Keeping third-party tracking for retry/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh dry-run uninstall preserves tracked third-party tools", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-dry-run-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-dry-run-uninstall-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  const npxLog = path.join(home, "npx-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\ngraphify\nclaude-mem\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--dry-run", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(output, /Would remove tracked third-party tool bundle/)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), true)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), true)
+  assert.equal(fs.existsSync(pipLog), false)
+  assert.equal(fs.existsSync(npxLog), false)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), true)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh partial uninstall preserves tracked third-party tools", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-partial-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-partial-uninstall-bin-"))
+  const pipLog = path.join(home, "pip-uninstall")
+  const npxLog = path.join(home, "npx-uninstall")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".codex", ".xpowers-manifest"), "# .xpowers-manifest\n", "utf8")
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\ngraphify\nclaude-mem\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PIP_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+      PIP_LOG: pipLog,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), true)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), true)
+  assert.equal(fs.existsSync(pipLog), false)
+  assert.equal(fs.existsSync(npxLog), false)
+  assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "br\nbv\ngraphify\nclaude-mem\n")
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh partial uninstall compares selected and detected host sets before third-party cleanup", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-mismatched-host-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-mismatched-host-uninstall-bin-"))
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "gemini", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), true)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), true)
+  assert.equal(fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"), "br\nbv\n")
+  assert.doesNotMatch(output, /Removing tracked third-party tool bundle/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh explicit purge cleans shared tools when no hosts are detected", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-detected-host-uninstall-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-third-party-no-detected-host-uninstall-bin-"))
+  fs.mkdirSync(path.join(home, ".xpowers"), { recursive: true })
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".xpowers", "third-party-tools"), "br\nbv\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "br"), "br\n", "utf8")
+  fs.writeFileSync(path.join(home, ".local", "bin", "bv"), "bv\n", "utf8")
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--uninstall", "--yes", "--purge"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin:/bin`,
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "br")), false)
+  assert.equal(fs.existsSync(path.join(home, ".local", "bin", "bv")), false)
+  assert.equal(fs.existsSync(path.join(home, ".xpowers", "third-party-tools")), false)
+  assert.match(output, /Removing tracked third-party tool bundle/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
 test("bun installer fails fast on legacy package conflicts unless explicitly overridden", { timeout: 120000 }, () => {
@@ -569,6 +1690,43 @@ test("bun installer uninstall reads legacy manifest location", { timeout: 60000 
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.equal(fs.existsSync(legacyFile), false)
   assert.equal(fs.existsSync(path.join(legacyManifestDir, "manifest.json")), false)
+})
+
+test("bun installer uninstall runs claude-mem cleanup", { timeout: 60000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-uninstall-test-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-uninstall-bin-"))
+  const manifestDir = path.join(home, ".xpowers")
+  const npxLog = path.join(home, "npx-uninstall")
+
+  fs.mkdirSync(manifestDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(manifestDir, "manifest.json"),
+    JSON.stringify({
+      version: "test",
+      installedAt: "2026-01-01T00:00:00Z",
+      hosts: {},
+      features: { "claude-mem": { installed: true } },
+    }, null, 2) + "\n",
+    "utf8",
+  )
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bun", ["scripts/install.ts", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      NPX_LOG: npxLog,
+    }),
+    timeout: 120000,
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(fs.readFileSync(npxLog, "utf8"), /claude-mem uninstall --all/)
+  assert.equal(fs.existsSync(path.join(manifestDir, "manifest.json")), false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
 test("bun installer statusline uninstall removes legacy statusline path", { timeout: 60000 }, () => {

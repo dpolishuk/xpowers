@@ -49,6 +49,26 @@ function createFakePiShim(binDir) {
   fs.chmodSync(piPath, 0o755)
 }
 
+function removeWritableTree(targetPath) {
+  if (!fs.existsSync(targetPath)) return
+
+  const makeWritable = (entryPath) => {
+    const stat = fs.lstatSync(entryPath)
+    if (stat.isSymbolicLink()) return
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath)) {
+        makeWritable(path.join(entryPath, child))
+      }
+      fs.chmodSync(entryPath, 0o700)
+      return
+    }
+    fs.chmodSync(entryPath, 0o600)
+  }
+
+  makeWritable(targetPath)
+  fs.rmSync(targetPath, { recursive: true, force: true })
+}
+
 test("Claude and OpenCode execute-ralph command wrappers stay aligned to the same contract clauses", () => {
   const files = [
     ["Claude canonical wrapper", "commands/execute-ralph.md"],
@@ -125,7 +145,7 @@ test("Pi installed runtime resolves execute-ralph through the canonical command 
     assertContainsAll(output, REQUIRED_COMMAND_CLAUSES, "Pi installed execute-ralph output")
     assert.equal(output.includes("Pi invocation arguments: --reviewer-model=sonnet"), true)
   } finally {
-    fs.rmSync(home, { recursive: true, force: true })
-    fs.rmSync(binDir, { recursive: true, force: true })
+    removeWritableTree(home)
+    removeWritableTree(binDir)
   }
 })
