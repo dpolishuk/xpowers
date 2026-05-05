@@ -77,7 +77,7 @@ const throwOnSpawnFailure = (result: { exitCode: number, stdout: Uint8Array, std
 
 const THIRD_PARTY_SKIP_ENV = "XPOWERS_SKIP_THIRD_PARTY_FEATURES"
 const THIRD_PARTY_FEATURES = new Set(["br", "bv", "graphify", "claude-mem"])
-const HOST_INDEPENDENT_FEATURES = new Set(["tm-cli", "br", "bv", "graphify"])
+const HOST_INDEPENDENT_FEATURES = new Set(["tm-cli", "br", "bv"])
 
 const skipThirdPartyFeatures = () => {
   const value = process.env[THIRD_PARTY_SKIP_ENV]?.toLowerCase()
@@ -85,6 +85,23 @@ const skipThirdPartyFeatures = () => {
 }
 
 const thirdPartySkipMessage = () => `skipped (${THIRD_PARTY_SKIP_ENV}=1)`
+
+const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent"
+const GRAPHIFY_TARGETS = [
+  { hostId: "claude", label: "Claude Code", args: ["graphify", "install"] },
+  { hostId: "codex", label: "Codex", args: ["graphify", "install", "--platform", "codex"] },
+  { hostId: "opencode", label: "OpenCode", args: ["graphify", "install", "--platform", "opencode"] },
+  { hostId: "gemini", label: "Gemini CLI", args: ["graphify", "install", "--platform", "gemini"] },
+  { hostId: "pi", label: "Pi Agent", args: ["graphify", "install", "--platform", "pi"] },
+]
+
+const graphifyTargetsForHosts = (hosts: string[]) => {
+  const selectedHosts = new Set(hosts)
+  return GRAPHIFY_TARGETS.filter((target) => selectedHosts.has(target.hostId))
+}
+
+const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
+const graphifyCommand = (args: string[]) => args.join(" ")
 
 const copyDir = async (src: string, dest: string) => {
   await mkdir(dest, { recursive: true })
@@ -165,7 +182,7 @@ const HOSTS: HostConfig[] = [
       commands: { from: "commands" },
       hooks: { from: "hooks" },
     },
-    availableFeatures: ["memsearch", "statusline", "claude-mem"],
+    availableFeatures: ["memsearch", "statusline", "graphify", "claude-mem"],
     postInstall: async (targetDir) => {
       // Copy statusline script
       const src = join(REPO_ROOT, "scripts", "xpowers-statusline.sh")
@@ -186,7 +203,7 @@ const HOSTS: HostConfig[] = [
       plugins: { from: ".opencode/plugins" },
       scripts: { from: ".opencode/scripts" },
     },
-    availableFeatures: ["memsearch", "supermemory", "routing-wizard", "claude-mem"],
+    availableFeatures: ["memsearch", "supermemory", "routing-wizard", "graphify", "claude-mem"],
     postInstall: async (targetDir) => {
       // Copy package.json and run bun install
       const pkgSrc = join(REPO_ROOT, ".opencode", "package.json")
@@ -260,7 +277,7 @@ const HOSTS: HostConfig[] = [
     detect: () => commandExists("gemini"),
     targetDir: () => join(REPO_ROOT, ".gemini-extension"),
     sources: {},
-    availableFeatures: ["claude-mem"],
+    availableFeatures: ["graphify", "claude-mem"],
     postInstall: async () => {
       if (!commandExists("gemini")) {
         throw new Error("gemini CLI not found — cannot install extension")
@@ -283,7 +300,7 @@ const HOSTS: HostConfig[] = [
     sources: {
       "extensions/xpowers": { from: ".pi/extensions/xpowers", exclude: ["routing.json"] },
     },
-    availableFeatures: ["memsearch"],
+    availableFeatures: ["memsearch", "graphify"],
     postInstall: async (targetDir) => {
       const extDir = join(targetDir, "extensions", "xpowers")
 
@@ -509,19 +526,42 @@ const FEATURES: FeatureConfig[] = [
     id: "graphify",
     name: "graphify knowledge graph",
     hint: "code/docs/media knowledge graph skill and CLI",
-    install: async () => {
+    install: async (hosts) => {
       if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const targets = graphifyTargetsForHosts(hosts)
+      if (targets.length === 0) return `skipped (${GRAPHIFY_SUPPORTED_HOSTS} not selected)`
       if (!commandExists("python3")) {
-        return "python3 not found — install manually: python3 -m pip install --user graphifyy && graphify install"
+        return `python3 not found — install manually: python3 -m pip install --user graphifyy && ${graphifyCommand(targets[0].args)}`
       }
-      const result = Bun.spawnSync([
-        "bash",
-        "-lc",
-        "python3 -m pip install --user graphifyy --quiet && PATH=\"$HOME/.local/bin:$PATH\" graphify install",
-      ], { stdout: "pipe", stderr: "pipe" })
-      return result.exitCode === 0
-        ? "graphify installed"
-        : "graphify install failed — try: python3 -m pip install --user graphifyy && graphify install"
+      const packageResult = Bun.spawnSync(["python3", "-m", "pip", "install", "--user", "graphifyy", "--quiet"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      if (packageResult.exitCode !== 0) {
+        return "graphify package install failed — try: python3 -m pip install --user graphifyy"
+      }
+
+      const installed: string[] = []
+      const failed: string[] = []
+      for (const target of targets) {
+        const result = Bun.spawnSync([
+          "bash",
+          "-lc",
+          `PATH="$HOME/.local/bin:$PATH" ${target.args.map(shellQuote).join(" ")}`,
+        ], { stdout: "pipe", stderr: "pipe" })
+        if (result.exitCode !== 0) {
+          failed.push(`${target.label} (exit ${result.exitCode}; try: ${graphifyCommand(target.args)})`)
+          continue
+        }
+        installed.push(target.label)
+      }
+
+      if (failed.length > 0) {
+        return installed.length > 0
+          ? `graphify installed for ${installed.join(", ")}; could not install for ${failed.join(", ")}`
+          : `graphify install failed for ${failed.join(", ")}`
+      }
+      return `graphify installed for ${installed.join(", ")}`
     },
     uninstall: async () => {
       if (commandExists("python3")) {
@@ -1019,7 +1059,7 @@ Options:
 
   if (detected.length === 0 && args.hosts.length === 0 && args.features.length === 0) {
     p.log.error("No supported hosts detected. Install Claude Code, OpenCode, or another supported tool first.")
-    p.log.info("You can still install host-independent features: bun scripts/install.ts --features tm-cli,br,bv,graphify")
+    p.log.info("You can still install host-independent features: bun scripts/install.ts --features tm-cli,br,bv")
     p.outro("Nothing to install.")
     return
   }

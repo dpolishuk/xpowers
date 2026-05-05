@@ -223,10 +223,11 @@ test("install.sh mixed claude+pi install reports both agents in summary", { time
   assert.match(output, /Pi Agent/)
 })
 
-test("install.sh mixed claude+pi install does not replay host-independent third-party tools", { timeout: 120000 }, () => {
+test("install.sh mixed claude+pi install keeps br/bv delegated but installs graphify for non-Pi hosts", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-home-"))
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-third-party-bin-"))
   const hostIndependentMarker = path.join(home, "host-independent-third-party-called")
+  const graphifyMarker = path.join(home, "graphify-called")
   const npxMarker = path.join(home, "npx-called")
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
 
@@ -244,7 +245,7 @@ test("install.sh mixed claude+pi install does not replay host-independent third-
     [
       "#!/usr/bin/env bash",
       "case \"$*\" in",
-      "  *'pip install --user graphifyy'*) printf '%s\\n' \"$0 $*\" >> \"$HOST_INDEPENDENT_MARKER\" ;;",
+      "  *'pip install --user graphifyy'*) printf '%s\\n' \"$0 $*\" >> \"$GRAPHIFY_MARKER\" ;;",
       "esac",
       "exit 0",
       "",
@@ -252,6 +253,8 @@ test("install.sh mixed claude+pi install does not replay host-independent third-
     "utf8",
   )
   fs.chmodSync(path.join(binDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(binDir, "graphify"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$GRAPHIFY_MARKER\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(binDir, "graphify"), 0o755)
   fs.writeFileSync(path.join(binDir, "npx"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$NPX_MARKER\"\nexit 0\n", "utf8")
   fs.chmodSync(path.join(binDir, "npx"), 0o755)
 
@@ -260,6 +263,7 @@ test("install.sh mixed claude+pi install does not replay host-independent third-
     encoding: "utf8",
     env: installEnv(home, {
       HOST_INDEPENDENT_MARKER: hostIndependentMarker,
+      GRAPHIFY_MARKER: graphifyMarker,
       NPX_MARKER: npxMarker,
       PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
       XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
@@ -269,7 +273,10 @@ test("install.sh mixed claude+pi install does not replay host-independent third-
 
   const output = combinedOutput(result)
   assert.equal(result.status, 0, output)
-  assert.equal(fs.existsSync(hostIndependentMarker), false, "Pi delegation should own br/bv/graphify for mixed installs")
+  assert.equal(fs.existsSync(hostIndependentMarker), false, "Pi delegation should own br/bv for mixed installs")
+  const graphifyCalls = fs.readFileSync(graphifyMarker, "utf8")
+  assert.match(graphifyCalls, /pip install --user graphifyy/)
+  assert.match(graphifyCalls, /^install$/m)
   assert.match(fs.readFileSync(npxMarker, "utf8"), /claude-mem install/)
   assert.equal(
     fs.readFileSync(path.join(home, ".xpowers", "third-party-tools"), "utf8"),
@@ -517,6 +524,24 @@ test("bun installer omits claude-mem for unsupported hosts by default", { timeou
   assert.equal(Object.hasOwn(payload.features, "claude-mem"), false, "claude-mem should not be selected for Kimi-only installs")
 })
 
+test("bun installer omits graphify for unsupported hosts by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-unsupported-graphify-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".config", "agents"), { recursive: true })
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "kimi", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(Object.hasOwn(payload.features, "graphify"), false, "graphify should not be selected for hosts without upstream platform support")
+})
+
 test("bun installer skips default features when selected hosts are invalid", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-invalid-host-default-features-"))
   const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-invalid-host-default-features-bin-"))
@@ -554,6 +579,61 @@ test("bun installer skips default features when selected hosts are invalid", { t
   assert.deepEqual(manifest.features, {})
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("bun installer runs graphify platform setup for each supported selected host", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-graphify-platforms-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-graphify-platforms-bin-"))
+  const graphifyLog = path.join(home, "graphify-calls")
+  const pythonLog = path.join(home, "python-calls")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.symlinkSync("/bin/bash", path.join(tmpBinDir, "bash"))
+  fs.writeFileSync(
+    path.join(tmpBinDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "graphify"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$GRAPHIFY_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "graphify"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude,opencode,gemini,pi", "--features", "graphify", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      GRAPHIFY_LOG: graphifyLog,
+      PYTHON_LOG: pythonLog,
+      PATH: tmpBinDir,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 1, output)
+  assert.match(fs.readFileSync(pythonLog, "utf8"), /pip install --user graphifyy --quiet/)
+  const graphifyCalls = fs.readFileSync(graphifyLog, "utf8").trim().split("\n")
+  assert.deepEqual(graphifyCalls, [
+    "install",
+    "install --platform opencode",
+    "install --platform gemini",
+    "install --platform pi",
+  ])
 })
 
 test("bun installer reports claude-mem skipped before requiring npx for unsupported hosts", { timeout: 120000 }, () => {
@@ -781,6 +861,60 @@ test("install.sh runs claude-mem only for successfully installed selected hosts"
   assert.equal(npxCalls.length, 1)
   assert.match(npxCalls[0], /claude-mem install$/)
   assert.doesNotMatch(npxCalls[0], /gemini-cli/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh runs graphify Codex platform setup for Codex installs", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-graphify-codex-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-graphify-codex-bin-"))
+  const graphifyLog = path.join(home, "graphify-calls")
+  const pythonLog = path.join(home, "python-calls")
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true })
+
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "python3"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$PYTHON_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(
+    path.join(tmpBinDir, "graphify"),
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$*\" >> \"$GRAPHIFY_LOG\"",
+      "exit 0",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+  fs.chmodSync(path.join(tmpBinDir, "graphify"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "codex", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      GRAPHIFY_LOG: graphifyLog,
+      PYTHON_LOG: pythonLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  assert.match(fs.readFileSync(pythonLog, "utf8"), /pip install --user graphifyy/)
+  assert.deepEqual(fs.readFileSync(graphifyLog, "utf8").trim().split("\n"), ["install --platform codex"])
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })

@@ -1402,6 +1402,98 @@ third_party_features_skipped() {
   esac
 }
 
+join_labels() {
+  local joined=""
+  local item
+  for item in "$@"; do
+    [[ -n "$joined" ]] && joined+=", "
+    joined+="$item"
+  done
+  printf "%s" "$joined"
+}
+
+install_graphify_for_agents() {
+  local skip_delegated_pi="$1"
+  shift
+
+  local -a targets=()
+  local skipped_delegated_pi=false
+  local agent
+  for agent in "$@"; do
+    if [[ "$skip_delegated_pi" == true && "$agent" == "pi" ]]; then
+      skipped_delegated_pi=true
+      continue
+    fi
+    case "$agent" in
+      claude|codex|opencode|gemini|pi) targets+=("$agent") ;;
+    esac
+  done
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    if [[ "$skipped_delegated_pi" == true ]]; then
+      info "Skipping Pi graphify; Pi delegation already handled it"
+    else
+      warn "graphify skipped — Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent not selected"
+    fi
+    return 0
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 not found — skipping graphify"
+    return 0
+  fi
+
+  if ! python3 -m pip install --user graphifyy --quiet >/dev/null 2>&1; then
+    warn "graphify package install failed — try: python3 -m pip install --user graphifyy"
+    return 0
+  fi
+
+  local -a installed_graphify=()
+  for agent in "${targets[@]}"; do
+    local label=""
+    local try_command=""
+    local -a graphify_args=()
+    case "$agent" in
+      claude)
+        label="Claude Code"
+        try_command="graphify install"
+        graphify_args=(install)
+        ;;
+      codex)
+        label="Codex"
+        try_command="graphify install --platform codex"
+        graphify_args=(install --platform codex)
+        ;;
+      opencode)
+        label="OpenCode"
+        try_command="graphify install --platform opencode"
+        graphify_args=(install --platform opencode)
+        ;;
+      gemini)
+        label="Gemini CLI"
+        try_command="graphify install --platform gemini"
+        graphify_args=(install --platform gemini)
+        ;;
+      pi)
+        label="Pi Agent"
+        try_command="graphify install --platform pi"
+        graphify_args=(install --platform pi)
+        ;;
+    esac
+
+    if PATH="${HOME}/.local/bin:${PATH}" graphify "${graphify_args[@]}" >/dev/null 2>&1; then
+      installed_graphify+=("$label")
+    else
+      warn "graphify install failed for ${label} — try: ${try_command}"
+    fi
+  done
+
+  if [[ ${#installed_graphify[@]} -gt 0 ]]; then
+    success "graphify installed for $(join_labels "${installed_graphify[@]}")"
+    third_party_mark_installed "graphify"
+  fi
+}
+
 install_third_party_tools() {
   local skip_host_independent=false
   if [[ "${1:-}" == "--skip-host-independent" ]]; then
@@ -1411,7 +1503,7 @@ install_third_party_tools() {
 
   if [[ "$DRY_RUN" == true ]]; then
     if [[ "$skip_host_independent" == true ]]; then
-      info "Would install third-party tool bundle: claude-mem"
+      info "Would install third-party tool bundle: graphify for non-Pi supported hosts, claude-mem"
     else
       info "Would install third-party tool bundle: br, bv, graphify, claude-mem"
     fi
@@ -1424,8 +1516,8 @@ install_third_party_tools() {
   fi
 
   if [[ "$skip_host_independent" == true ]]; then
-    info "Installing third-party tool bundle: claude-mem"
-    info "Skipping br, bv, and graphify; Pi delegation already handled host-independent tools"
+    info "Installing third-party tool bundle: graphify, claude-mem"
+    info "Skipping br, bv, and delegated Pi graphify; Pi delegation already handled them"
   else
     info "Installing third-party tool bundle: br, bv, graphify, claude-mem"
   fi
@@ -1449,19 +1541,9 @@ install_third_party_tools() {
     else
       warn "curl not found — skipping br and bv installers"
     fi
-
-    if command -v python3 >/dev/null 2>&1; then
-      if python3 -m pip install --user graphifyy --quiet >/dev/null 2>&1 \
-        && PATH="${HOME}/.local/bin:${PATH}" graphify install >/dev/null 2>&1; then
-        success "graphify installed"
-        third_party_mark_installed "graphify"
-      else
-        warn "graphify install failed — try: python3 -m pip install --user graphifyy && graphify install"
-      fi
-    else
-      warn "python3 not found — skipping graphify"
-    fi
   fi
+
+  install_graphify_for_agents "$skip_host_independent" "$@"
 
   if ! command -v npx >/dev/null 2>&1; then
     warn "npx not found — skipping claude-mem"
@@ -1500,12 +1582,7 @@ install_third_party_tools() {
   done
 
   if [[ ${#installed_cmem[@]} -gt 0 ]]; then
-    local joined=""
-    for agent in "${installed_cmem[@]}"; do
-      [[ -n "$joined" ]] && joined+=", "
-      joined+="$agent"
-    done
-    success "claude-mem installed for ${joined}"
+    success "claude-mem installed for $(join_labels "${installed_cmem[@]}")"
   fi
 }
 
