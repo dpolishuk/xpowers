@@ -536,6 +536,35 @@ test("bun installer pins br and bv upstream installer refs by default", { timeou
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
+test("bun installer treats failed br and bv downloads as feature failures", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-pipefail-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-third-party-pipefail-bin-"))
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--features", "br,bv", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(payload.featureResults.br, false)
+  assert.equal(payload.featureResults.bv, false)
+  assert.equal(payload.features.br, false)
+  assert.equal(payload.features.bv, false)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
 test("bun installer omits claude-mem for unsupported hosts by default", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-unsupported-claude-mem-"))
   const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()

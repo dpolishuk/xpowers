@@ -493,7 +493,7 @@ const FEATURES: FeatureConfig[] = [
       const result = Bun.spawnSync([
         "bash",
         "-lc",
-        `curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
+        `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
         ? "br installed"
@@ -517,7 +517,7 @@ const FEATURES: FeatureConfig[] = [
       const result = Bun.spawnSync([
         "bash",
         "-lc",
-        `curl -fsSL ${shellQuote(installUrl)} | bash`,
+        `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
         ? "bv installed"
