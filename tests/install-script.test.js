@@ -506,6 +506,36 @@ test("bun installer --yes includes third-party tool features by default", { time
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
 
+test("bun installer pins br and bv upstream installer refs by default", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-pinned-third-party-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-pinned-third-party-bin-"))
+  const curlLog = path.join(home, "curl-calls")
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "claude", "--features", "br,bv", "--yes", "--json", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      CURL_LOG: curlLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const curlCalls = fs.readFileSync(curlLog, "utf8")
+  assert.match(curlCalls, /beads_rust\/f4687e51a5aa155fe27cb8ea6d7fdae942b0154f\/install\.sh/)
+  assert.match(curlCalls, /beads_viewer\/bb977f5b812b2987d77544872287b502b5b3a444\/install\.sh/)
+  assert.doesNotMatch(curlCalls, /beads_(rust|viewer)\/main\/install\.sh/)
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
 test("bun installer omits claude-mem for unsupported hosts by default", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-unsupported-claude-mem-"))
   const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
@@ -915,6 +945,42 @@ test("install.sh runs graphify Codex platform setup for Codex installs", { timeo
   assert.equal(result.status, 0, output)
   assert.match(fs.readFileSync(pythonLog, "utf8"), /pip install --user graphifyy/)
   assert.deepEqual(fs.readFileSync(graphifyLog, "utf8").trim().split("\n"), ["install --platform codex"])
+
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+})
+
+test("install.sh supports pinned third-party installer ref overrides", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pinned-third-party-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-pinned-third-party-bin-"))
+  const curlLog = path.join(home, "curl-calls")
+  fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
+  fs.writeFileSync(path.join(home, ".claude", "settings.json"), JSON.stringify({ statusline: "existing" }) + "\n", "utf8")
+  fs.writeFileSync(path.join(tmpBinDir, "curl"), "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "curl"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "python3"), "#!/usr/bin/env bash\nexit 9\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "python3"), 0o755)
+  fs.writeFileSync(path.join(tmpBinDir, "npx"), "#!/usr/bin/env bash\nexit 0\n", "utf8")
+  fs.chmodSync(path.join(tmpBinDir, "npx"), 0o755)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude", "--yes", "--allow-conflicts"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, {
+      CURL_LOG: curlLog,
+      PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}`,
+      XPOWERS_BEADS_RUST_INSTALL_REF: "rust-test-ref",
+      XPOWERS_BEADS_VIEWER_INSTALL_REF: "viewer-test-ref",
+      XPOWERS_SKIP_THIRD_PARTY_FEATURES: "0",
+    }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const curlCalls = fs.readFileSync(curlLog, "utf8")
+  assert.match(curlCalls, /beads_rust\/rust-test-ref\/install\.sh/)
+  assert.match(curlCalls, /beads_viewer\/viewer-test-ref\/install\.sh/)
+  assert.doesNotMatch(curlCalls, /beads_(rust|viewer)\/main\/install\.sh/)
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })

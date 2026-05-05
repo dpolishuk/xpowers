@@ -1259,9 +1259,19 @@ uninstall_tm_cli() {
 # ---------------------------------------------------------------------------
 
 THIRD_PARTY_SKIP_ENV="XPOWERS_SKIP_THIRD_PARTY_FEATURES"
+BEADS_RUST_INSTALL_REF="${XPOWERS_BEADS_RUST_INSTALL_REF:-f4687e51a5aa155fe27cb8ea6d7fdae942b0154f}"
+BEADS_VIEWER_INSTALL_REF="${XPOWERS_BEADS_VIEWER_INSTALL_REF:-bb977f5b812b2987d77544872287b502b5b3a444}"
 
 third_party_state_file() {
   printf "%s\n" "${HOME}/.xpowers/third-party-tools"
+}
+
+beads_rust_install_url() {
+  printf "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/%s/install.sh" "$BEADS_RUST_INSTALL_REF"
+}
+
+beads_viewer_install_url() {
+  printf "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/%s/install.sh" "$BEADS_VIEWER_INSTALL_REF"
 }
 
 third_party_manifest_file() {
@@ -1525,18 +1535,22 @@ install_third_party_tools() {
 
   if [[ "$skip_host_independent" != true ]]; then
     if command -v curl >/dev/null 2>&1; then
-      if curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh?$(date +%s)" | bash -s -- --skip-skills --quiet --no-gum >/dev/null 2>&1; then
+      local br_install_url
+      br_install_url="$(beads_rust_install_url)"
+      if curl -fsSL "$br_install_url" | bash -s -- --skip-skills --quiet --no-gum >/dev/null 2>&1; then
         success "br installed"
         third_party_mark_installed "br"
       else
-        warn "br install failed — try: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash -s -- --skip-skills"
+        warn "br install failed — try: curl -fsSL ${br_install_url} | bash -s -- --skip-skills"
       fi
 
-      if curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)" | bash >/dev/null 2>&1; then
+      local bv_install_url
+      bv_install_url="$(beads_viewer_install_url)"
+      if curl -fsSL "$bv_install_url" | bash >/dev/null 2>&1; then
         success "bv installed"
         third_party_mark_installed "bv"
       else
-        warn "bv install failed — try: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh | bash"
+        warn "bv install failed — try: curl -fsSL ${bv_install_url} | bash"
       fi
     else
       warn "curl not found — skipping br and bv installers"

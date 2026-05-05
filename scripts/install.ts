@@ -78,6 +78,8 @@ const throwOnSpawnFailure = (result: { exitCode: number, stdout: Uint8Array, std
 const THIRD_PARTY_SKIP_ENV = "XPOWERS_SKIP_THIRD_PARTY_FEATURES"
 const THIRD_PARTY_FEATURES = new Set(["br", "bv", "graphify", "claude-mem"])
 const HOST_INDEPENDENT_FEATURES = new Set(["tm-cli", "br", "bv"])
+const BEADS_RUST_INSTALL_REF = process.env.XPOWERS_BEADS_RUST_INSTALL_REF || "f4687e51a5aa155fe27cb8ea6d7fdae942b0154f"
+const BEADS_VIEWER_INSTALL_REF = process.env.XPOWERS_BEADS_VIEWER_INSTALL_REF || "bb977f5b812b2987d77544872287b502b5b3a444"
 
 const skipThirdPartyFeatures = () => {
   const value = process.env[THIRD_PARTY_SKIP_ENV]?.toLowerCase()
@@ -102,6 +104,8 @@ const graphifyTargetsForHosts = (hosts: string[]) => {
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
 const graphifyCommand = (args: string[]) => args.join(" ")
+const beadsRustInstallUrl = () => `https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/${BEADS_RUST_INSTALL_REF}/install.sh`
+const beadsViewerInstallUrl = () => `https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/${BEADS_VIEWER_INSTALL_REF}/install.sh`
 
 const copyDir = async (src: string, dest: string) => {
   await mkdir(dest, { recursive: true })
@@ -482,17 +486,18 @@ const FEATURES: FeatureConfig[] = [
     hint: "classic beads-compatible Rust task CLI",
     install: async () => {
       if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const installUrl = beadsRustInstallUrl()
       if (!commandExists("curl")) {
-        return "curl not found — install manually: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash -s -- --skip-skills"
+        return `curl not found — install manually: curl -fsSL ${installUrl} | bash -s -- --skip-skills`
       }
       const result = Bun.spawnSync([
         "bash",
         "-lc",
-        "curl -fsSL \"https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh?$(date +%s)\" | bash -s -- --skip-skills --quiet --no-gum",
+        `curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
         ? "br installed"
-        : "br install failed — try: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash -s -- --skip-skills"
+        : `br install failed — try: curl -fsSL ${installUrl} | bash -s -- --skip-skills`
     },
     uninstall: async () => {
       await unlink(join(homedir(), ".local", "bin", "br")).catch(() => {})
@@ -505,17 +510,18 @@ const FEATURES: FeatureConfig[] = [
     hint: "graph-aware Beads TUI and robot-mode triage sidecar",
     install: async () => {
       if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const installUrl = beadsViewerInstallUrl()
       if (!commandExists("curl")) {
-        return "curl not found — install manually: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh | bash"
+        return `curl not found — install manually: curl -fsSL ${installUrl} | bash`
       }
       const result = Bun.spawnSync([
         "bash",
         "-lc",
-        "curl -fsSL \"https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh?$(date +%s)\" | bash",
+        `curl -fsSL ${shellQuote(installUrl)} | bash`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
         ? "bv installed"
-        : "bv install failed — try: curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/main/install.sh | bash"
+        : `bv install failed — try: curl -fsSL ${installUrl} | bash`
     },
     uninstall: async () => {
       await unlink(join(homedir(), ".local", "bin", "bv")).catch(() => {})
