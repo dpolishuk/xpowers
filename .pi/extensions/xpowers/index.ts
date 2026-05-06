@@ -993,36 +993,39 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
     }),
     async execute(_toolCallId: string, params: any, _signal?: unknown, _update?: unknown, ctx?: any) {
       try {
-        if (params.chain && params.tasks) {
-          const error = "Cannot specify both chain and tasks. Choose one execution mode."
-          if (params.format === "structured") {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                status: "FAIL",
-                summary: error,
-                findings: [{ message: error, type: "validation-error" }],
-                nextAction: "Retry with either chain or tasks, not both",
-              }) }],
-            }
-          }
-          return { content: [{ type: "text" as const, text: error }] }
-        }
+        const hasChain = Array.isArray(params.chain) && params.chain.length > 0
+      const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
 
-        const routing = resolveSubagentRouting(params.type, params.agent, params.model)
-        return await executeSubagent({
-          task: params.task,
-          model: routing.model,
-          effort: routing.effort,
-          cwd: ctx?.cwd || process.cwd(),
-          format: params.format,
-          chain: params.chain,
-          tasks: params.tasks,
-          async: params.async,
-          context: params.context,
-          worktree: params.worktree,
-          output: params.output,
-          reads: params.reads,
-        }, { model: routing.model ?? undefined, effort: routing.effort })
+      if (hasChain && hasTasks) {
+        const error = "Cannot specify both chain and tasks. Choose one execution mode."
+        if (params.format === "structured") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "FAIL",
+              summary: error,
+              findings: [{ message: error, type: "validation-error" }],
+              nextAction: "Retry with either chain or tasks, not both",
+            }) }],
+          }
+        }
+        return { content: [{ type: "text" as const, text: error }] }
+      }
+
+      const routing = resolveSubagentRouting(params.type, params.agent, params.model)
+      return await executeSubagent({
+        task: params.task,
+        model: routing.model,
+        effort: routing.effort,
+        cwd: ctx?.cwd || process.cwd(),
+        format: params.format,
+        chain: hasChain ? params.chain : undefined,
+        tasks: hasTasks ? params.tasks : undefined,
+        async: params.async,
+        context: params.context,
+        worktree: params.worktree,
+        output: params.output,
+        reads: params.reads,
+      }, { model: routing.model ?? undefined, effort: routing.effort }, (agent, type) => resolveSubagentRouting(type, agent, undefined))
       } catch (err: any) {
         if (params.format === "structured") {
           return {

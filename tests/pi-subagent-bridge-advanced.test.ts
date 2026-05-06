@@ -120,7 +120,7 @@ test("executeAsyncViaBridge calls runAsync and returns status", async () => {
   clearPiSubagentsCache()
 })
 
-test("executeChainViaBridge falls back when runChain unavailable", async () => {
+test("executeChainViaBridge throws when runChain unavailable", async () => {
   const mockApi = createMockAPI({ runChain: undefined })
 
   __testSetPiSubagents(mockApi)
@@ -133,7 +133,7 @@ test("executeChainViaBridge falls back when runChain unavailable", async () => {
   clearPiSubagentsCache()
 })
 
-test("executeParallelViaBridge falls back when runParallel unavailable", async () => {
+test("executeParallelViaBridge throws when runParallel unavailable", async () => {
   const mockApi = createMockAPI({ runParallel: undefined })
 
   __testSetPiSubagents(mockApi)
@@ -146,7 +146,7 @@ test("executeParallelViaBridge falls back when runParallel unavailable", async (
   clearPiSubagentsCache()
 })
 
-test("executeAsyncViaBridge falls back when runAsync unavailable", async () => {
+test("executeAsyncViaBridge throws when runAsync unavailable", async () => {
   const mockApi = createMockAPI({ runAsync: undefined })
 
   __testSetPiSubagents(mockApi)

@@ -89,14 +89,14 @@ test("executeSubagent falls back when pi-subagents missing", async () => {
   assert.equal(result.content[0]!.type, "text")
   // Fallback runs pi --print --no-session, which should succeed
   assert.ok(result.content[0]!.text.length > 0)
-}, 20000)
+}, { timeout: 20000 })
 
 test("executeSubagentAsync falls back when pi-subagents missing", async () => {
   clearPiSubagentsCache()
   const result = await executeSubagentAsync({ task: "say hello" })
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
-}, 20000)
+}, { timeout: 20000 })
 
 test("executeSubagent uses bridge for chain params and falls back if bridge unavailable", async () => {
   clearPiSubagentsCache()
@@ -110,7 +110,7 @@ test("executeSubagent uses bridge for chain params and falls back if bridge unav
   // Since pi-subagents is not installed, it should fall back gracefully
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
-}, 20000)
+}, { timeout: 20000 })
 
 test("executeSubagent uses bridge for parallel params and falls back if bridge unavailable", async () => {
   clearPiSubagentsCache()
@@ -123,7 +123,7 @@ test("executeSubagent uses bridge for parallel params and falls back if bridge u
   })
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
-}, 20000)
+}, { timeout: 20000 })
 
 test("executeSubagentAsync returns async status placeholder when async=true and bridge unavailable", async () => {
   clearPiSubagentsCache()
@@ -134,4 +134,4 @@ test("executeSubagentAsync returns async status placeholder when async=true and 
   // Falls back to sync execution with a warning, but still returns valid result
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
-}, 20000)
+}, { timeout: 20000 })

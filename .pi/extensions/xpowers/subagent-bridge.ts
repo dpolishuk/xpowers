@@ -11,6 +11,7 @@ import {
   type SpawnSyncLike,
   type SpawnAsyncLike,
   buildStructuredTaskPrompt,
+  PI_THINKING_LEVELS,
 } from "./fallback-runner.js"
 
 export interface SubagentBridgeParams extends ExecutePiTaskParams {
@@ -153,7 +154,13 @@ export function __testSetPiSubagents(api: PiSubagentsAPI | null): void {
 
 function appendThinkingSuffix(model: string, effort?: string): string {
   if (!effort) return model
-  if (model.includes(":")) return model
+  const lastColon = model.lastIndexOf(":")
+  if (lastColon !== -1) {
+    const suffix = model.slice(lastColon + 1)
+    if (PI_THINKING_LEVELS.includes(suffix as any)) {
+      return model
+    }
+  }
   return `${model}:${effort}`
 }
 
@@ -278,10 +285,60 @@ export async function executeAsyncViaBridge(
   return api.runAsync(translated)
 }
 
+export type RoutingResolver = (agent?: string, type?: string) => RoutingEntry
+
+function hasBridgeOnlyParams(params: SubagentBridgeParams): boolean {
+  return Boolean(
+    params.chain ||
+    params.tasks ||
+    params.worktree ||
+    params.output ||
+    params.reads,
+  )
+}
+
+function buildDegradationResult(
+  format: SubagentBridgeParams["format"],
+  dropped: string[],
+  reason: string,
+): PiTaskResult {
+  const message = `Bridge degradation: pi-subagents is required for ${dropped.join(", ")} but is unavailable (${reason}). Install with: pi install npm:pi-subagents`
+  if (format === "structured") {
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        status: "FAIL",
+        summary: message,
+        findings: [{ message, type: "bridge-unavailable", source: "xpowers-subagent" }],
+        nextAction: "Install pi-subagents or remove bridge-only parameters",
+      }) }],
+    }
+  }
+  return { content: [{ type: "text" as const, text: message }] }
+}
+
 export async function executeSubagent(
   params: SubagentBridgeParams,
   routingEntry?: RoutingEntry,
+  resolveRouting?: RoutingResolver,
 ): Promise<PiTaskResult> {
+  // Reject mixed async + chain/tasks usage upfront
+  if (params.async && (params.chain || params.tasks)) {
+    const error = "async cannot be combined with chain or tasks"
+    if (params.format === "structured") {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          status: "FAIL",
+          summary: error,
+          findings: [{ message: error, type: "validation-error" }],
+          nextAction: "Use async alone, or use chain/tasks without async",
+        }) }],
+      }
+    }
+    return { content: [{ type: "text" as const, text: error }] }
+  }
+
+  const resolver: RoutingResolver = resolveRouting ?? (() => routingEntry ?? {})
+
   // Decide whether to use the bridge or fallback
   const useBridge = Boolean(
     params.chain ||
@@ -304,7 +361,7 @@ export async function executeSubagent(
         }))
         return await executeChainViaBridge(
           steps,
-          () => routingEntry ?? {},
+          resolver,
           params.cwd,
           params.context,
           params.worktree,
@@ -321,7 +378,7 @@ export async function executeSubagent(
         }))
         return await executeParallelViaBridge(
           parallelTasks,
-          () => routingEntry ?? {},
+          resolver,
           params.cwd,
           params.context,
           params.worktree,
@@ -330,7 +387,19 @@ export async function executeSubagent(
 
       return await executeSingleViaBridge(params, routingEntry)
     } catch (err: any) {
-      // Bridge failed — fall through to fallback with warning
+      const dropped: string[] = []
+      if (params.chain) dropped.push("chain")
+      if (params.tasks) dropped.push("tasks")
+      if (params.worktree) dropped.push("worktree")
+      if (params.output) dropped.push("output")
+      if (params.reads) dropped.push("reads")
+      if (params.async) dropped.push("async")
+
+      if (hasBridgeOnlyParams(params)) {
+        return buildDegradationResult(params.format, dropped, err?.message)
+      }
+
+      // Bridge-only params not present — safe to fall back silently
       console.warn(`[xpowers] pi-subagents bridge failed (${err?.message}), falling back to native runner`)
     }
   }
@@ -350,8 +419,24 @@ export async function executeSubagent(
 export async function executeSubagentAsync(
   params: SubagentBridgeParams,
   routingEntry?: RoutingEntry,
+  resolveRouting?: RoutingResolver,
   signal?: AbortSignal,
 ): Promise<PiTaskResult> {
+  if (params.async && (params.chain || params.tasks)) {
+    const error = "async cannot be combined with chain or tasks"
+    if (params.format === "structured") {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          status: "FAIL",
+          summary: error,
+          findings: [{ message: error, type: "validation-error" }],
+          nextAction: "Use async alone, or use chain/tasks without async",
+        }) }],
+      }
+    }
+    return { content: [{ type: "text" as const, text: error }] }
+  }
+
   const useBridge = Boolean(
     params.chain ||
     params.tasks ||
@@ -373,8 +458,20 @@ export async function executeSubagentAsync(
         }
       }
 
-      return await executeSubagent(params, routingEntry)
+      return await executeSubagent(params, routingEntry, resolveRouting)
     } catch (err: any) {
+      const dropped: string[] = []
+      if (params.chain) dropped.push("chain")
+      if (params.tasks) dropped.push("tasks")
+      if (params.worktree) dropped.push("worktree")
+      if (params.output) dropped.push("output")
+      if (params.reads) dropped.push("reads")
+      if (params.async) dropped.push("async")
+
+      if (hasBridgeOnlyParams(params)) {
+        return buildDegradationResult(params.format, dropped, err?.message)
+      }
+
       console.warn(`[xpowers] pi-subagents bridge failed (${err?.message}), falling back to native runner`)
     }
   }

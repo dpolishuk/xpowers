@@ -205,12 +205,20 @@ async function createForkSessionAsync(sessionSeedPath: string): Promise<ForkSess
 
 function cleanupForkSessionSync(session?: ForkSession): void {
   if (!session) return
-  rmSync(session.dir, { recursive: true, force: true })
+  try {
+    rmSync(session.dir, { recursive: true, force: true })
+  } catch {
+    // Best-effort cleanup — don't let cleanup errors override subagent results
+  }
 }
 
 async function cleanupForkSessionAsync(session?: ForkSession): Promise<void> {
   if (!session) return
-  await rm(session.dir, { recursive: true, force: true })
+  try {
+    await rm(session.dir, { recursive: true, force: true })
+  } catch {
+    // Best-effort cleanup — don't let cleanup errors override subagent results
+  }
 }
 
 function resolveContextMode(params: ExecutePiTaskParams): PiTaskContextMode {

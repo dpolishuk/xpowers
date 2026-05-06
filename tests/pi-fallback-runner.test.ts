@@ -64,16 +64,16 @@ test("executeFallbackSubagent returns structured output when format=structured",
 test("executeFallbackSubagent blocks recursion at max depth", () => {
   const originalDepth = process.env[XPOWERS_SUBAGENT_DEPTH_ENV]
   process.env[XPOWERS_SUBAGENT_DEPTH_ENV] = String(MAX_XPOWERS_SUBAGENT_DEPTH)
-
-  const result = executeFallbackSubagent({ task: "should not run" }, null as any)
-
-  assert.equal(result.content.length, 1)
-  assert.ok(result.content[0]!.text.includes("recursion depth"))
-
-  if (originalDepth !== undefined) {
-    process.env[XPOWERS_SUBAGENT_DEPTH_ENV] = originalDepth
-  } else {
-    delete process.env[XPOWERS_SUBAGENT_DEPTH_ENV]
+  try {
+    const result = executeFallbackSubagent({ task: "should not run" }, null as any)
+    assert.equal(result.content.length, 1)
+    assert.ok(result.content[0]!.text.includes("recursion depth"))
+  } finally {
+    if (originalDepth !== undefined) {
+      process.env[XPOWERS_SUBAGENT_DEPTH_ENV] = originalDepth
+    } else {
+      delete process.env[XPOWERS_SUBAGENT_DEPTH_ENV]
+    }
   }
 })
 
