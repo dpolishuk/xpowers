@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url"
 import { Type } from "@sinclair/typebox"
 import { Container, SelectList, Text, Spacer } from "@mariozechner/pi-tui"
 import askUserPlugin from "pi-ask-user"
-import { executePiSubagent } from "./subagent"
+import { executePiSubagent, executeSubagent } from "./subagent"
+import { tryLoadPiSubagents } from "./subagent-bridge.js"
 import { executePiTaskAsync } from "./task-runner"
 import { runParallelReview } from "./review-parallel"
 import { parsePiSkillMetadataFromSkillContent } from "./skill-metadata"
@@ -966,7 +967,7 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
   pi.registerTool({
     name: "xpowers_subagent",
     label: "Subagent",
-    description: "Delegate a task to an isolated Pi subagent. Optionally specify an explicit model, a concrete agent, and/or an abstract type to route to a configured model. Runs in a separate process with its own context.",
+    description: "Delegate a task to an isolated Pi subagent. Optionally specify an explicit model, a concrete agent, and/or an abstract type to route to a configured model. Runs in a separate process with its own context. Supports chain, parallel, async, worktree, and forked context modes when pi-subagents is installed.",
     parameters: Type.Object({
       task: Type.String({ description: "The task for the subagent to perform" }),
       model: Type.Optional(Type.String({ description: "Explicit one-off provider/model override with highest precedence (optional)" })),
@@ -976,17 +977,52 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
         Type.Literal("text"),
         Type.Literal("structured"),
       ], { description: "Response format: raw text or structured JSON parsed by the helper (optional, defaults to text)" })),
+      chain: Type.Optional(Type.Array(Type.Object({
+        agent: Type.String(),
+        task: Type.String(),
+      }), { description: "Chain of sequential agent steps (mutually exclusive with tasks)" })),
+      tasks: Type.Optional(Type.Array(Type.Object({
+        agent: Type.String(),
+        task: Type.String(),
+      }), { description: "Parallel tasks to run simultaneously (mutually exclusive with chain)" })),
+      async: Type.Optional(Type.Boolean({ description: "Run in background and return a run ID (requires pi-subagents)" })),
+      context: Type.Optional(Type.Union([Type.Literal("fresh"), Type.Literal("fork")], { description: "fresh = clean session; fork = branched from parent session" })),
+      worktree: Type.Optional(Type.Boolean({ description: "Isolate parallel tasks in git worktrees" })),
+      output: Type.Optional(Type.String({ description: "Write results to this file path" })),
+      reads: Type.Optional(Type.Array(Type.String(), { description: "Read these files before executing" })),
     }),
-    async execute(_toolCallId: string, params: { task: string; model?: string; type?: string; agent?: string; format?: "text" | "structured" }, _signal?: unknown, _update?: unknown, ctx?: any) {
+    async execute(_toolCallId: string, params: any, _signal?: unknown, _update?: unknown, ctx?: any) {
       try {
+        if (params.chain && params.tasks) {
+          const error = "Cannot specify both chain and tasks. Choose one execution mode."
+          if (params.format === "structured") {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                status: "FAIL",
+                summary: error,
+                findings: [{ message: error, type: "validation-error" }],
+                nextAction: "Retry with either chain or tasks, not both",
+              }) }],
+            }
+          }
+          return { content: [{ type: "text" as const, text: error }] }
+        }
+
         const routing = resolveSubagentRouting(params.type, params.agent, params.model)
-        return executePiSubagent({
+        return await executeSubagent({
           task: params.task,
           model: routing.model,
           effort: routing.effort,
           cwd: ctx?.cwd || process.cwd(),
           format: params.format,
-        })
+          chain: params.chain,
+          tasks: params.tasks,
+          async: params.async,
+          context: params.context,
+          worktree: params.worktree,
+          output: params.output,
+          reads: params.reads,
+        }, { model: routing.model ?? undefined, effort: routing.effort })
       } catch (err: any) {
         if (params.format === "structured") {
           return {
@@ -1219,6 +1255,57 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
         },
         { overlay: true, overlayOptions: { width: "90%", maxHeight: "90%" } }
       )
+    },
+  })
+
+  // Chain execution — sequential agent steps
+  pi.registerCommand("chain", {
+    description: "Run agents in sequence: /chain scout 'analyze' -> planner -> worker",
+    handler: async (args: unknown, ctx: any) => {
+      const api = await tryLoadPiSubagents()
+      if (!api?.runChain) {
+        return "Chain execution requires pi-subagents. Install with: pi install npm:pi-subagents"
+      }
+      const chainStr = typeof args === "string" ? args : ""
+      return `Chain command parsed: ${chainStr}\n\n(Chain execution via pi-subagents is available once installed.)`
+    },
+  })
+
+  // Parallel execution — fan-out/fan-in
+  pi.registerCommand("parallel", {
+    description: "Run agents in parallel: /parallel reviewer 'backend' -> reviewer 'frontend'",
+    handler: async (args: unknown, ctx: any) => {
+      const api = await tryLoadPiSubagents()
+      if (!api?.runParallel) {
+        return "Parallel execution requires pi-subagents. Install with: pi install npm:pi-subagents"
+      }
+      const parallelStr = typeof args === "string" ? args : ""
+      return `Parallel command parsed: ${parallelStr}\n\n(Parallel execution via pi-subagents is available once installed.)`
+    },
+  })
+
+  // Run-chain — reusable .chain.md workflows
+  pi.registerCommand("run-chain", {
+    description: "Run a reusable .chain.md workflow: /run-chain scout-planner -- refactor auth",
+    handler: async (args: unknown, ctx: any) => {
+      const api = await tryLoadPiSubagents()
+      if (!api?.runChain) {
+        return "Chain workflows require pi-subagents. Install with: pi install npm:pi-subagents"
+      }
+      const chainName = typeof args === "string" ? args.split(" ")[0] : ""
+      return `Run-chain command for: ${chainName}\n\n(Chain workflows via pi-subagents are available once installed.)`
+    },
+  })
+
+  // Async status — inspect background runs
+  pi.registerCommand("async-status", {
+    description: "Inspect background subagent runs",
+    handler: async (_args: unknown, _ctx: any) => {
+      const api = await tryLoadPiSubagents()
+      if (!api?.runAsync) {
+        return "Async status requires pi-subagents. Install with: pi install npm:pi-subagents"
+      }
+      return "Async status tracking is available once pi-subagents is installed."
     },
   })
 

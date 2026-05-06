@@ -146,6 +146,11 @@ export function clearPiSubagentsCache(): void {
   cachedPiSubagents = undefined
 }
 
+/** Test-only helper to inject a mock pi-subagents API. */
+export function __testSetPiSubagents(api: PiSubagentsAPI | null): void {
+  cachedPiSubagents = api
+}
+
 function appendThinkingSuffix(model: string, effort?: string): string {
   if (!effort) return model
   if (model.includes(":")) return model

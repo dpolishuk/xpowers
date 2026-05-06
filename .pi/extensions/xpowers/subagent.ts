@@ -32,6 +32,21 @@ export type { SpawnSyncLike, SpawnAsyncLike }
 export { XPOWERS_SUBAGENT_DEPTH_ENV, MAX_XPOWERS_SUBAGENT_DEPTH, MAX_ASYNC_SUBAGENT_OUTPUT_BYTES, PI_THINKING_LEVELS }
 export const STRUCTURED_SUBAGENT_STATUSES = STRUCTURED_TASK_STATUSES
 
+// Re-export bridge types for consumers that need advanced execution modes
+export type {
+  SubagentBridgeParams,
+  ChainStep,
+  ParallelTask,
+  RoutingEntry,
+} from "./subagent-bridge.js"
+export {
+  executeSubagent,
+  executeSubagentAsync,
+  translateToPiSubagents,
+  tryLoadPiSubagents,
+  clearPiSubagentsCache,
+} from "./subagent-bridge.js"
+
 export function buildStructuredSubagentTask(task: string): string {
   return buildStructuredTaskPrompt(task)
 }
