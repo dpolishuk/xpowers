@@ -384,6 +384,15 @@ export async function executeFallbackSubagentAsync(
           error?.message || `Unable to prepare fork session from '${params.sessionSeedPath}'`,
         )
       }
+      if (signal?.aborted) {
+        return buildFailureResult(
+          params.format,
+          "Subagent failed (cancelled)",
+          "Subagent cancelled by parent signal during fork session setup",
+          "Retry once the parent operation is resumed",
+          "cancelled",
+        )
+      }
     }
 
     const args = buildPiTaskArgs(task, params.model, params.effort, contextMode, forkSession?.seedPath, forkSession?.dir)

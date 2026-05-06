@@ -171,7 +171,6 @@ export function translateToPiSubagents(
   agent?: string
   task: string
   model?: string
-  thinking?: string
   cwd?: string
   context?: "fresh" | "fork"
   output?: string

@@ -1012,19 +1012,30 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
       }
 
       const routing = resolveSubagentRouting(params.type, params.agent, params.model)
+      const cwd = ctx?.cwd || process.cwd()
+      let sessionSeedPath: string | undefined
+      let effectiveContext = params.context
+      if (params.context === "fork") {
+        sessionSeedPath = ctx?.sessionManager?.getSessionFile?.()
+        if (!sessionSeedPath) {
+          console.warn("[xpowers] Fork context requested but no parent session seed available; downgrading to fresh context")
+          effectiveContext = "fresh"
+        }
+      }
       return await executeSubagent({
         task: params.task,
         model: routing.model,
         effort: routing.effort,
-        cwd: ctx?.cwd || process.cwd(),
+        cwd,
         format: params.format,
         chain: hasChain ? params.chain : undefined,
         tasks: hasTasks ? params.tasks : undefined,
         async: params.async,
-        context: params.context,
+        context: effectiveContext,
         worktree: params.worktree,
         output: params.output,
         reads: params.reads,
+        sessionSeedPath,
       }, { model: routing.model ?? undefined, effort: routing.effort }, (agent, type) => resolveSubagentRouting(type, agent, undefined))
       } catch (err: any) {
         if (params.format === "structured") {
