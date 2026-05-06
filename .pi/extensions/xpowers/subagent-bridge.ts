@@ -128,39 +128,61 @@ export async function tryLoadPiSubagents(): Promise<PiSubagentsAPI | null> {
     return cachedPiSubagents
   }
 
-  try {
-    const mod = await import("pi-subagents")
-    const api: PiSubagentsAPI = {}
+  const tryImport = async (specifier: string): Promise<any> => {
+    try {
+      return await import(specifier)
+    } catch {
+      return undefined
+    }
+  }
 
-    // Future-facing: check for named exports that may exist in later versions
-    if (mod.runAgent && typeof mod.runAgent === "function") {
-      api.runAgent = mod.runAgent
-    }
-    if (mod.runChain && typeof mod.runChain === "function") {
-      api.runChain = mod.runChain
-    }
-    if (mod.runParallel && typeof mod.runParallel === "function") {
-      api.runParallel = mod.runParallel
-    }
-    if (mod.runAsync && typeof mod.runAsync === "function") {
-      api.runAsync = mod.runAsync
-    }
+  // Try bare import first (if pi-subagents is on NODE_PATH or hoisted)
+  let mod = await tryImport("pi-subagents")
 
-    // pi-subagents v0.24.0 exports a default extension registration function.
-    // If that's all we see, store an empty API so we don't keep retrying.
-    const hasAnyApi = api.runAgent || api.runChain || api.runParallel || api.runAsync
-    if (!hasAnyApi && mod.default && typeof mod.default === "function") {
-      // Extension registered via Pi's ExtensionAPI — no programmatic runner available
-      cachedPiSubagents = {}
-      return {}
+  // Fallback: resolve from this extension's own node_modules
+  if (!mod) {
+    try {
+      const { fileURLToPath } = await import("node:url")
+      const { dirname, join } = await import("node:path")
+      const extDir = dirname(fileURLToPath(import.meta.url))
+      mod = await tryImport(join(extDir, "node_modules", "pi-subagents", "src", "extension", "index.ts"))
+    } catch {
+      // ignore
     }
+  }
 
-    cachedPiSubagents = api
-    return api
-  } catch {
+  if (!mod) {
     cachedPiSubagents = null
     return null
   }
+
+  const api: PiSubagentsAPI = {}
+
+  // Future-facing: check for named exports that may exist in later versions
+  if (mod.runAgent && typeof mod.runAgent === "function") {
+    api.runAgent = mod.runAgent
+  }
+  if (mod.runChain && typeof mod.runChain === "function") {
+    api.runChain = mod.runChain
+  }
+  if (mod.runParallel && typeof mod.runParallel === "function") {
+    api.runParallel = mod.runParallel
+  }
+  if (mod.runAsync && typeof mod.runAsync === "function") {
+    api.runAsync = mod.runAsync
+  }
+
+  // pi-subagents v0.24.0 exports a default extension registration function.
+  // If that's all we see, store an empty API so we don't keep retrying.
+  const hasAnyApi = api.runAgent || api.runChain || api.runParallel || api.runAsync
+  if (!hasAnyApi && mod.default && typeof mod.default === "function") {
+    // Extension registered via Pi's ExtensionAPI — no programmatic runner available
+    cachedPiSubagents = {}
+    return {}
+  }
+
+  cachedPiSubagents = api
+  return api
 }
 
 export function clearPiSubagentsCache(): void {

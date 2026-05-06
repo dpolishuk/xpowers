@@ -77,8 +77,17 @@ test("translateToPiSubagents passes through context output reads", () => {
   assert.deepEqual(result.reads, ["context.md"])
 })
 
-test("tryLoadPiSubagents returns null when module missing", async () => {
+test("tryLoadPiSubagents detects pi-subagents extension", async () => {
   clearPiSubagentsCache()
+  const result = await tryLoadPiSubagents()
+  // pi-subagents is installed; should detect extension (empty object, not null)
+  assert.ok(result !== null)
+  assert.equal(Object.keys(result ?? {}).length, 0)
+})
+
+test("tryLoadPiSubagents returns null when cache forced null", async () => {
+  clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await tryLoadPiSubagents()
   assert.equal(result, null)
 })
