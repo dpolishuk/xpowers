@@ -76,7 +76,7 @@ Executes a complete bd epic without stopping for user review:
 
 ## Ralph Autopilot Stop Sentinels
 
-Every non-terminal Ralph response MUST include the exact active sentinel on its own line:
+Every non-terminal Ralph response MUST include the exact active sentinel as the first non-empty line:
 
 `RALPH AUTOPILOT ACTIVE`
 
@@ -84,14 +84,14 @@ Active sentinel text alone is not enough to trigger blocking. A Claude Code `Use
 
 After the active sentinel, include current phase, current epic/task id, current success criterion or blocker, and the next tool call planned.
 
-Terminal responses MUST use one of these exact sentinels:
+Terminal responses MUST use one of these exact sentinels as the first non-empty line:
 
 - `RALPH AUTOPILOT COMPLETE` when branch completion and handoff are ready
 - `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user
 
-Terminal sentinels always win. If a response contains both `RALPH AUTOPILOT ACTIVE` and either terminal sentinel, the Stop/SubagentStop guard allows the stop and clears retry state.
+Terminal sentinels always win when they appear in the leading sentinel control block. If a response starts with both `RALPH AUTOPILOT ACTIVE` and either terminal sentinel, the Stop/SubagentStop guard allows the stop and clears retry state.
 
-The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears on its own line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings.
+The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears as the first non-empty line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings.
 
 ## Review and Remediation Contract
 

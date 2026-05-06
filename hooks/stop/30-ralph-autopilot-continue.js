@@ -7,6 +7,7 @@ const path = require("node:path")
 const ACTIVE_SENTINEL = "RALPH AUTOPILOT ACTIVE"
 const COMPLETE_SENTINEL = "RALPH AUTOPILOT COMPLETE"
 const BLOCKED_SENTINEL = "RALPH AUTOPILOT BLOCKED"
+const SENTINELS = new Set([ACTIVE_SENTINEL, COMPLETE_SENTINEL, BLOCKED_SENTINEL])
 const EXECUTE_RALPH_COMMANDS = new Set(["execute-ralph", "xpowers:execute-ralph"])
 const DEFAULT_MAX_BLOCKS = 50
 const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024
@@ -195,12 +196,26 @@ function extractAssistantText(payload) {
 }
 
 function detectSentinel(text) {
-  const lines = text.split(/\r?\n/).map((line) => line.trim())
+  const controlLines = []
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      continue
+    }
+
+    if (!SENTINELS.has(trimmed)) {
+      break
+    }
+
+    controlLines.push(trimmed)
+  }
+
   const terminal =
-    lines.includes(COMPLETE_SENTINEL) || lines.includes(BLOCKED_SENTINEL)
+    controlLines.includes(COMPLETE_SENTINEL) ||
+    controlLines.includes(BLOCKED_SENTINEL)
 
   return {
-    active: lines.includes(ACTIVE_SENTINEL),
+    active: controlLines.includes(ACTIVE_SENTINEL),
     terminal,
   }
 }
@@ -285,7 +300,15 @@ function stateIdentity(payload) {
   const cwd = stringOrEmpty(payload.cwd).trim()
 
   if (sessionId) {
-    return [`session:${sessionId}`]
+    if (cwd) {
+      return [`session:${sessionId}`, `cwd:${path.resolve(cwd)}`]
+    }
+
+    if (transcriptPath) {
+      return [`session:${sessionId}`, `transcript:${transcriptPath}`]
+    }
+
+    return null
   }
 
   if (!cwd || !transcriptPath) {
@@ -403,12 +426,7 @@ function main() {
     }
 
     const sentinel = detectSentinel(assistantText)
-    if (sentinel.terminal) {
-      clearCounter(payload)
-      return allow()
-    }
-
-    if (!sentinel.active) {
+    if (!sentinel.active && !sentinel.terminal) {
       return allow()
     }
 
@@ -425,6 +443,11 @@ function main() {
 
     const activationState = readState(activationPath)
     if (!activationState.active) {
+      return allow()
+    }
+
+    if (sentinel.terminal) {
+      clearCounter(payload)
       return allow()
     }
 

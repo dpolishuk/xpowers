@@ -184,7 +184,7 @@ test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
     assert.equal(text.includes("RALPH AUTOPILOT ACTIVE"), true, file)
     assert.equal(text.includes("RALPH AUTOPILOT COMPLETE"), true, file)
     assert.equal(text.includes("RALPH AUTOPILOT BLOCKED"), true, file)
-    assert.equal(text.includes("on its own line"), true, file)
+    assert.equal(text.includes("first non-empty line"), true, file)
     assert.equal(
       text.includes("Active sentinel text alone is not enough to trigger blocking"),
       true,

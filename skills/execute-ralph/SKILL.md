@@ -40,7 +40,7 @@ STRICT - Follow the four-phase loop exactly. Epic requirements are immutable. Ne
 
 ## Ralph Autopilot Stop Contract
 
-Every non-terminal Ralph response MUST include the exact active sentinel on its own line:
+Every non-terminal Ralph response MUST include the exact active sentinel as the first non-empty line:
 
 `RALPH AUTOPILOT ACTIVE`
 
@@ -52,13 +52,13 @@ After the active sentinel, include enough objective state to resume without aski
 - Current success criterion or blocker being handled
 - Next tool call planned
 
-Terminal responses MUST use one of these exact sentinels:
+Terminal responses MUST use one of these exact sentinels as the first non-empty line:
 - `RALPH AUTOPILOT COMPLETE` when the branch is complete and handoff is ready.
 - `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user.
 
-Terminal sentinels always win. If a response contains both `RALPH AUTOPILOT ACTIVE` and either terminal sentinel, the Stop/SubagentStop guard allows the stop and clears retry state.
+Terminal sentinels always win when they appear in the leading sentinel control block. If a response starts with both `RALPH AUTOPILOT ACTIVE` and either terminal sentinel, the Stop/SubagentStop guard allows the stop and clears retry state.
 
-The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears on its own line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings. When a permission prompt appears, comply with Claude Code's permission flow; do not claim that Ralph can override it.
+The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears as the first non-empty line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings. When a permission prompt appears, comply with Claude Code's permission flow; do not claim that Ralph can override it.
 
 <when_to_use>
 

@@ -77,6 +77,7 @@ test("Claude and OpenCode execute-ralph command wrappers stay aligned to the sam
     ["Claude canonical wrapper", "commands/execute-ralph.md"],
     ["OpenCode wrapper", ".opencode/commands/execute-ralph.md"],
     ["Kimi/Codex generated wrapper", ".kimi/skills/codex-command-execute-ralph/SKILL.md"],
+    ["Codex agent command wrapper", ".agents/skills/codex-command-execute-ralph/SKILL.md"],
   ]
 
   for (const [label, file] of files) {
@@ -89,7 +90,8 @@ test("host execute-ralph skill surfaces carry the autopilot stop contract", () =
     "RALPH AUTOPILOT ACTIVE",
     "RALPH AUTOPILOT COMPLETE",
     "RALPH AUTOPILOT BLOCKED",
-    "on its own line",
+    "first non-empty line",
+    "leading sentinel control block",
     "Active sentinel text alone is not enough to trigger blocking",
     "does not bypass Claude Code permission prompts",
   ]
@@ -98,6 +100,7 @@ test("host execute-ralph skill surfaces carry the autopilot stop contract", () =
     ["OpenCode skill", ".opencode/skills/xpowers-execute-ralph/SKILL.md"],
     ["Kimi native skill", ".kimi/skills/execute-ralph/SKILL.md"],
     ["Kimi/Codex generated skill", ".kimi/skills/codex-skill-execute-ralph/SKILL.md"],
+    ["Codex agent generated skill", ".agents/skills/codex-skill-execute-ralph/SKILL.md"],
   ]
 
   for (const [label, file] of files) {

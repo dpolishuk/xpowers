@@ -99,7 +99,7 @@ test("active sentinel blocks stop with exact block response shape", () => {
     assertAllow(activateRalph(env))
 
     const output = runHook(
-      payloadWithText("Phase 1\nRALPH AUTOPILOT ACTIVE\nTask: hyper-3o0.1"),
+      payloadWithText("RALPH AUTOPILOT ACTIVE\nPhase 1\nTask: hyper-3o0.1"),
       env,
     )
 
@@ -110,7 +110,7 @@ test("active sentinel blocks stop with exact block response shape", () => {
 test("active sentinel without execute-ralph activation state fails open", () => {
   withTempState((stateHome) => {
     const output = runHook(
-      payloadWithText("Phase 1\nRALPH AUTOPILOT ACTIVE\nTask: hyper-3o0.1"),
+      payloadWithText("RALPH AUTOPILOT ACTIVE\nPhase 1\nTask: hyper-3o0.1"),
       envFor(stateHome),
     )
 
@@ -167,6 +167,12 @@ test("inline sentinel prose neither blocks nor clears activated retry state", ()
         env,
       ),
     )
+    assertAllow(
+      runHook(
+        payloadWithText("```\nRALPH AUTOPILOT COMPLETE\n```"),
+        env,
+      ),
+    )
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
@@ -184,9 +190,12 @@ test("terminal sentinels allow stop and clear existing retry state", () => {
         env,
       ),
     )
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+
     assertAllow(activateRalph(env))
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT BLOCKED"), env))
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
 })
 
@@ -237,6 +246,84 @@ test("execute-ralph command expansion activates only matching command sessions",
   })
 })
 
+test("execute-ralph activation supports command and prompt aliases", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: "command-alias-session",
+        command_name: "xpowers:execute-ralph",
+        prompt: "/xpowers:other",
+      }),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "command-alias-session",
+        }),
+        env,
+      ),
+    )
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: "prompt-alias-session",
+        command_name: "",
+        prompt: "/execute-ralph hyper-3o0",
+      }),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "prompt-alias-session",
+        }),
+        env,
+      ),
+    )
+  })
+})
+
+test("activation state is isolated by session and project context", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    assertAllow(
+      activateRalph(env, {
+        session_id: "isolated-session",
+        cwd: repoRoot,
+      }),
+    )
+
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "other-session",
+          cwd: repoRoot,
+        }),
+        env,
+      ),
+    )
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "isolated-session",
+          cwd: path.join(repoRoot, "other-project"),
+        }),
+        env,
+      ),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "isolated-session",
+          cwd: repoRoot,
+        }),
+        env,
+      ),
+    )
+  })
+})
+
 test("state path that cannot be created fails open", () => {
   withTempState((stateHome) => {
     const stateFile = path.join(stateHome, "not-a-directory")
@@ -283,6 +370,25 @@ test("missing runtime identity fields fail open instead of sharing empty state",
           cwd: "",
           transcript_path: "",
           agent_transcript_path: "",
+        }),
+        env,
+      ),
+    )
+    assertAllow(
+      activateRalph(env, {
+        session_id: "session-only",
+        cwd: undefined,
+        transcript_path: undefined,
+        agent_transcript_path: undefined,
+      }),
+    )
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "session-only",
+          cwd: undefined,
+          transcript_path: undefined,
+          agent_transcript_path: undefined,
         }),
         env,
       ),
