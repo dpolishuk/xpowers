@@ -21,6 +21,8 @@ node_modules/
 dist/
 **/node_modules/
 **/dist/
+package-lock.json
+**/package-lock.json
 
 # Dolt database files (added by bd init)
 .dolt/

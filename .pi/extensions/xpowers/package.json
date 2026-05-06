@@ -4,9 +4,7 @@
   "type": "module",
   "description": "XPowers skills, subagents, and workflows for Pi coding agent",
   "main": "dist/index.js",
-  "keywords": [
-    "pi-package"
-  ],
+  "keywords": ["pi-package"],
   "author": "Dmitry Polishuk",
   "license": "MIT",
   "dependencies": {
