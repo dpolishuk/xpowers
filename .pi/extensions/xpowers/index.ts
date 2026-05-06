@@ -642,6 +642,16 @@ async function runRoutingWizard(ctx: any): Promise<string> {
 }
 
 export default function (pi: any) {
+  // Prevent loading both project-local and global copies simultaneously.
+  // When running inside the xpowers source repo, Pi discovers .pi/extensions/xpowers/
+  // as a project-level extension AND loads the global install from
+  // ~/.pi/agent/extensions/xpowers/.  Bail out of the project-local copy so only
+  // the global install registers tools (avoids "Tool X conflicts" errors).
+  const globalDir = join(homedir(), ".pi", "agent", "extensions", "xpowers")
+  if (!SOURCE_DIR.startsWith(globalDir) && existsSync(join(globalDir, "package.json"))) {
+    return
+  }
+
   // Register hooks pipeline
   registerHooksPipeline(pi)
   
