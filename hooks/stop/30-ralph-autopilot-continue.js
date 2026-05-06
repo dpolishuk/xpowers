@@ -292,16 +292,32 @@ function stringOrEmpty(value) {
   return typeof value === "string" ? value : ""
 }
 
+function normalizeRuntimePath(value, basePath = "") {
+  const trimmed = stringOrEmpty(value).trim()
+  if (!trimmed || trimmed.includes("\0")) {
+    return ""
+  }
+
+  if (path.isAbsolute(trimmed)) {
+    return path.resolve(trimmed)
+  }
+
+  const base = stringOrEmpty(basePath).trim()
+  return base ? path.resolve(base, trimmed) : path.resolve(trimmed)
+}
+
 function stateIdentity(payload) {
   const sessionId = stringOrEmpty(payload.session_id).trim()
-  const transcriptPath =
+  const cwd = normalizeRuntimePath(payload.cwd)
+  const transcriptPath = normalizeRuntimePath(
     stringOrEmpty(payload.transcript_path).trim() ||
-    stringOrEmpty(payload.agent_transcript_path).trim()
-  const cwd = stringOrEmpty(payload.cwd).trim()
+      stringOrEmpty(payload.agent_transcript_path).trim(),
+    cwd,
+  )
 
   if (sessionId) {
     if (cwd) {
-      return [`session:${sessionId}`, `cwd:${path.resolve(cwd)}`]
+      return [`session:${sessionId}`, `cwd:${cwd}`]
     }
 
     if (transcriptPath) {
@@ -427,6 +443,10 @@ function main() {
 
     if (isExecuteRalphExpansion(payload)) {
       return activateSession(payload)
+    }
+
+    if (payload.hook_event_name === "UserPromptExpansion") {
+      return allow()
     }
 
     const assistantText = extractAssistantText(payload)

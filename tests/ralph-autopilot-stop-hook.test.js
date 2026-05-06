@@ -251,6 +251,50 @@ test("execute-ralph command expansion activates only matching command sessions",
   })
 })
 
+test("non-Ralph UserPromptExpansion never consumes active transcript state", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    const transcriptPath = path.join(stateHome, "active-transcript.jsonl")
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "assistant",
+        message: { content: "RALPH AUTOPILOT ACTIVE" },
+      })}\n`,
+      "utf8",
+    )
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: "expansion-session",
+        transcript_path: transcriptPath,
+      }),
+    )
+    assertAllow(
+      runHook(
+        {
+          hook_event_name: "UserPromptExpansion",
+          session_id: "expansion-session",
+          cwd: repoRoot,
+          transcript_path: transcriptPath,
+          command_name: "brainstorm",
+          prompt: "/xpowers:brainstorm hyper-3o0",
+        },
+        env,
+      ),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "expansion-session",
+          transcript_path: transcriptPath,
+        }),
+        env,
+      ),
+    )
+  })
+})
+
 test("Stop and SubagentStop command fields cannot spoof execute-ralph activation", () => {
   withTempState((stateHome) => {
     const env = envFor(stateHome)
@@ -370,6 +414,56 @@ test("activation state is isolated by session and project context", () => {
         payloadWithText("RALPH AUTOPILOT ACTIVE", {
           session_id: "isolated-session",
           cwd: repoRoot,
+        }),
+        env,
+      ),
+    )
+  })
+})
+
+test("fallback runtime identity normalizes cwd and transcript paths", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    const transcriptPath = path.join(repoRoot, "relative-ralph-transcript.jsonl")
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: undefined,
+        cwd: ".",
+        transcript_path: "relative-ralph-transcript.jsonl",
+      }),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: undefined,
+          cwd: repoRoot,
+          transcript_path: transcriptPath,
+        }),
+        env,
+      ),
+    )
+  })
+})
+
+test("session transcript fallback normalizes relative transcript paths", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    const transcriptPath = path.join(repoRoot, "session-relative-ralph.jsonl")
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: "transcript-normalized-session",
+        cwd: undefined,
+        transcript_path: "session-relative-ralph.jsonl",
+      }),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "transcript-normalized-session",
+          cwd: undefined,
+          transcript_path: transcriptPath,
         }),
         env,
       ),

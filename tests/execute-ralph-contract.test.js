@@ -185,6 +185,19 @@ test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
     assert.equal(text.includes("RALPH AUTOPILOT COMPLETE"), true, file)
     assert.equal(text.includes("RALPH AUTOPILOT BLOCKED"), true, file)
     assert.equal(text.includes("first non-empty line"), true, file)
+    assert.equal(text.includes("leading sentinel control block"), true, file)
+    assert.equal(text.includes("Required shapes"), true, file)
+    assert.equal(text.includes("terminal responses must not include `RALPH AUTOPILOT ACTIVE`"), true, file)
+    assert.equal(
+      text.includes("Later quoted examples, logs, or code blocks are ignored"),
+      true,
+      file,
+    )
+    assert.equal(
+      text.includes("terminal sentinels still win if they appear in a malformed leading sentinel control block"),
+      true,
+      file,
+    )
     assert.equal(
       text.includes("Active sentinel text alone is not enough to trigger blocking"),
       true,

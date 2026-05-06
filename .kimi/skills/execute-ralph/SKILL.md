@@ -38,23 +38,22 @@ STRICT - Follow the four-phase loop exactly. Epic requirements are immutable. Ne
 
 ## Ralph Autopilot Stop Contract
 
-Every non-terminal Ralph response MUST include the exact active sentinel as the first non-empty line:
+The leading sentinel control block is the first consecutive non-empty group of sentinel-only lines in the response. Required shapes:
 
-`RALPH AUTOPILOT ACTIVE`
+- Non-terminal responses: first non-empty line is exactly `RALPH AUTOPILOT ACTIVE`, followed by enough objective state to resume without asking the user:
+  - Current phase
+  - Current epic/task id
+  - Current success criterion or blocker being handled
+  - Next tool call planned
+- Terminal responses: first non-empty line is exactly `RALPH AUTOPILOT COMPLETE` or `RALPH AUTOPILOT BLOCKED`; terminal responses must not include `RALPH AUTOPILOT ACTIVE`.
+
+Use `RALPH AUTOPILOT COMPLETE` when the branch is complete and handoff is ready. Use `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user.
 
 Active sentinel text alone is not enough to trigger blocking. A Claude Code `UserPromptExpansion` for `/xpowers:execute-ralph` must first activate guarded stop-state for the current runtime session.
 
-After the active sentinel, include enough objective state to resume without asking the user:
-- Current phase
-- Current epic/task id
-- Current success criterion or blocker being handled
-- Next tool call planned
+The guard only treats sentinels in the leading sentinel control block as control markers. Later quoted examples, logs, or code blocks are ignored.
 
-Terminal responses MUST use one of these exact sentinels as the first non-empty line:
-- `RALPH AUTOPILOT COMPLETE` when the branch is complete and handoff is ready.
-- `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user.
-
-Terminal sentinels always win when they appear in the leading sentinel control block. If a response starts with both `RALPH AUTOPILOT ACTIVE` and either terminal sentinel, the Stop/SubagentStop guard allows the stop and clears retry state.
+For defensive compatibility, terminal sentinels still win if they appear in a malformed leading sentinel control block with `RALPH AUTOPILOT ACTIVE`, so stale active markers cannot trap the session.
 
 The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears as the first non-empty line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings. When a permission prompt appears, comply with Claude Code's permission flow; do not claim that Ralph can override it.
 
