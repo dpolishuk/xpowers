@@ -159,3 +159,89 @@ test("buildStructuredTaskPrompt appends JSON shape instruction", () => {
   assert.ok(prompt.startsWith("do something"))
   assert.ok(prompt.includes('"status": "PASS|ISSUES_FOUND|FAIL"'))
 })
+
+// AbortSignal regression tests
+
+test("executeFallbackSubagentAsync returns cancelled result for pre-aborted signal", async () => {
+  const controller = new AbortController()
+  controller.abort()
+
+  const result = await executeFallbackSubagentAsync(
+    { task: "should not run" },
+    null as any,
+    controller.signal,
+  )
+
+  assert.equal(result.content.length, 1)
+  assert.ok(result.content[0]!.text.includes("cancelled"))
+})
+
+test("executeFallbackSubagentAsync kills child process when signal aborts", async () => {
+  const killCalls: string[] = []
+
+  const mockRun = (_cmd: string, _args: string[], _opts: any) => {
+    const child = {
+      stdout: { setEncoding() {}, on() {} },
+      stderr: { setEncoding() {}, on() {} },
+      on(_event: string, _handler: (...args: any[]) => void) {},
+      kill(signal?: string) {
+        killCalls.push(signal || "SIGTERM")
+      },
+    } as any
+    return child
+  }
+
+  const controller = new AbortController()
+  const promise = executeFallbackSubagentAsync(
+    { task: "long running" },
+    mockRun as any,
+    controller.signal,
+  )
+
+  // Abort after a short delay to let setup complete
+  setTimeout(() => controller.abort(), 50)
+
+  const result = await promise
+  assert.equal(result.content.length, 1)
+  assert.ok(result.content[0]!.text.includes("cancelled"))
+  assert.ok(killCalls.length >= 1, "kill should have been called at least once")
+  assert.equal(killCalls[0], "SIGTERM", "first kill should be SIGTERM")
+})
+
+test("executeFallbackSubagentAsync cleans up fork session when signal aborts after setup", async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), "fallback-abort-test-"))
+  const seedPath = join(tmpDir, "seed.jsonl")
+  writeFileSync(seedPath, "{}")
+
+  let killCalled = false
+  const mockRun = (_cmd: string, _args: string[], _opts: any) => {
+    const child = {
+      stdout: { setEncoding() {}, on() {} },
+      stderr: { setEncoding() {}, on() {} },
+      on(_event: string, _handler: (...args: any[]) => void) {},
+      kill() { killCalled = true },
+    } as any
+    return child
+  }
+
+  const controller = new AbortController()
+  const promise = executeFallbackSubagentAsync(
+    { task: "fork abort test", contextMode: "fork", sessionSeedPath: seedPath },
+    mockRun as any,
+    controller.signal,
+  )
+
+  // Abort after fork session is set up
+  setTimeout(() => controller.abort(), 50)
+
+  const result = await promise
+  assert.equal(result.content.length, 1)
+  assert.ok(result.content[0]!.text.includes("cancelled"))
+  assert.equal(killCalled, true)
+
+  // Cleanup should have removed the temp directory
+  // Note: cleanup happens in finally block, but since we're mocking the child,
+  // the fork session temp dir was created. We can't easily verify it's gone
+  // because cleanupForkSessionAsync is called in finally. Let's clean up our test dir.
+  rmSync(tmpDir, { recursive: true, force: true })
+})

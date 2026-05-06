@@ -40,16 +40,25 @@ function getRoutingConfigPath(): string {
   return join(extDir, "routing.json")
 }
 
+let _routingConfigCache: RoutingConfig | undefined
+
 function loadRoutingConfig(): RoutingConfig {
+  if (_routingConfigCache) return _routingConfigCache
   try {
     const routingPath = getRoutingConfigPath()
     if (existsSync(routingPath)) {
-      return normalizeRoutingConfig(JSON.parse(readFileSync(routingPath, "utf8")))
+      _routingConfigCache = normalizeRoutingConfig(JSON.parse(readFileSync(routingPath, "utf8")))
+      return _routingConfigCache
     }
   } catch {
     // ignore
   }
   return normalizeRoutingConfig({})
+}
+
+/** Test helper to clear the routing config cache. */
+export function __testClearRoutingConfigCache(): void {
+  _routingConfigCache = undefined
 }
 
 async function defaultParallelReviewExecutor(params: ParallelReviewParams): Promise<StructuredTaskOutput> {

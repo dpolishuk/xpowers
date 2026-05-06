@@ -15,7 +15,8 @@ import {
   PI_THINKING_LEVELS,
 } from "./fallback-runner.js"
 
-export interface SubagentBridgeParams extends ExecutePiTaskParams {
+export interface SubagentBridgeParams extends Omit<ExecutePiTaskParams, "task"> {
+  task?: string
   agent?: string
   chain?: Array<{ agent: string; task: string }>
   tasks?: Array<{ agent: string; task: string }>
@@ -443,11 +444,11 @@ export async function executeSubagent(
       return await executeSingleViaBridge(params, routingEntry)
     } catch (err: any) {
       const dropped: string[] = []
-      if (params.chain) dropped.push("chain")
-      if (params.tasks) dropped.push("tasks")
+      if (hasChain) dropped.push("chain")
+      if (hasTasks) dropped.push("tasks")
       if (params.worktree) dropped.push("worktree")
       if (params.output) dropped.push("output")
-      if (params.reads) dropped.push("reads")
+      if (Array.isArray(params.reads) && params.reads.length > 0) dropped.push("reads")
       if (params.async) dropped.push("async")
 
       if (hasBridgeOnlyParams(params)) {
@@ -459,7 +460,22 @@ export async function executeSubagent(
     }
   }
 
-  // Fallback path
+  // Fallback path — task must be present for single-agent fallback
+  if (!params.task) {
+    const error = "task is required for single-agent fallback execution"
+    if (params.format === "structured") {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          status: "FAIL",
+          summary: error,
+          findings: [{ message: error, type: "validation-error" }],
+          nextAction: "Provide task parameter or install pi-subagents for chain/tasks execution",
+        }) }],
+      }
+    }
+    return { content: [{ type: "text" as const, text: error }] }
+  }
+
   return executeFallbackSubagent({
     task: params.task,
     model: params.model,
