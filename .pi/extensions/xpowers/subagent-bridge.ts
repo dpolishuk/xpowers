@@ -7,6 +7,7 @@ import {
   executeFallbackSubagent,
   executeFallbackSubagentAsync,
   type ExecutePiTaskParams,
+  type PiTaskFormat,
   type PiTaskResult,
   type SpawnSyncLike,
   type SpawnAsyncLike,

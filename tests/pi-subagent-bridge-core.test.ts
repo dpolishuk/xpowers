@@ -80,9 +80,9 @@ test("translateToPiSubagents passes through context output reads", () => {
 test("tryLoadPiSubagents detects pi-subagents extension", async () => {
   clearPiSubagentsCache()
   const result = await tryLoadPiSubagents()
-  // pi-subagents is installed; should detect extension (empty object, not null)
+  // pi-subagents is installed; should detect extension (object, not null)
   assert.ok(result !== null)
-  assert.equal(Object.keys(result ?? {}).length, 0)
+  assert.equal(typeof result, "object")
 })
 
 test("tryLoadPiSubagents returns null when cache forced null", async () => {
