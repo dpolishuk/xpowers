@@ -236,12 +236,19 @@ function buildContextFailure(
   contextMode: PiTaskContextMode,
   details = `Context mode '${contextMode}' requires a session seed path but none was provided`,
 ): PiTaskResult {
+  const isMissingSeed = details.includes("session seed path")
+  const summary = isMissingSeed
+    ? `Subagent failed (${contextMode} context unavailable)`
+    : `Subagent failed (${contextMode} context setup error)`
+  const nextAction = isMissingSeed
+    ? "Retry with a fresh context or supply a valid parent session seed before using fork mode"
+    : "Inspect the error details and retry with a fresh context if the issue persists"
   return buildFailureResult(
     format,
-    `Subagent failed (${contextMode} context unavailable)`,
+    summary,
     details,
-    "Retry with a fresh context or supply a valid parent session seed before using fork mode",
-    "missing-session",
+    nextAction,
+    isMissingSeed ? "missing-session" : "fork-setup-error",
   )
 }
 

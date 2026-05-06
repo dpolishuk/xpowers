@@ -1022,7 +1022,7 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
           effectiveContext = "fresh"
         }
       }
-      return await executeSubagent({
+      const bridgeParams = {
         task: params.task,
         model: routing.model,
         effort: routing.effort,
@@ -1037,7 +1037,14 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
         output: params.output,
         reads: params.reads,
         sessionSeedPath,
-      }, { model: routing.model ?? undefined, effort: routing.effort }, (agent, type) => resolveSubagentRouting(type, agent, undefined))
+      }
+      const routingEntry = { model: routing.model ?? undefined, effort: routing.effort }
+      const resolveRouting = (agent?: string, type?: string) => resolveSubagentRouting(type, agent, undefined)
+
+      if (params.async) {
+        return await executeSubagentAsync(bridgeParams, routingEntry, resolveRouting)
+      }
+      return await executeSubagent(bridgeParams, routingEntry, resolveRouting)
       } catch (err: any) {
         if (params.format === "structured") {
           return {

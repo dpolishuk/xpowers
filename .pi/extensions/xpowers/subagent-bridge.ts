@@ -316,6 +316,7 @@ function hasBridgeOnlyParams(params: SubagentBridgeParams): boolean {
   return Boolean(
     params.chain ||
     params.tasks ||
+    params.async ||
     params.worktree ||
     params.output ||
     params.reads,
