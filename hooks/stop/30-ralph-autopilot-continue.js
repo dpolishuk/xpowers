@@ -316,12 +316,12 @@ function stateIdentity(payload) {
   )
 
   if (sessionId) {
-    if (cwd) {
-      return [`session:${sessionId}`, `cwd:${cwd}`]
-    }
-
     if (transcriptPath) {
       return [`session:${sessionId}`, `transcript:${transcriptPath}`]
+    }
+
+    if (cwd) {
+      return [`session:${sessionId}`, `cwd:${cwd}`]
     }
 
     return null

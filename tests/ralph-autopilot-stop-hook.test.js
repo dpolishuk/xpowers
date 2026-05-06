@@ -384,10 +384,14 @@ test("execute-ralph activation supports command and prompt aliases", () => {
 test("activation state is isolated by session and project context", () => {
   withTempState((stateHome) => {
     const env = envFor(stateHome)
+    const activeTranscriptPath = path.join(stateHome, "isolated-transcript.jsonl")
+    const otherTranscriptPath = path.join(stateHome, "other-transcript.jsonl")
+
     assertAllow(
       activateRalph(env, {
         session_id: "isolated-session",
         cwd: repoRoot,
+        transcript_path: activeTranscriptPath,
       }),
     )
 
@@ -396,6 +400,7 @@ test("activation state is isolated by session and project context", () => {
         payloadWithText("RALPH AUTOPILOT ACTIVE", {
           session_id: "other-session",
           cwd: repoRoot,
+          transcript_path: activeTranscriptPath,
         }),
         env,
       ),
@@ -405,6 +410,7 @@ test("activation state is isolated by session and project context", () => {
         payloadWithText("RALPH AUTOPILOT ACTIVE", {
           session_id: "isolated-session",
           cwd: path.join(repoRoot, "other-project"),
+          transcript_path: otherTranscriptPath,
         }),
         env,
       ),
@@ -414,6 +420,32 @@ test("activation state is isolated by session and project context", () => {
         payloadWithText("RALPH AUTOPILOT ACTIVE", {
           session_id: "isolated-session",
           cwd: repoRoot,
+          transcript_path: activeTranscriptPath,
+        }),
+        env,
+      ),
+    )
+  })
+})
+
+test("activation state follows a stable session transcript across cwd changes", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    const transcriptPath = path.join(stateHome, "cwd-change-transcript.jsonl")
+
+    assertAllow(
+      activateRalph(env, {
+        session_id: "cwd-change-session",
+        cwd: repoRoot,
+        transcript_path: transcriptPath,
+      }),
+    )
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "cwd-change-session",
+          cwd: path.join(repoRoot, ".opencode"),
+          transcript_path: transcriptPath,
         }),
         env,
       ),
@@ -567,17 +599,19 @@ test("invalid retry max falls back to default instead of disabling blocks", () =
 test("SubagentStop retry state is separated by agent id", () => {
   withTempState((stateHome) => {
     const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "1" })
+    const sharedTranscriptPath = path.join(os.tmpdir(), "shared-main-transcript.jsonl")
+
     assertAllow(
       activateRalph(env, {
         session_id: "shared-session",
-        transcript_path: "/tmp/shared-main-transcript.jsonl",
+        transcript_path: sharedTranscriptPath,
       }),
     )
 
     const basePayload = payloadWithText("RALPH AUTOPILOT ACTIVE", {
       hook_event_name: "SubagentStop",
       session_id: "shared-session",
-      transcript_path: "/tmp/shared-main-transcript.jsonl",
+      transcript_path: sharedTranscriptPath,
     })
 
     assertBlock(runHook({ ...basePayload, agent_id: "agent-a" }, env))
