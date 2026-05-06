@@ -337,12 +337,12 @@ export type RoutingResolver = (agent?: string, type?: string) => RoutingEntry
 
 function hasBridgeOnlyParams(params: SubagentBridgeParams): boolean {
   return Boolean(
-    params.chain ||
-    params.tasks ||
+    (Array.isArray(params.chain) && params.chain.length > 0) ||
+    (Array.isArray(params.tasks) && params.tasks.length > 0) ||
     params.async ||
     params.worktree ||
     params.output ||
-    params.reads,
+    (Array.isArray(params.reads) && params.reads.length > 0),
   )
 }
 
@@ -370,8 +370,11 @@ export async function executeSubagent(
   routingEntry?: RoutingEntry,
   resolveRouting?: RoutingResolver,
 ): Promise<PiTaskResult> {
+  const hasChain = Array.isArray(params.chain) && params.chain.length > 0
+  const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
+
   // Reject mixed async + chain/tasks usage upfront
-  if (params.async && (params.chain || params.tasks)) {
+  if (params.async && (hasChain || hasTasks)) {
     const error = "async cannot be combined with chain or tasks"
     if (params.format === "structured") {
       return {
@@ -390,17 +393,17 @@ export async function executeSubagent(
 
   // Decide whether to use the bridge or fallback
   const useBridge = Boolean(
-    params.chain ||
-    params.tasks ||
+    hasChain ||
+    hasTasks ||
     params.async ||
     params.worktree ||
     params.output ||
-    params.reads,
+    (Array.isArray(params.reads) && params.reads.length > 0),
   )
 
   if (useBridge) {
     try {
-      if (params.chain) {
+      if (hasChain) {
         const steps = params.chain.map((s) => ({
           agent: s.agent,
           task: s.task,
@@ -418,7 +421,7 @@ export async function executeSubagent(
         )
       }
 
-      if (params.tasks) {
+      if (hasTasks) {
         const parallelTasks = params.tasks.map((t) => ({
           agent: t.agent,
           task: t.task,
@@ -474,7 +477,10 @@ export async function executeSubagentAsync(
   resolveRouting?: RoutingResolver,
   signal?: AbortSignal,
 ): Promise<PiTaskResult> {
-  if (params.async && (params.chain || params.tasks)) {
+  const hasChain = Array.isArray(params.chain) && params.chain.length > 0
+  const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
+
+  if (params.async && (hasChain || hasTasks)) {
     const error = "async cannot be combined with chain or tasks"
     if (params.format === "structured") {
       return {
@@ -490,17 +496,17 @@ export async function executeSubagentAsync(
   }
 
   const useBridge = Boolean(
-    params.chain ||
-    params.tasks ||
+    hasChain ||
+    hasTasks ||
     params.async ||
     params.worktree ||
     params.output ||
-    params.reads,
+    (Array.isArray(params.reads) && params.reads.length > 0),
   )
 
   if (useBridge) {
     try {
-      if (params.async && !params.chain && !params.tasks) {
+      if (params.async && !hasChain && !hasTasks) {
         const status = await executeAsyncViaBridge(params, routingEntry)
         return {
           content: [{
@@ -513,11 +519,11 @@ export async function executeSubagentAsync(
       return await executeSubagent(params, routingEntry, resolveRouting)
     } catch (err: any) {
       const dropped: string[] = []
-      if (params.chain) dropped.push("chain")
-      if (params.tasks) dropped.push("tasks")
+      if (hasChain) dropped.push("chain")
+      if (hasTasks) dropped.push("tasks")
       if (params.worktree) dropped.push("worktree")
       if (params.output) dropped.push("output")
-      if (params.reads) dropped.push("reads")
+      if (Array.isArray(params.reads) && params.reads.length > 0) dropped.push("reads")
       if (params.async) dropped.push("async")
 
       if (hasBridgeOnlyParams(params)) {

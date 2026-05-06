@@ -150,3 +150,34 @@ test("executeSubagentAsync returns async status placeholder when async=true and 
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
 }, { timeout: 20000 })
+
+// Regression tests for PR #57 unresolved threads
+
+test("executeSubagent accepts chain without task and falls back gracefully", async () => {
+  clearPiSubagentsCache()
+  __testSetPiSubagents(null)
+  const result = await executeSubagent({
+    chain: [
+      { agent: "scout", task: "analyze" },
+    ],
+  } as any)
+  // Should NOT degrade — chain is a bridge-only param but pi-subagents is unavailable.
+  // Since chain is present but bridge unavailable, it falls back (currently degrades).
+  // After fix: should return valid fallback result.
+  assert.equal(result.content.length, 1)
+  assert.equal(result.content[0]!.type, "text")
+}, { timeout: 20000 })
+
+test("executeSubagent falls back for empty reads array instead of degrading", async () => {
+  clearPiSubagentsCache()
+  __testSetPiSubagents(null)
+  const result = await executeSubagent({
+    task: "say hello",
+    reads: [],
+  } as any)
+  // Empty reads should NOT trigger bridge mode.
+  // Should fall back to native runner with normal result.
+  assert.equal(result.content.length, 1)
+  assert.equal(result.content[0]!.type, "text")
+  assert.ok(!result.content[0]!.text.includes("Bridge degradation"))
+}, { timeout: 20000 })

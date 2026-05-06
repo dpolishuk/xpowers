@@ -969,7 +969,7 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
     label: "Subagent",
     description: "Delegate a task to an isolated Pi subagent. Optionally specify an explicit model, a concrete agent, and/or an abstract type to route to a configured model. Runs in a separate process with its own context. Supports chain, parallel, async, worktree, and forked context modes when pi-subagents is installed.",
     parameters: Type.Object({
-      task: Type.String({ description: "The task for the subagent to perform" }),
+      task: Type.Optional(Type.String({ description: "The task for the subagent to perform" })),
       model: Type.Optional(Type.String({ description: "Explicit one-off provider/model override with highest precedence (optional)" })),
       type: Type.Optional(Type.String({ description: "Subagent type for model routing: review, research, validation, test-runner (optional, uses routing.json config)" })),
       agent: Type.Optional(Type.String({ description: "Concrete XPowers agent name for routing precedence (optional, e.g. code-reviewer, internet-researcher, autonomous-reviewer)" })),
@@ -995,6 +995,22 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
       try {
         const hasChain = Array.isArray(params.chain) && params.chain.length > 0
       const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
+      const hasTask = typeof params.task === "string" && params.task.length > 0
+
+      if (!hasTask && !hasChain && !hasTasks) {
+        const error = "Must provide at least one of: task, chain, or tasks."
+        if (params.format === "structured") {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              status: "FAIL",
+              summary: error,
+              findings: [{ message: error, type: "validation-error" }],
+              nextAction: "Provide task, chain, or tasks parameter",
+            }) }],
+          }
+        }
+        return { content: [{ type: "text" as const, text: error }] }
+      }
 
       if (hasChain && hasTasks) {
         const error = "Cannot specify both chain and tasks. Choose one execution mode."
@@ -1035,7 +1051,7 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
         context: effectiveContext,
         worktree: params.worktree,
         output: params.output,
-        reads: params.reads,
+        reads: Array.isArray(params.reads) && params.reads.length > 0 ? params.reads : undefined,
         sessionSeedPath,
       }
       const routingEntry = { model: routing.model ?? undefined, effort: routing.effort }
