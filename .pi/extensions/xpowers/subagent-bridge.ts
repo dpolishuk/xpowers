@@ -46,6 +46,16 @@ export interface RoutingEntry {
   effort?: string
 }
 
+/**
+ * Expected programmatic API surface from pi-subagents.
+ *
+ * NOTE: pi-subagents (v0.24.0) is a Pi extension that registers tools/commands
+ * through Pi's ExtensionAPI. It does NOT export runAgent/runChain/runParallel/runAsync
+ * as named module exports. The functions below represent the *aspirational* contract
+ * this bridge expects. When pi-subagents exposes a clean programmatic API in a
+ * future version, tryLoadPiSubagents will wire it in. Until then, the bridge
+ * gracefully falls back to the native fallback-runner.ts.
+ */
 export interface PiSubagentsAPI {
   runAgent?: (params: {
     agent: string
@@ -102,6 +112,17 @@ export interface PiSubagentsAPI {
 
 let cachedPiSubagents: PiSubagentsAPI | null | undefined
 
+/**
+ * Attempt to load pi-subagents programmatic API.
+ *
+ * pi-subagents (v0.24.0) is a Pi extension; its primary export is a default
+ * function that registers with Pi's ExtensionAPI. It does NOT expose
+ * runAgent/runChain/runParallel/runAsync as module exports.
+ *
+ * This loader checks for a compatible programmatic API that may be exposed
+ * in future versions, or via internal paths. If none is found, the bridge
+ * gracefully falls back to the native fallback-runner.ts.
+ */
 export async function tryLoadPiSubagents(): Promise<PiSubagentsAPI | null> {
   if (cachedPiSubagents !== undefined) {
     return cachedPiSubagents
@@ -111,29 +132,27 @@ export async function tryLoadPiSubagents(): Promise<PiSubagentsAPI | null> {
     const mod = await import("pi-subagents")
     const api: PiSubagentsAPI = {}
 
-    // Accept multiple possible export shapes
+    // Future-facing: check for named exports that may exist in later versions
     if (mod.runAgent && typeof mod.runAgent === "function") {
       api.runAgent = mod.runAgent
-    } else if (mod.default?.runAgent && typeof mod.default.runAgent === "function") {
-      api.runAgent = mod.default.runAgent
     }
-
     if (mod.runChain && typeof mod.runChain === "function") {
       api.runChain = mod.runChain
-    } else if (mod.default?.runChain && typeof mod.default.runChain === "function") {
-      api.runChain = mod.default.runChain
     }
-
     if (mod.runParallel && typeof mod.runParallel === "function") {
       api.runParallel = mod.runParallel
-    } else if (mod.default?.runParallel && typeof mod.default.runParallel === "function") {
-      api.runParallel = mod.default.runParallel
     }
-
     if (mod.runAsync && typeof mod.runAsync === "function") {
       api.runAsync = mod.runAsync
-    } else if (mod.default?.runAsync && typeof mod.default.runAsync === "function") {
-      api.runAsync = mod.default.runAsync
+    }
+
+    // pi-subagents v0.24.0 exports a default extension registration function.
+    // If that's all we see, store an empty API so we don't keep retrying.
+    const hasAnyApi = api.runAgent || api.runChain || api.runParallel || api.runAsync
+    if (!hasAnyApi && mod.default && typeof mod.default === "function") {
+      // Extension registered via Pi's ExtensionAPI — no programmatic runner available
+      cachedPiSubagents = {}
+      return {}
     }
 
     cachedPiSubagents = api
