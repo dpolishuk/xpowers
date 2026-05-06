@@ -371,17 +371,26 @@ function writeState(filePath, state) {
   }
 }
 
-function clearCounter(payload) {
+function clearCounter(payload, options = {}) {
   try {
     const dir = stateDir(process.env, payload)
     if (!dir) {
       return
     }
 
-    for (const filePath of [
-      stateFileFor(dir, payload),
-      stateFileFor(dir, payload, false),
-    ]) {
+    const clearActivation = options.clearActivation === true
+    const counterPath = stateFileFor(dir, payload)
+    const activationPath = stateFileFor(dir, payload, false)
+    const filePaths = []
+
+    if (counterPath && (clearActivation || counterPath !== activationPath)) {
+      filePaths.push(counterPath)
+    }
+    if (clearActivation && activationPath) {
+      filePaths.push(activationPath)
+    }
+
+    for (const filePath of new Set(filePaths)) {
       if (filePath) {
         fs.rmSync(filePath, { force: true })
       }
@@ -447,7 +456,9 @@ function main() {
     }
 
     if (sentinel.terminal) {
-      clearCounter(payload)
+      clearCounter(payload, {
+        clearActivation: payload.hook_event_name !== "SubagentStop",
+      })
       return allow()
     }
 

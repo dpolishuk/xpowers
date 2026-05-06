@@ -194,6 +194,11 @@ test("terminal sentinels allow stop and clear existing retry state", () => {
 
     assertAllow(activateRalph(env))
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT COMPLETE"), env))
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+
+    assertAllow(activateRalph(env))
+    assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT BLOCKED"), env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
@@ -243,6 +248,54 @@ test("execute-ralph command expansion activates only matching command sessions",
       ),
     )
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+  })
+})
+
+test("Stop and SubagentStop command fields cannot spoof execute-ralph activation", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+
+    assertAllow(
+      runHook(
+        payloadWithText("Finished without activation.", {
+          session_id: "spoof-stop",
+          command_name: "execute-ralph",
+          prompt: "/xpowers:execute-ralph hyper-3o0",
+        }),
+        env,
+      ),
+    )
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "spoof-stop",
+        }),
+        env,
+      ),
+    )
+
+    assertAllow(
+      runHook(
+        payloadWithText("Finished without activation.", {
+          hook_event_name: "SubagentStop",
+          session_id: "spoof-subagent",
+          agent_id: "agent-a",
+          command_name: "execute-ralph",
+          prompt: "/xpowers:execute-ralph hyper-3o0",
+        }),
+        env,
+      ),
+    )
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          hook_event_name: "SubagentStop",
+          session_id: "spoof-subagent",
+          agent_id: "agent-a",
+        }),
+        env,
+      ),
+    )
   })
 })
 
@@ -436,6 +489,43 @@ test("SubagentStop retry state is separated by agent id", () => {
     assertBlock(runHook({ ...basePayload, agent_id: "agent-a" }, env))
     assertBlock(runHook({ ...basePayload, agent_id: "agent-b" }, env))
     assertAllow(runHook({ ...basePayload, agent_id: "agent-a" }, env))
+  })
+})
+
+test("SubagentStop terminal sentinels do not clear parent activation state", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "1" })
+    assertAllow(
+      activateRalph(env, {
+        session_id: "subagent-terminal-session",
+      }),
+    )
+
+    const subagentPayload = payloadWithText("RALPH AUTOPILOT ACTIVE", {
+      hook_event_name: "SubagentStop",
+      session_id: "subagent-terminal-session",
+      agent_id: "agent-a",
+    })
+
+    assertBlock(runHook(subagentPayload, env))
+    assertAllow(
+      runHook(
+        {
+          ...subagentPayload,
+          last_assistant_message: "RALPH AUTOPILOT COMPLETE",
+        },
+        env,
+      ),
+    )
+    assertBlock(runHook(subagentPayload, env))
+    assertBlock(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "subagent-terminal-session",
+        }),
+        env,
+      ),
+    )
   })
 })
 
