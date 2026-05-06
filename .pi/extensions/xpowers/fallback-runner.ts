@@ -1,4 +1,10 @@
-import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process"
+/**
+ * Fallback subagent runner — extracted from task-runner.ts.
+ * Used when pi-subagents is unavailable or incompatible.
+ * Preserves exact behavior of the original executePiTask / executePiTaskAsync.
+ */
+
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process"
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs"
 import { copyFile, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -48,11 +54,6 @@ export interface PiTaskResult {
   content: Array<{ type: "text"; text: string }>
 }
 
-export interface ParallelExecutionOptions {
-  maxConcurrency?: number
-  signal?: AbortSignal
-}
-
 export type SpawnAsyncLike = (
   command: string,
   args: string[],
@@ -61,48 +62,11 @@ export type SpawnAsyncLike = (
     env: NodeJS.ProcessEnv
     stdio: ["ignore", "pipe", "pipe"]
   },
-) => ChildProcess
+) => import("node:child_process").ChildProcess
 
 interface ForkSession {
   dir: string
   seedPath: string
-}
-
-export async function executePiTasksParallel<TTask, TResult>(
-  tasks: TTask[],
-  executeTask: (task: TTask, signal?: AbortSignal) => Promise<TResult>,
-  options: ParallelExecutionOptions = {},
-): Promise<TResult[]> {
-  const maxConcurrency = Math.max(1, options.maxConcurrency ?? 4)
-  const results = new Array<TResult>(tasks.length)
-  let nextIndex = 0
-
-  const worker = async () => {
-    while (true) {
-      if (options.signal?.aborted) return
-      const currentIndex = nextIndex
-      nextIndex += 1
-      if (currentIndex >= tasks.length) return
-      results[currentIndex] = await executeTask(tasks[currentIndex]!, options.signal)
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.min(maxConcurrency, tasks.length) }, () => worker()))
-  return results
-}
-
-export async function executePiTasksChain<TTask, TResult>(
-  tasks: TTask[],
-  executeTask: (task: TTask, previousResults: TResult[], signal?: AbortSignal) => Promise<TResult>,
-  options: Pick<ParallelExecutionOptions, "signal"> = {},
-): Promise<TResult[]> {
-  const results: TResult[] = []
-  for (const task of tasks) {
-    if (options.signal?.aborted) break
-    const result = await executeTask(task, results, options.signal)
-    results.push(result)
-  }
-  return results
 }
 
 export function buildStructuredTaskPrompt(task: string): string {
@@ -273,7 +237,7 @@ function buildContextFailure(
   )
 }
 
-export function executePiTask(
+export function executeFallbackSubagent(
   params: ExecutePiTaskParams,
   run: SpawnSyncLike = spawnSync,
 ): PiTaskResult {
@@ -367,7 +331,7 @@ export function executePiTask(
   }
 }
 
-export async function executePiTaskAsync(
+export async function executeFallbackSubagentAsync(
   params: ExecutePiTaskParams,
   run: SpawnAsyncLike = spawn,
   signal?: AbortSignal,

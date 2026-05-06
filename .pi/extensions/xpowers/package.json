@@ -12,5 +12,8 @@
     "@mariozechner/pi-tui": "^0.63.0",
     "@sinclair/typebox": "^0.34.0",
     "pi-ask-user": "^0.5.1"
+  },
+  "optionalDependencies": {
+    "pi-subagents": "^1.0.0"
   }
 }

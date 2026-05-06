@@ -8,8 +8,8 @@ import {
   STRUCTURED_TASK_STATUSES,
   buildPiTaskArgs,
   buildStructuredTaskPrompt,
-  executePiTask,
-  executePiTaskAsync,
+  executeFallbackSubagent,
+  executeFallbackSubagentAsync,
   normalizeThinkingLevel,
   parseStructuredTaskOutput,
   parseSubagentDepth,
@@ -21,7 +21,7 @@ import {
   type SpawnSyncLike,
   type StructuredTaskOutput,
   type StructuredTaskStatus,
-} from "./task-runner"
+} from "./fallback-runner"
 
 export type PiSubagentFormat = PiTaskFormat
 export type StructuredSubagentStatus = StructuredTaskStatus
@@ -51,7 +51,7 @@ export function executePiSubagent(
   params: ExecutePiSubagentParams,
   run: SpawnSyncLike = spawnSync,
 ): PiSubagentResult {
-  return executePiTask({
+  return executeFallbackSubagent({
     ...params,
     contextMode: "fresh",
   }, run)
@@ -62,7 +62,7 @@ export async function executePiSubagentAsync(
   run: SpawnAsyncLike = spawn,
   signal?: AbortSignal,
 ): Promise<PiSubagentResult> {
-  return await executePiTaskAsync({
+  return await executeFallbackSubagentAsync({
     ...params,
     contextMode: "fresh",
   }, run, signal)
