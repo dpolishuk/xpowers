@@ -7,6 +7,8 @@ const { spawnSync } = require("node:child_process")
 
 const repoRoot = path.resolve(__dirname, "..")
 const hookPath = path.join(repoRoot, "hooks/stop/30-ralph-autopilot-continue.js")
+const defaultSessionId = "session-1"
+const defaultTranscriptPath = path.join(os.tmpdir(), "ralph-transcript.jsonl")
 
 function withTempState(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralph-autopilot-hook-"))
@@ -37,12 +39,28 @@ function envFor(stateHome, extra = {}) {
 function payloadWithText(text, overrides = {}) {
   return {
     hook_event_name: "Stop",
-    session_id: "session-1",
+    session_id: defaultSessionId,
     cwd: repoRoot,
-    transcript_path: path.join(os.tmpdir(), "ralph-transcript.jsonl"),
+    transcript_path: defaultTranscriptPath,
     last_assistant_message: text,
     ...overrides,
   }
+}
+
+function activationPayload(overrides = {}) {
+  return {
+    hook_event_name: "UserPromptExpansion",
+    session_id: defaultSessionId,
+    cwd: repoRoot,
+    transcript_path: defaultTranscriptPath,
+    command_name: "execute-ralph",
+    prompt: "/xpowers:execute-ralph hyper-3o0",
+    ...overrides,
+  }
+}
+
+function activateRalph(env, overrides = {}) {
+  return runHook(activationPayload(overrides), env)
 }
 
 function runHook(input, env) {
@@ -77,12 +95,26 @@ function assertBlock(output) {
 
 test("active sentinel blocks stop with exact block response shape", () => {
   withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    assertAllow(activateRalph(env))
+
+    const output = runHook(
+      payloadWithText("Phase 1\nRALPH AUTOPILOT ACTIVE\nTask: hyper-3o0.1"),
+      env,
+    )
+
+    assertBlock(output)
+  })
+})
+
+test("active sentinel without execute-ralph activation state fails open", () => {
+  withTempState((stateHome) => {
     const output = runHook(
       payloadWithText("Phase 1\nRALPH AUTOPILOT ACTIVE\nTask: hyper-3o0.1"),
       envFor(stateHome),
     )
 
-    assertBlock(output)
+    assertAllow(output)
   })
 })
 
@@ -99,18 +131,44 @@ test("inactive assistant response allows stop", () => {
 
 test("keyword-only and lowercase mentions do not activate the hook", () => {
   withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    assertAllow(activateRalph(env))
+
     assertAllow(
       runHook(
         payloadWithText("ralph autopilot active; execute-ralph should keep working"),
-        envFor(stateHome),
+        env,
       ),
     )
     assertAllow(
       runHook(
         payloadWithText("RALPH AUTOPILOT is discussed here without the active sentinel"),
-        envFor(stateHome),
+        env,
       ),
     )
+  })
+})
+
+test("inline sentinel prose neither blocks nor clears activated retry state", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "2" })
+    assertAllow(activateRalph(env))
+
+    assertAllow(
+      runHook(
+        payloadWithText("Review says RALPH AUTOPILOT ACTIVE is mentioned inline."),
+        env,
+      ),
+    )
+    assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+    assertAllow(
+      runHook(
+        payloadWithText("A sentence says RALPH AUTOPILOT COMPLETE but not as a line."),
+        env,
+      ),
+    )
+    assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
 })
 
@@ -118,6 +176,7 @@ test("terminal sentinels allow stop and clear existing retry state", () => {
   withTempState((stateHome) => {
     const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "1" })
 
+    assertAllow(activateRalph(env))
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
     assertAllow(
       runHook(
@@ -125,6 +184,7 @@ test("terminal sentinels allow stop and clear existing retry state", () => {
         env,
       ),
     )
+    assertAllow(activateRalph(env))
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT BLOCKED"), env))
   })
@@ -149,12 +209,41 @@ test("malformed, empty, and missing assistant text inputs fail open", () => {
   })
 })
 
+test("execute-ralph command expansion activates only matching command sessions", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+
+    assertAllow(
+      runHook(
+        activationPayload({
+          command_name: "brainstorm",
+          prompt: "/xpowers:brainstorm hyper-3o0",
+        }),
+        env,
+      ),
+    )
+    assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+
+    assertAllow(
+      runHook(
+        activationPayload({
+          command_name: "",
+          prompt: "/xpowers:execute-ralph hyper-3o0",
+        }),
+        env,
+      ),
+    )
+    assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+  })
+})
+
 test("state path that cannot be created fails open", () => {
   withTempState((stateHome) => {
     const stateFile = path.join(stateHome, "not-a-directory")
     fs.writeFileSync(stateFile, "file blocks state directory creation", "utf8")
     const env = envFor(stateFile)
 
+    assertAllow(activateRalph(env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
 })
@@ -166,7 +255,38 @@ test("missing XDG_STATE_HOME and HOME fails open", () => {
       HOME: undefined,
     })
 
+    assertAllow(activateRalph(env))
     assertAllow(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
+  })
+})
+
+test("missing runtime identity fields fail open instead of sharing empty state", () => {
+  withTempState((stateHome) => {
+    const env = envFor(stateHome)
+    assertAllow(activateRalph(env))
+
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: undefined,
+          cwd: undefined,
+          transcript_path: undefined,
+          agent_transcript_path: undefined,
+        }),
+        env,
+      ),
+    )
+    assertAllow(
+      runHook(
+        payloadWithText("RALPH AUTOPILOT ACTIVE", {
+          session_id: "",
+          cwd: "",
+          transcript_path: "",
+          agent_transcript_path: "",
+        }),
+        env,
+      ),
+    )
   })
 })
 
@@ -175,6 +295,7 @@ test("retry boundary allows stop when next block would exceed max", () => {
     const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "2" })
     const payload = payloadWithText("RALPH AUTOPILOT ACTIVE")
 
+    assertAllow(activateRalph(env))
     assertBlock(runHook(payload, env))
     assertBlock(runHook(payload, env))
     assertAllow(runHook(payload, env))
@@ -185,6 +306,7 @@ test("invalid retry max falls back to default instead of disabling blocks", () =
   withTempState((stateHome) => {
     const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "0" })
 
+    assertAllow(activateRalph(env))
     assertBlock(runHook(payloadWithText("RALPH AUTOPILOT ACTIVE"), env))
   })
 })
@@ -192,6 +314,13 @@ test("invalid retry max falls back to default instead of disabling blocks", () =
 test("SubagentStop retry state is separated by agent id", () => {
   withTempState((stateHome) => {
     const env = envFor(stateHome, { XPOWERS_RALPH_AUTOPILOT_MAX_BLOCKS: "1" })
+    assertAllow(
+      activateRalph(env, {
+        session_id: "shared-session",
+        transcript_path: "/tmp/shared-main-transcript.jsonl",
+      }),
+    )
+
     const basePayload = payloadWithText("RALPH AUTOPILOT ACTIVE", {
       hook_event_name: "SubagentStop",
       session_id: "shared-session",
@@ -219,6 +348,13 @@ test("safe transcript fallback can extract the latest assistant text", () => {
       "utf8",
     )
 
+    const env = envFor(stateHome)
+    assertAllow(
+      activateRalph(env, {
+        session_id: "session-transcript",
+        transcript_path: transcriptPath,
+      }),
+    )
     assertBlock(
       runHook(
         {
@@ -227,7 +363,7 @@ test("safe transcript fallback can extract the latest assistant text", () => {
           cwd: repoRoot,
           transcript_path: transcriptPath,
         },
-        envFor(stateHome),
+        env,
       ),
     )
   })

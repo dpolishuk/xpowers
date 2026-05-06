@@ -24,6 +24,9 @@ const REQUIRED_COMMAND_CLAUSES = [
   "NEEDS_FIX, ISSUES_FOUND, GAPS_FOUND, CRITICAL_ISSUES -> remediation path",
   "Unknown or malformed verdict -> remediation path (never auto-approve)",
   "Mixed final reviewer outputs -> remediation path (no epic close).",
+  "RALPH AUTOPILOT ACTIVE",
+  "Active sentinel text alone is not enough to trigger blocking",
+  "does not bypass Claude Code permission prompts",
   "node --test tests/execute-ralph-contract.test.js",
   "node --test tests/codex-*.test.js",
   "node --test tests/*.test.js",
@@ -78,6 +81,27 @@ test("Claude and OpenCode execute-ralph command wrappers stay aligned to the sam
 
   for (const [label, file] of files) {
     assertContainsAll(read(file), REQUIRED_COMMAND_CLAUSES, label)
+  }
+})
+
+test("host execute-ralph skill surfaces carry the autopilot stop contract", () => {
+  const clauses = [
+    "RALPH AUTOPILOT ACTIVE",
+    "RALPH AUTOPILOT COMPLETE",
+    "RALPH AUTOPILOT BLOCKED",
+    "on its own line",
+    "Active sentinel text alone is not enough to trigger blocking",
+    "does not bypass Claude Code permission prompts",
+  ]
+  const files = [
+    ["Claude canonical skill", "skills/execute-ralph/SKILL.md"],
+    ["OpenCode skill", ".opencode/skills/xpowers-execute-ralph/SKILL.md"],
+    ["Kimi native skill", ".kimi/skills/execute-ralph/SKILL.md"],
+    ["Kimi/Codex generated skill", ".kimi/skills/codex-skill-execute-ralph/SKILL.md"],
+  ]
+
+  for (const [label, file] of files) {
+    assertContainsAll(read(file), clauses, label)
   }
 })
 

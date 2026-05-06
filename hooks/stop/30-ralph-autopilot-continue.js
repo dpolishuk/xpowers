@@ -7,6 +7,7 @@ const path = require("node:path")
 const ACTIVE_SENTINEL = "RALPH AUTOPILOT ACTIVE"
 const COMPLETE_SENTINEL = "RALPH AUTOPILOT COMPLETE"
 const BLOCKED_SENTINEL = "RALPH AUTOPILOT BLOCKED"
+const EXECUTE_RALPH_COMMANDS = new Set(["execute-ralph", "xpowers:execute-ralph"])
 const DEFAULT_MAX_BLOCKS = 50
 const MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024
 
@@ -194,13 +195,28 @@ function extractAssistantText(payload) {
 }
 
 function detectSentinel(text) {
+  const lines = text.split(/\r?\n/).map((line) => line.trim())
   const terminal =
-    text.includes(COMPLETE_SENTINEL) || text.includes(BLOCKED_SENTINEL)
+    lines.includes(COMPLETE_SENTINEL) || lines.includes(BLOCKED_SENTINEL)
 
   return {
-    active: text.includes(ACTIVE_SENTINEL),
+    active: lines.includes(ACTIVE_SENTINEL),
     terminal,
   }
+}
+
+function isExecuteRalphExpansion(payload) {
+  if (payload.hook_event_name !== "UserPromptExpansion") {
+    return false
+  }
+
+  const commandName = stringOrEmpty(payload.command_name).trim()
+  if (EXECUTE_RALPH_COMMANDS.has(commandName)) {
+    return true
+  }
+
+  const prompt = stringOrEmpty(payload.prompt).trim()
+  return /^\/(?:xpowers:)?execute-ralph(?:\s|$)/.test(prompt)
 }
 
 function maxBlocks(env) {
@@ -261,16 +277,32 @@ function stringOrEmpty(value) {
   return typeof value === "string" ? value : ""
 }
 
-function stateKey(payload) {
+function stateIdentity(payload) {
   const sessionId = stringOrEmpty(payload.session_id).trim()
   const transcriptPath =
     stringOrEmpty(payload.transcript_path).trim() ||
     stringOrEmpty(payload.agent_transcript_path).trim()
-  const keyParts = sessionId
-    ? [`session:${sessionId}`]
-    : [`cwd:${stringOrEmpty(payload.cwd).trim()}`, `transcript:${transcriptPath}`]
+  const cwd = stringOrEmpty(payload.cwd).trim()
+
+  if (sessionId) {
+    return [`session:${sessionId}`]
+  }
+
+  if (!cwd || !transcriptPath) {
+    return null
+  }
+
+  return [`cwd:${cwd}`, `transcript:${transcriptPath}`]
+}
+
+function stateKey(payload, includeAgent = true) {
+  const keyParts = stateIdentity(payload)
+  if (!keyParts) {
+    return null
+  }
 
   if (
+    includeAgent &&
     payload.hook_event_name === "SubagentStop" &&
     stringOrEmpty(payload.agent_id).trim() !== ""
   ) {
@@ -280,24 +312,28 @@ function stateKey(payload) {
   return crypto.createHash("sha256").update(keyParts.join("|")).digest("hex")
 }
 
-function stateFileFor(dir, payload) {
-  return path.join(dir, `${stateKey(payload)}.json`)
+function stateFileFor(dir, payload, includeAgent = true) {
+  const key = stateKey(payload, includeAgent)
+  return key ? path.join(dir, `${key}.json`) : null
 }
 
-function readCounter(filePath) {
+function readState(filePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"))
     const count = Number(parsed?.count)
-    return Number.isSafeInteger(count) && count > 0 ? count : 0
+    return {
+      active: parsed?.active === true,
+      count: Number.isSafeInteger(count) && count > 0 ? count : 0,
+    }
   } catch {
-    return 0
+    return { active: false, count: 0 }
   }
 }
 
-function writeCounter(filePath, count) {
+function writeState(filePath, state) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
   try {
-    fs.writeFileSync(tempPath, `${JSON.stringify({ count })}\n`, {
+    fs.writeFileSync(tempPath, `${JSON.stringify(state)}\n`, {
       mode: 0o600,
     })
     fs.renameSync(tempPath, filePath)
@@ -319,10 +355,35 @@ function clearCounter(payload) {
       return
     }
 
-    fs.rmSync(stateFileFor(dir, payload), { force: true })
+    for (const filePath of [
+      stateFileFor(dir, payload),
+      stateFileFor(dir, payload, false),
+    ]) {
+      if (filePath) {
+        fs.rmSync(filePath, { force: true })
+      }
+    }
   } catch {
     // Terminal sentinels must never block because cleanup failed.
   }
+}
+
+function activationStatePath(payload) {
+  const dir = stateDir(process.env, payload)
+  if (!dir || !ensureStateDir(dir)) {
+    return null
+  }
+  return stateFileFor(dir, payload, false)
+}
+
+function activateSession(payload) {
+  const filePath = activationStatePath(payload)
+  if (!filePath) {
+    return allow()
+  }
+
+  writeState(filePath, { active: true, count: 0 })
+  return allow()
 }
 
 function main() {
@@ -330,6 +391,10 @@ function main() {
     const payload = parsePayload(readStdin())
     if (!payload) {
       return allow()
+    }
+
+    if (isExecuteRalphExpansion(payload)) {
+      return activateSession(payload)
     }
 
     const assistantText = extractAssistantText(payload)
@@ -352,13 +417,24 @@ function main() {
       return allow()
     }
 
-    const filePath = stateFileFor(dir, payload)
-    const nextCount = readCounter(filePath) + 1
+    const activationPath = stateFileFor(dir, payload, false)
+    const counterPath = stateFileFor(dir, payload)
+    if (!activationPath || !counterPath) {
+      return allow()
+    }
+
+    const activationState = readState(activationPath)
+    if (!activationState.active) {
+      return allow()
+    }
+
+    const counterState = readState(counterPath)
+    const nextCount = counterState.count + 1
     if (nextCount > maxBlocks(process.env)) {
       return allow()
     }
 
-    if (!writeCounter(filePath, nextCount)) {
+    if (!writeState(counterPath, { active: true, count: nextCount })) {
       return allow()
     }
 

@@ -172,6 +172,9 @@ test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
   const files = [
     "commands/execute-ralph.md",
     "skills/execute-ralph/SKILL.md",
+    ".opencode/commands/execute-ralph.md",
+    ".opencode/skills/xpowers-execute-ralph/SKILL.md",
+    ".kimi/skills/execute-ralph/SKILL.md",
     ".kimi/skills/codex-command-execute-ralph/SKILL.md",
     ".kimi/skills/codex-skill-execute-ralph/SKILL.md",
   ]
@@ -181,6 +184,12 @@ test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
     assert.equal(text.includes("RALPH AUTOPILOT ACTIVE"), true, file)
     assert.equal(text.includes("RALPH AUTOPILOT COMPLETE"), true, file)
     assert.equal(text.includes("RALPH AUTOPILOT BLOCKED"), true, file)
+    assert.equal(text.includes("on its own line"), true, file)
+    assert.equal(
+      text.includes("Active sentinel text alone is not enough to trigger blocking"),
+      true,
+      file,
+    )
     assert.equal(
       text.includes("does not bypass Claude Code permission prompts"),
       true,
@@ -189,7 +198,7 @@ test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
   }
 })
 
-test("test_ralph_autopilot_stop_hook_registered_for_stop_and_subagent_stop", () => {
+test("test_ralph_autopilot_stop_hook_registered_for_activation_stop_and_subagent_stop", () => {
   const hooks = JSON.parse(read("hooks/hooks.json")).hooks
   const hookCommand = "${CLAUDE_PLUGIN_ROOT}/hooks/stop/30-ralph-autopilot-continue.js"
   const reminderCommand = "${CLAUDE_PLUGIN_ROOT}/hooks/stop/10-gentle-reminders.sh"
@@ -201,7 +210,9 @@ test("test_ralph_autopilot_stop_hook_registered_for_stop_and_subagent_stop", () 
 
   const stopCommands = commandsFor("Stop")
   const subagentStopCommands = commandsFor("SubagentStop")
+  const userPromptExpansionCommands = commandsFor("UserPromptExpansion")
 
+  assert.equal(userPromptExpansionCommands.includes(hookCommand), true)
   assert.equal(stopCommands.includes(hookCommand), true)
   assert.equal(subagentStopCommands.includes(hookCommand), true)
   assert.equal(stopCommands.includes(reminderCommand), true)
