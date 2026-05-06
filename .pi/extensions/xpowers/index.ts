@@ -994,73 +994,73 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
     async execute(_toolCallId: string, params: any, _signal?: unknown, _update?: unknown, ctx?: any) {
       try {
         const hasChain = Array.isArray(params.chain) && params.chain.length > 0
-      const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
-      const hasTask = typeof params.task === "string" && params.task.length > 0
+        const hasTasks = Array.isArray(params.tasks) && params.tasks.length > 0
+        const hasTask = typeof params.task === "string" && params.task.length > 0
 
-      if (!hasTask && !hasChain && !hasTasks) {
-        const error = "Must provide at least one of: task, chain, or tasks."
-        if (params.format === "structured") {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({
-              status: "FAIL",
-              summary: error,
-              findings: [{ message: error, type: "validation-error" }],
-              nextAction: "Provide task, chain, or tasks parameter",
-            }) }],
+        if (!hasTask && !hasChain && !hasTasks) {
+          const error = "Must provide at least one of: task, chain, or tasks."
+          if (params.format === "structured") {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                status: "FAIL",
+                summary: error,
+                findings: [{ message: error, type: "validation-error" }],
+                nextAction: "Provide task, chain, or tasks parameter",
+              }) }],
+            }
+          }
+          return { content: [{ type: "text" as const, text: error }] }
+        }
+
+        if (hasChain && hasTasks) {
+          const error = "Cannot specify both chain and tasks. Choose one execution mode."
+          if (params.format === "structured") {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({
+                status: "FAIL",
+                summary: error,
+                findings: [{ message: error, type: "validation-error" }],
+                nextAction: "Retry with either chain or tasks, not both",
+              }) }],
+            }
+          }
+          return { content: [{ type: "text" as const, text: error }] }
+        }
+
+        const routing = resolveSubagentRouting(params.type, params.agent, params.model)
+        const cwd = ctx?.cwd || process.cwd()
+        let sessionSeedPath: string | undefined
+        let effectiveContext = params.context
+        if (params.context === "fork") {
+          sessionSeedPath = ctx?.sessionManager?.getSessionFile?.()
+          if (!sessionSeedPath) {
+            console.warn("[xpowers] Fork context requested but no parent session seed available; downgrading to fresh context")
+            effectiveContext = "fresh"
           }
         }
-        return { content: [{ type: "text" as const, text: error }] }
-      }
-
-      if (hasChain && hasTasks) {
-        const error = "Cannot specify both chain and tasks. Choose one execution mode."
-        if (params.format === "structured") {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({
-              status: "FAIL",
-              summary: error,
-              findings: [{ message: error, type: "validation-error" }],
-              nextAction: "Retry with either chain or tasks, not both",
-            }) }],
-          }
+        const bridgeParams = {
+          task: params.task,
+          model: routing.model,
+          effort: routing.effort,
+          agent: params.agent,
+          cwd,
+          format: params.format,
+          chain: hasChain ? params.chain : undefined,
+          tasks: hasTasks ? params.tasks : undefined,
+          async: params.async,
+          context: effectiveContext,
+          worktree: params.worktree,
+          output: params.output,
+          reads: Array.isArray(params.reads) && params.reads.length > 0 ? params.reads : undefined,
+          sessionSeedPath,
         }
-        return { content: [{ type: "text" as const, text: error }] }
-      }
+        const routingEntry = { model: routing.model ?? undefined, effort: routing.effort }
+        const resolveRouting = (agent?: string, type?: string) => resolveSubagentRouting(type, agent, undefined)
 
-      const routing = resolveSubagentRouting(params.type, params.agent, params.model)
-      const cwd = ctx?.cwd || process.cwd()
-      let sessionSeedPath: string | undefined
-      let effectiveContext = params.context
-      if (params.context === "fork") {
-        sessionSeedPath = ctx?.sessionManager?.getSessionFile?.()
-        if (!sessionSeedPath) {
-          console.warn("[xpowers] Fork context requested but no parent session seed available; downgrading to fresh context")
-          effectiveContext = "fresh"
+        if (params.async) {
+          return await executeSubagentAsync(bridgeParams, routingEntry, resolveRouting)
         }
-      }
-      const bridgeParams = {
-        task: params.task,
-        model: routing.model,
-        effort: routing.effort,
-        agent: params.agent,
-        cwd,
-        format: params.format,
-        chain: hasChain ? params.chain : undefined,
-        tasks: hasTasks ? params.tasks : undefined,
-        async: params.async,
-        context: effectiveContext,
-        worktree: params.worktree,
-        output: params.output,
-        reads: Array.isArray(params.reads) && params.reads.length > 0 ? params.reads : undefined,
-        sessionSeedPath,
-      }
-      const routingEntry = { model: routing.model ?? undefined, effort: routing.effort }
-      const resolveRouting = (agent?: string, type?: string) => resolveSubagentRouting(type, agent, undefined)
-
-      if (params.async) {
-        return await executeSubagentAsync(bridgeParams, routingEntry, resolveRouting)
-      }
-      return await executeSubagent(bridgeParams, routingEntry, resolveRouting)
+        return await executeSubagent(bridgeParams, routingEntry, resolveRouting)
       } catch (err: any) {
         if (params.format === "structured") {
           return {

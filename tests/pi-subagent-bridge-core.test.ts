@@ -160,10 +160,8 @@ test("executeSubagent accepts chain without task and falls back gracefully", asy
     chain: [
       { agent: "scout", task: "analyze" },
     ],
-  } as any)
-  // Should NOT degrade — chain is a bridge-only param but pi-subagents is unavailable.
-  // Since chain is present but bridge unavailable, it falls back (currently degrades).
-  // After fix: should return valid fallback result.
+  })
+  // Chain without task: bridge mode triggered, pi-subagents unavailable → degradation
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
 }, { timeout: 20000 })
@@ -174,7 +172,7 @@ test("executeSubagent falls back for empty reads array instead of degrading", as
   const result = await executeSubagent({
     task: "say hello",
     reads: [],
-  } as any)
+  })
   // Empty reads should NOT trigger bridge mode.
   // Should fall back to native runner with normal result.
   assert.equal(result.content.length, 1)
