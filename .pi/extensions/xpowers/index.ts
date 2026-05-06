@@ -1026,6 +1026,7 @@ Write your config to \`~/.pi/agent/models.json\` and restart Pi to apply.`
         task: params.task,
         model: routing.model,
         effort: routing.effort,
+        agent: params.agent,
         cwd,
         format: params.format,
         chain: hasChain ? params.chain : undefined,

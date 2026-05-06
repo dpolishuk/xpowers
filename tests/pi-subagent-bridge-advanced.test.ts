@@ -48,6 +48,7 @@ test("executeChainViaBridge calls runChain with translated steps", async () => {
     "/tmp",
     "fresh",
     false,
+    undefined,
   )
 
   assert.equal(result.content[0]!.text, "chain-result")
@@ -84,6 +85,7 @@ test("executeParallelViaBridge calls runParallel with translated tasks", async (
     "fork",
     true,
     2,
+    undefined,
   )
 
   assert.equal(result.content[0]!.text, "parallel-result")
@@ -176,9 +178,63 @@ test("routing resolver skips inherit model", async () => {
     "/tmp",
     "fresh",
     false,
+    undefined,
   )
 
   assert.equal(captured.chain[0]!.model, undefined)
+
+  clearPiSubagentsCache()
+})
+
+test("executeChainViaBridge preserves structured output format per step", async () => {
+  let captured: any = null
+  const mockApi = createMockAPI({
+    runChain: async (params) => {
+      captured = params
+      return { content: [{ type: "text" as const, text: "chain-structured" }] }
+    },
+  })
+
+  __testSetPiSubagents(mockApi)
+
+  await executeChainViaBridge(
+    [{ agent: "reviewer", task: "check code" }],
+    () => ({}),
+    "/tmp",
+    "fresh",
+    false,
+    "structured",
+  )
+
+  assert.ok(captured.chain[0]!.task.includes("Return valid JSON only"))
+  assert.ok(captured.chain[0]!.task.includes("check code"))
+
+  clearPiSubagentsCache()
+})
+
+test("executeParallelViaBridge preserves structured output format per task", async () => {
+  let captured: any = null
+  const mockApi = createMockAPI({
+    runParallel: async (params) => {
+      captured = params
+      return { content: [{ type: "text" as const, text: "parallel-structured" }] }
+    },
+  })
+
+  __testSetPiSubagents(mockApi)
+
+  await executeParallelViaBridge(
+    [{ agent: "reviewer", task: "audit security" }],
+    () => ({}),
+    "/tmp",
+    "fresh",
+    false,
+    undefined,
+    "structured",
+  )
+
+  assert.ok(captured.tasks[0]!.task.includes("Return valid JSON only"))
+  assert.ok(captured.tasks[0]!.task.includes("audit security"))
 
   clearPiSubagentsCache()
 })

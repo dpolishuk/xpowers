@@ -15,6 +15,7 @@ import {
 } from "./fallback-runner.js"
 
 export interface SubagentBridgeParams extends ExecutePiTaskParams {
+  agent?: string
   chain?: Array<{ agent: string; task: string }>
   tasks?: Array<{ agent: string; task: string }>
   async?: boolean
@@ -214,12 +215,17 @@ export async function executeSingleViaBridge(
   return api.runAgent(translated)
 }
 
+function prepareStepTask(task: string, format?: PiTaskFormat): string {
+  return format === "structured" ? buildStructuredTaskPrompt(task) : task
+}
+
 export async function executeChainViaBridge(
   steps: ChainStep[],
   resolveRouting: (agent?: string, type?: string) => RoutingEntry,
   cwd?: string,
   context?: "fresh" | "fork",
   worktree?: boolean,
+  format?: PiTaskFormat,
 ): Promise<PiTaskResult> {
   const api = await tryLoadPiSubagents()
   if (!api?.runChain) {
@@ -232,7 +238,7 @@ export async function executeChainViaBridge(
       ?? (routing.model && routing.model !== "inherit" ? routing.model : undefined)
     return {
       agent: step.agent,
-      task: step.task,
+      task: prepareStepTask(step.task, format),
       model: model ? appendThinkingSuffix(model, routing.effort) : undefined,
       output: step.output,
       reads: step.reads,
@@ -249,6 +255,7 @@ export async function executeParallelViaBridge(
   context?: "fresh" | "fork",
   worktree?: boolean,
   concurrency?: number,
+  format?: PiTaskFormat,
 ): Promise<PiTaskResult> {
   const api = await tryLoadPiSubagents()
   if (!api?.runParallel) {
@@ -261,7 +268,7 @@ export async function executeParallelViaBridge(
       ?? (routing.model && routing.model !== "inherit" ? routing.model : undefined)
     return {
       agent: task.agent,
-      task: task.task,
+      task: prepareStepTask(task.task, format),
       model: model ? appendThinkingSuffix(model, routing.effort) : undefined,
       output: task.output,
       reads: task.reads,
@@ -364,6 +371,7 @@ export async function executeSubagent(
           params.cwd,
           params.context,
           params.worktree,
+          params.format,
         )
       }
 
@@ -381,6 +389,8 @@ export async function executeSubagent(
           params.cwd,
           params.context,
           params.worktree,
+          undefined,
+          params.format,
         )
       }
 

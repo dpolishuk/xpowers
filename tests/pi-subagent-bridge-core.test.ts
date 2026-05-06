@@ -6,6 +6,7 @@ import {
   executeSubagentAsync,
   tryLoadPiSubagents,
   clearPiSubagentsCache,
+  __testSetPiSubagents,
   type SubagentBridgeParams,
 } from "../.pi/extensions/xpowers/subagent-bridge.js"
 
@@ -84,6 +85,7 @@ test("tryLoadPiSubagents returns null when module missing", async () => {
 
 test("executeSubagent falls back when pi-subagents missing", async () => {
   clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await executeSubagent({ task: "say hello" })
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
@@ -93,6 +95,7 @@ test("executeSubagent falls back when pi-subagents missing", async () => {
 
 test("executeSubagentAsync falls back when pi-subagents missing", async () => {
   clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await executeSubagentAsync({ task: "say hello" })
   assert.equal(result.content.length, 1)
   assert.equal(result.content[0]!.type, "text")
@@ -100,6 +103,7 @@ test("executeSubagentAsync falls back when pi-subagents missing", async () => {
 
 test("executeSubagent uses bridge for chain params and falls back if bridge unavailable", async () => {
   clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await executeSubagent({
     task: "ignored",
     chain: [
@@ -114,6 +118,7 @@ test("executeSubagent uses bridge for chain params and falls back if bridge unav
 
 test("executeSubagent uses bridge for parallel params and falls back if bridge unavailable", async () => {
   clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await executeSubagent({
     task: "ignored",
     tasks: [
@@ -127,6 +132,7 @@ test("executeSubagent uses bridge for parallel params and falls back if bridge u
 
 test("executeSubagentAsync returns async status placeholder when async=true and bridge unavailable", async () => {
   clearPiSubagentsCache()
+  __testSetPiSubagents(null)
   const result = await executeSubagentAsync({
     task: "do something",
     async: true,
