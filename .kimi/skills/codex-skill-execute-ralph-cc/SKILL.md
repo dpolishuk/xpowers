@@ -130,7 +130,7 @@ If already on a feature branch, continue.
 
 **Watchdog counter recovery:**
 ```bash
-tm list --type chore --status open | grep "LOOP-WATCHDOG: bd-EPIC"
+tm list --type chore | grep "LOOP-WATCHDOG: bd-EPIC"
 ```
 If a watchdog task exists, read its no-progress counter from the title:
 ```bash
@@ -142,10 +142,11 @@ Title format: `LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N`
 
 If `cycles >= 50` or `phase4 >= 2` (and entering Phase 4 again): STOP and alert user. Do NOT call ScheduleWakeup.
 
-If no watchdog task exists, create one:
+If no watchdog task exists, create one as deferred so it is never picked up by `tm ready` or `bv --robot-next`:
 ```bash
 tm create "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=0" --type chore --priority 4
 tm dep add bd-WATCHDOG bd-EPIC --type parent-child
+tm update bd-WATCHDOG --status deferred
 ```
 
 → **CONTINUATION:** Phase 0 complete. State recovered from bd/tm. Proceed to Phase 1 (if tasks remain) or Phase 4 (if all criteria met).
@@ -294,7 +295,7 @@ Dispatch specialized reviews **in parallel** via Agent tool:
 2. **security-scanner** -- OWASP, secrets, CVEs
 3. **test-effectiveness-analyst** -- tautological tests, coverage gaming
 
-If any issues found, create remediation task, increment watchdog counters, and call ScheduleWakeup:
+If any issues found, create remediation task and check watchdog counters:
 ```bash
 # Increment both cycle and phase4 counters
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
@@ -305,12 +306,14 @@ NEW_PHASE4=$((PHASE4 + 1))
 # Enforce phase4 cap
 if [ "$NEW_PHASE4" -ge 2 ]; then
   echo "Phase 4 re-entry limit reached. STOP and alert user."
-  # Do NOT call ScheduleWakeup
+  # Do NOT call ScheduleWakeup -- STOP here
 else
   tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
-  # Call ScheduleWakeup below
+  # Only call ScheduleWakeup when NOT capped
 fi
 ```
+
+If Phase 4 cap NOT reached, call ScheduleWakeup:
 ```
 ScheduleWakeup({
   delaySeconds: 60,
@@ -318,7 +321,10 @@ ScheduleWakeup({
   prompt: "<<autonomous-loop-dynamic>>"
 })
 ```
-Then END TURN. Max 2 consecutive Phase 4 re-entries enforced by watchdog counter; after 2 rounds with unresolved issues, STOP and alert user. Do NOT call ScheduleWakeup.
+
+If Phase 4 cap reached (phase4 >= 2): STOP and alert user. Do NOT call ScheduleWakeup. Loop terminates. Max 2 consecutive Phase 4 re-entries enforced by watchdog counter.
+
+Then END TURN.
 
 **Final gate** -- dispatch in parallel:
 - **autonomous-reviewer**: return APPROVED or GAPS_FOUND
