@@ -271,14 +271,22 @@ Then END TURN. The next wake-up will enter Phase 0 and process the next task.
 
 Track max 50 no-progress remediation cycles across all phases. After 50, STOP and alert user. Do NOT call ScheduleWakeup.
 
-**Watchdog increment (criteria unmet, looping back):**
+**Watchdog reset on verified task progress:**
+If the task completed successfully (STATUS == "closed" with SHA drift), reset the no-progress counter since genuine progress was made:
 ```bash
-# Read current counter
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=${PHASE4}"
+```
+
+**Watchdog increment (remediation only -- retry or review failure):**
+Only increment the cycles counter when a task did NOT make progress (retry path, hallucinated completion, or review found Critical/High issues). Do NOT increment after successful task completions even if criteria remain unmet.
+```bash
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
-# Update watchdog task title
-tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)"
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
 ```
 
 → **CONTINUATION (criteria unmet):** Call ScheduleWakeup(60s). END TURN.
