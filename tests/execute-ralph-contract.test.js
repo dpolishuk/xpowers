@@ -233,6 +233,21 @@ test("test_ralph_autopilot_stop_hook_registered_for_activation_stop_and_subagent
   assert.ok(stopCommands.indexOf(hookCommand) < stopCommands.indexOf(reminderCommand))
 })
 
+test("test_execute_ralph_command_routes_to_cc_for_claude_code", () => {
+  const command = read("commands/execute-ralph.md")
+
+  assert.equal(command.includes("Platform Routing"), true)
+  assert.equal(command.includes("execute-ralph-cc"), true)
+  assert.equal(command.includes("ScheduleWakeup"), true)
+})
+
+test("test_execute_ralph_command_routes_to_original_for_other_platforms", () => {
+  const command = read("commands/execute-ralph.md")
+
+  assert.equal(command.includes("OpenCode"), true)
+  assert.equal(command.includes("`execute-ralph` skill"), true)
+})
+
 test("test_ralph_autopilot_stop_hook_is_executable_node_script", () => {
   const hookPath = path.join(repoRoot, "hooks/stop/30-ralph-autopilot-continue.js")
   const hook = read("hooks/stop/30-ralph-autopilot-continue.js")
