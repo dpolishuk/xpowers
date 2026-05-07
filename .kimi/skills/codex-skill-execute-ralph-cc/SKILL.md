@@ -96,10 +96,23 @@ bv --robot-triage || (tm ready && tm list)
 ```
 **Health gate:** If dependency cycles exist, alert user and stop. Do NOT call ScheduleWakeup.
 
+**Epic recovery (watchdog-first):**
+Recover the active epic ID from the watchdog task BEFORE listing epics. This prevents picking the wrong epic when multiple are open:
+```bash
+tm list --type chore | grep "LOOP-WATCHDOG:"
+```
+If a watchdog task exists, extract the epic ID from its title:
+```bash
+# Title format: LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N
+# Extract bd-EPIC from the title to identify the active epic
+```
+Set `bd-EPIC` to the epic ID from the watchdog title. This is the authoritative anchor for which epic this loop is executing.
+
+If NO watchdog task exists (first run), list epics and select:
 ```bash
 tm list --type epic --status open
 ```
-Identify the active epic. If no epic exists, alert user and stop.
+Identify the active epic. If no epic exists, alert user and stop. If multiple epics exist, select the one matching the current feature branch.
 
 ```bash
 tm show bd-EPIC
@@ -129,10 +142,7 @@ git checkout -b "feature/${BRANCH_NAME}"
 If already on a feature branch, continue.
 
 **Watchdog counter recovery:**
-```bash
-tm list --type chore | grep "LOOP-WATCHDOG: bd-EPIC"
-```
-If a watchdog task exists, read its no-progress counter from the title:
+If watchdog was found above, read its counters (already extracted epic ID):
 ```bash
 tm show bd-WATCHDOG --json | jq -r .title
 ```
@@ -142,7 +152,7 @@ Title format: `LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N`
 
 If `cycles >= 50` or `phase4 >= 2` (and entering Phase 4 again): STOP and alert user. Do NOT call ScheduleWakeup.
 
-If no watchdog task exists, create one as deferred so it is never picked up by `tm ready` or `bv --robot-next`:
+If no watchdog task exists (first run, after epic selection above), create one as deferred so it is never picked up by `tm ready` or `bv --robot-next`:
 ```bash
 tm create "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=0" --type chore --priority 4
 tm dep add bd-WATCHDOG bd-EPIC --type parent-child
