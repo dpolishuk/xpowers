@@ -39,10 +39,10 @@ type: flow
 Executes a complete bd epic autonomously using Claude Code's native `ScheduleWakeup` tool instead of stop hooks. Each turn processes exactly one task, then schedules a wake-up for the next:
 
 1. **Phase 0 - State Recovery:** Every wake-up starts here. Reads all state from bd/tm (epic, tasks, criteria). Fully idempotent -- any wake-up reconstructs context from bd/tm alone.
-2. **Phase 1 - Get Task & Refine:** Uses `bv --robot-next` for triage. Claims or auto-creates the next task. Runs SRE refinement.
+2. **Phase 1 - Get Task & Refine:** Uses `bv --robot-triage` output from Phase 0 to determine next task. Claims or auto-creates the next task. Runs SRE refinement.
 3. **Phase 2 - Dispatch Subagent:** Records `PRE_SHA`, dispatches Agent tool with subagent-driven-development protocol. Verifies SHA drift and task status.
 4. **Phase 3 - Post-Task Check:** Quick review. Re-reads epic criteria. If criteria unmet, calls `ScheduleWakeup(60s)` and ends turn. If criteria met, proceeds to Phase 4.
-5. **Phase 4 - End-of-Epic Review:** Dispatches 3 specialized agents in parallel (review-quality, security-scanner, test-effectiveness-analyst), then dual final gate (autonomous-reviewer + review-implementation). Both must APPROVED. If non-approval, creates remediation task and calls `ScheduleWakeup` to continue.
+5. **Phase 4 - End-of-Epic Review:** Dispatches 3 specialized agents in parallel (review-quality, security-scanner, test-effectiveness-analyst), then dual final gate (autonomous-reviewer + review-implementation). Both must return APPROVED. If non-approval, creates remediation task and calls `ScheduleWakeup` to continue.
 6. **Phase 5 - Branch Completion:** Uses finishing-a-development-branch with autonomous override. Presents summary. No ScheduleWakeup -- loop ends naturally.
 
 ## ScheduleWakeup Loop Contract
@@ -76,7 +76,7 @@ The loop uses Claude Code's native `ScheduleWakeup` tool for continuation:
 
 ## Review and Remediation Contract
 
-Reviews happen ONCE at end of epic (not per-task):
+Specialized reviews happen ONCE at end of epic (a lightweight per-task review occurs in Phase 3, but the full review suite runs only after all criteria are met):
 
 - 3 specialized agents dispatched in parallel after all epic criteria are met:
   - review-quality (bugs, race conditions, error handling)

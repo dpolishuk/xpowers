@@ -1,5 +1,5 @@
 {
-  "_comment": "Skill and agent activation rules for xpowers plugin - 20 skills + 1 agent = 21 total",
+  "_comment": "Skill and agent activation rules for xpowers plugin - 21 skills + 1 agent = 22 total",
   "_schema": {
     "description": "Each skill/agent has type, enforcement, priority, and triggers",
     "type": "process|domain|workflow|agent",

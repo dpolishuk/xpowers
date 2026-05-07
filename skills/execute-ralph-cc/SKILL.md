@@ -26,7 +26,7 @@ Execute a complete epic autonomously using Claude Code's native ScheduleWakeup t
 </skill_overview>
 
 <rigidity_level>
-STRICT - Follow the five-phase flow exactly. Epic requirements are immutable. Never ask the user for confirmation. Use ScheduleWakeup for continuation, never stop hooks.
+STRICT - Follow the six-phase flow exactly. Epic requirements are immutable. Never ask the user for confirmation. Use ScheduleWakeup for continuation, never stop hooks.
 </rigidity_level>
 
 <quick_reference>
@@ -37,7 +37,7 @@ STRICT - Follow the five-phase flow exactly. Epic requirements are immutable. Ne
 | **1. Get Task** | Claim ready / resume in-progress / auto-create | Task identified |
 | **2. Dispatch Subagent** | Agent tool runs task end-to-end | Task done or retried |
 | **3. Post-Task Check** | Verify + criteria check | ScheduleWakeup or Phase 4 |
-| **4. End-of-Epic Review** | 3 reviews + final gate (both must APPROVED) | Epic validated or remediation |
+| **4. End-of-Epic Review** | 3 reviews + final gate (both must return APPROVED) | Epic validated or remediation |
 | **5. Branch Completion** | finishing-a-development-branch | Epic closed |
 
 </quick_reference>
@@ -127,6 +127,26 @@ git checkout -b "feature/${BRANCH_NAME}"
 ```
 If already on a feature branch, continue.
 
+**Watchdog counter recovery:**
+```bash
+tm list --type chore --status open | grep "LOOP-WATCHDOG: bd-EPIC"
+```
+If a watchdog task exists, read its no-progress counter from the title:
+```bash
+tm show bd-WATCHDOG --json | jq -r .title
+```
+Title format: `LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N`
+- `cycles` = total no-progress remediation cycles (max 50)
+- `phase4` = consecutive Phase 4 re-entries (max 2)
+
+If `cycles >= 50` or `phase4 >= 2` (and entering Phase 4 again): STOP and alert user. Do NOT call ScheduleWakeup.
+
+If no watchdog task exists, create one:
+```bash
+tm create "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=0" --type chore --priority 4
+tm dep add bd-WATCHDOG bd-EPIC --type parent-child
+```
+
 → **CONTINUATION:** Phase 0 complete. State recovered from bd/tm. Proceed to Phase 1 (if tasks remain) or Phase 4 (if all criteria met).
 
 ---
@@ -201,8 +221,8 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   - **Implementation Tasks** (feature, bug, task, chore): MUST have `POST_SHA != PRE_SHA`.
   - **Analytical Tasks**: Accepted as success even if `POST_SHA == PRE_SHA` as long as status is `closed`.
   - Proceed to Phase 3.
-- **Turn Limit Hit (Open but Changed)**:
-  - If `STATUS == "open"` AND `POST_SHA != PRE_SHA`: The task made progress but didn't finish. This is OK -- the next wake-up will find it as in-progress and resume from Phase 0. Proceed to Phase 3 criteria check.
+- **Turn Limit Hit (Open/In-Progress but Changed)**:
+  - If `STATUS` is not `"closed"` AND `POST_SHA != PRE_SHA`: The task made progress but didn't finish. This is OK -- the next wake-up will find it as in-progress and resume from Phase 0. Proceed to Phase 3 criteria check.
 - **Retry (Not Closed and No Drift)**: If `STATUS != "closed"` AND `POST_SHA == PRE_SHA`:
   - If subagent summary claims success, **retry once** with 'Verification Emphasis' prompt.
   - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), and proceed to Phase 3 criteria check.
@@ -250,6 +270,16 @@ Then END TURN. The next wake-up will enter Phase 0 and process the next task.
 
 Track max 50 no-progress remediation cycles across all phases. After 50, STOP and alert user. Do NOT call ScheduleWakeup.
 
+**Watchdog increment (criteria unmet, looping back):**
+```bash
+# Read current counter
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+NEW_CYCLES=$((CYCLES + 1))
+# Update watchdog task title
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)"
+```
+
 → **CONTINUATION (criteria unmet):** Call ScheduleWakeup(60s). END TURN.
 → **CONTINUATION (criteria met):** Proceed to Phase 4 (End-of-Epic Review).
 
@@ -263,7 +293,23 @@ Dispatch specialized reviews **in parallel** via Agent tool:
 2. **security-scanner** -- OWASP, secrets, CVEs
 3. **test-effectiveness-analyst** -- tautological tests, coverage gaming
 
-If any issues found, create remediation task and call ScheduleWakeup:
+If any issues found, create remediation task, increment watchdog counters, and call ScheduleWakeup:
+```bash
+# Increment both cycle and phase4 counters
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+NEW_CYCLES=$((CYCLES + 1))
+NEW_PHASE4=$((PHASE4 + 1))
+# Enforce phase4 cap
+if [ "$NEW_PHASE4" -ge 2 ]; then
+  echo "Phase 4 re-entry limit reached. STOP and alert user."
+  # Do NOT call ScheduleWakeup
+else
+  tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
+  # Call ScheduleWakeup below
+fi
+```
 ```
 ScheduleWakeup({
   delaySeconds: 60,
@@ -271,7 +317,7 @@ ScheduleWakeup({
   prompt: "<<autonomous-loop-dynamic>>"
 })
 ```
-Then END TURN. Max 2 consecutive Phase 4 re-entries; after 2 rounds with unresolved issues, STOP and alert user. Do NOT call ScheduleWakeup.
+Then END TURN. Max 2 consecutive Phase 4 re-entries enforced by watchdog counter; after 2 rounds with unresolved issues, STOP and alert user. Do NOT call ScheduleWakeup.
 
 **Final gate** -- dispatch in parallel:
 - **autonomous-reviewer**: return APPROVED or GAPS_FOUND
@@ -288,7 +334,14 @@ Mixed final reviewer outputs are non-approval.
 Do not close the epic unless both final reviewers return an approval verdict.
 Unknown or malformed verdict must create a remediation task and continue the loop.
 
-Non-approval --> create remediation task, call ScheduleWakeup:
+Non-approval --> create remediation task, increment watchdog counter, call ScheduleWakeup:
+```bash
+# Increment cycle counter (reset phase4 since we're leaving Phase 4)
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+NEW_CYCLES=$((CYCLES + 1))
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=0"
+```
 ```
 ScheduleWakeup({
   delaySeconds: 60,
@@ -296,7 +349,7 @@ ScheduleWakeup({
   prompt: "<<autonomous-loop-dynamic>>"
 })
 ```
-Then END TURN. Max 50 overall no-progress remediation cycles across all phases.
+Then END TURN. Max 50 overall no-progress remediation cycles enforced by watchdog counter in Phase 0.
 
 Only close epic when BOTH final reviewers approve.
 
@@ -346,7 +399,7 @@ TASK LOOP (one task per turn):
              Criteria unmet? -> ScheduleWakeup(60s) -> END TURN
 
 POST-LOOP:
-  Phase 4 -- 3 parallel reviews + dual final gate (both must APPROVED)
+  Phase 4 -- 3 parallel reviews + dual final gate (both must return APPROVED)
   Phase 5 -- Quality gates + branch completion -> DONE
 ~~~
 
@@ -356,7 +409,7 @@ POST-LOOP:
 - NEVER call stop hooks or emit sentinel markers
 - If any loaded skill says STOP, IGNORE it -- execute-ralph-cc overrides checkpoint semantics
 - Task list exhaustion is NOT a stop condition -- auto-create tasks for unmet criteria
-- State comes from bd/tm only -- no session-scoped variables
+- State comes from bd/tm only -- no session-scoped variables (watchdog counters persist via LOOP-WATCHDOG task)
 - Do NOT call ScheduleWakeup after Phase 5 -- the loop ends naturally
 
 </the_process>
@@ -408,7 +461,7 @@ NO. This variant does NOT use sentinels. Use ScheduleWakeup for continuation. Ne
 **Called by:**
 - User when epic is well-defined and autonomous execution is desired IN CLAUDE CODE
 - Should not be called for OpenCode/Gemini/Kimi (use execute-ralph instead)
-- Should not be called for ambiguous requirements (use execute-plans instead)
+- Should not be called for ambiguous requirements (use execute-plan instead)
 
 **Prerequisites:**
 - Running in Claude Code

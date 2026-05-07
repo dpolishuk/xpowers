@@ -105,7 +105,6 @@ test("test_execute_ralph_cc_dual_final_gate", () => {
 })
 
 test("test_execute_ralph_cc_max_50_remediation_cycles", () => {
-  const command = read("commands/execute-ralph-cc.md")
   const skill = read("skills/execute-ralph-cc/SKILL.md")
 
   assert.equal(skill.includes("max 50 no-progress remediation cycles"), true)
@@ -179,4 +178,13 @@ test("test_execute_ralph_cc_phase_4_max_2_reentries", () => {
     skill.includes("Max 2 consecutive Phase 4 re-entries"),
     true,
   )
+})
+
+test("test_execute_ralph_cc_watchdog_counters_persist_across_sessions", () => {
+  const skill = read("skills/execute-ralph-cc/SKILL.md")
+
+  assert.equal(skill.includes("LOOP-WATCHDOG"), true)
+  assert.equal(skill.includes("cycles="), true)
+  assert.equal(skill.includes("phase4="), true)
+  assert.equal(skill.includes("Watchdog counter recovery"), true)
 })
