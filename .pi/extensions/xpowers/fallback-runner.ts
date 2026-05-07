@@ -22,6 +22,7 @@ import {
   cleanupForkSessionAsync,
   XPOWERS_SUBAGENT_DEPTH_ENV,
   MAX_XPOWERS_SUBAGENT_DEPTH,
+  MAX_ASYNC_SUBAGENT_OUTPUT_BYTES,
   parseSubagentDepth,
 } from "./task-runner.js"
 
@@ -270,11 +271,11 @@ export async function executeFallbackSubagentAsync(
         if (settled || pendingExitResult) return
         stdout += chunk
         stdoutBytes += Buffer.byteLength(chunk)
-        if (stdoutBytes > 1024 * 1024 * 10) {
+        if (stdoutBytes > MAX_ASYNC_SUBAGENT_OUTPUT_BYTES) {
           requestTermination(buildFailureResult(
             params.format,
             "Subagent failed (output exceeded max buffer)",
-            `stdout exceeded ${1024 * 1024 * 10} bytes`,
+            `stdout exceeded ${MAX_ASYNC_SUBAGENT_OUTPUT_BYTES} bytes`,
             "Reduce delegated output volume or narrow the task scope before retrying",
             "output-limit",
           ), "output-limit")
@@ -284,11 +285,11 @@ export async function executeFallbackSubagentAsync(
         if (settled || pendingExitResult) return
         stderr += chunk
         stderrBytes += Buffer.byteLength(chunk)
-        if (stderrBytes > 1024 * 1024 * 10) {
+        if (stderrBytes > MAX_ASYNC_SUBAGENT_OUTPUT_BYTES) {
           requestTermination(buildFailureResult(
             params.format,
             "Subagent failed (output exceeded max buffer)",
-            `stderr exceeded ${1024 * 1024 * 10} bytes`,
+            `stderr exceeded ${MAX_ASYNC_SUBAGENT_OUTPUT_BYTES} bytes`,
             "Reduce delegated output volume or narrow the task scope before retrying",
             "output-limit",
           ), "output-limit")
