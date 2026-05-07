@@ -1,5 +1,5 @@
 {
-  "_comment": "Skill and agent activation rules for xpowers plugin - 19 skills + 1 agent = 20 total",
+  "_comment": "Skill and agent activation rules for xpowers plugin - 20 skills + 1 agent = 21 total",
   "_schema": {
     "description": "Each skill/agent has type, enforcement, priority, and triggers",
     "type": "process|domain|workflow|agent",
@@ -135,6 +135,19 @@
         "(execute|run|start).*?(ralph|execute-ralph)",
         "(autonomous|hands-off).*(epic|execution|workflow)",
         "(complete|finish).*?(epic).*(without|no).*(checkpoint|stop)"
+      ]
+    }
+  },
+  "execute-ralph-cc": {
+    "type": "workflow",
+    "enforcement": "suggest",
+    "priority": "critical",
+    "promptTriggers": {
+      "keywords": ["execute-ralph-cc", "ralph-cc", "autonomous loop claude code", "schedule wakeup epic", "run full epic claude code"],
+      "intentPatterns": [
+        "(execute|run|start).*?(ralph-cc|execute-ralph-cc)",
+        "(autonomous|hands-off).*(epic|execution).*?(claude.?code|cc)",
+        "(schedule.*?wakeup|loop).*?(epic|ralph)"
       ]
     }
   },
