@@ -8,8 +8,6 @@ import {
   STRUCTURED_TASK_STATUSES,
   buildPiTaskArgs,
   buildStructuredTaskPrompt,
-  executePiTask,
-  executePiTaskAsync,
   normalizeThinkingLevel,
   parseStructuredTaskOutput,
   parseSubagentDepth,
@@ -22,6 +20,7 @@ import {
   type StructuredTaskOutput,
   type StructuredTaskStatus,
 } from "./task-runner"
+import { executeFallbackSubagent, executeFallbackSubagentAsync } from "./fallback-runner"
 
 export type PiSubagentFormat = PiTaskFormat
 export type StructuredSubagentStatus = StructuredTaskStatus
@@ -31,6 +30,21 @@ export interface ExecutePiSubagentParams extends ExecutePiTaskParams {}
 export type { SpawnSyncLike, SpawnAsyncLike }
 export { XPOWERS_SUBAGENT_DEPTH_ENV, MAX_XPOWERS_SUBAGENT_DEPTH, MAX_ASYNC_SUBAGENT_OUTPUT_BYTES, PI_THINKING_LEVELS }
 export const STRUCTURED_SUBAGENT_STATUSES = STRUCTURED_TASK_STATUSES
+
+// Re-export bridge types for consumers that need advanced execution modes
+export type {
+  SubagentBridgeParams,
+  ChainStep,
+  ParallelTask,
+  RoutingEntry,
+} from "./subagent-bridge.js"
+export {
+  executeSubagent,
+  executeSubagentAsync,
+  translateToPiSubagents,
+  tryLoadPiSubagents,
+  clearPiSubagentsCache,
+} from "./subagent-bridge.js"
 
 export function buildStructuredSubagentTask(task: string): string {
   return buildStructuredTaskPrompt(task)
@@ -51,7 +65,7 @@ export function executePiSubagent(
   params: ExecutePiSubagentParams,
   run: SpawnSyncLike = spawnSync,
 ): PiSubagentResult {
-  return executePiTask({
+  return executeFallbackSubagent({
     ...params,
     contextMode: "fresh",
   }, run)
@@ -62,7 +76,7 @@ export async function executePiSubagentAsync(
   run: SpawnAsyncLike = spawn,
   signal?: AbortSignal,
 ): Promise<PiSubagentResult> {
-  return await executePiTaskAsync({
+  return await executeFallbackSubagentAsync({
     ...params,
     contextMode: "fresh",
   }, run, signal)
