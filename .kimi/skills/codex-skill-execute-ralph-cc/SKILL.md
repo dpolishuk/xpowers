@@ -502,3 +502,118 @@ NO. This variant does NOT use sentinels. Use ScheduleWakeup for continuation. Ne
 - User must trust autonomous execution
 
 </integration>
+
+<examples>
+
+<example>
+<scenario>Typical autonomous epic execution from start to finish</scenario>
+
+<code>
+User: "run ralph on epic bd-42"
+
+Phase 0 (first wake-up):
+  EPIC_ID=bd-42
+  bv --robot-triage bd-42  # finds 3 open tasks, first is bd-43
+  tm ready                  # bd-43 is ready
+  No in-progress task → Path B (new task)
+
+Phase 1:
+  tm update bd-43 --status in_progress
+  # SRE refinement on bd-43
+  Agent(subagent-driven-development, task=bd-43)
+
+Phase 2:
+  Agent returns: task bd-43 completed, committed
+
+Phase 3:
+  POST_SHA != PRE_SHA → genuine progress
+  bv --robot-triage bd-42 → criteria NOT all met
+  ScheduleWakeup(60s, "<<autonomous-loop-dynamic>>")
+
+[... 2 more task cycles for bd-44, bd-45 ...]
+
+Phase 0 (wake-up after bd-45):
+  bv --robot-triage bd-42 → ALL criteria met → Path C
+
+Phase 4:
+  Agent(review-quality) + Agent(security-scanner) + Agent(test-effectiveness-analyst)
+  All return PASS → proceed to final gate
+  Agent(autonomous-reviewer) → APPROVED
+  Agent(review-implementation) → PASS
+
+Phase 5:
+  xpowers:finishing-a-development-branch
+  No ScheduleWakeup — epic complete
+</code>
+</example>
+
+<example>
+<scenario>Watchdog counter prevents infinite loop on stuck epic</scenario>
+
+<code>
+Phase 0 (wake-up):
+  bv --robot-triage bd-42 → criteria NOT met, no ready task
+  tm create "Auto-task: remaining criteria" --parent bd-42
+  LOOP-WATCHDOG task found: cycles=48 phase4=0
+  cycles < 50 → continue
+
+Phase 1-3:
+  Task bd-48 dispatched, completes
+  ScheduleWakeup(60s)
+
+[... bd-49 also completes but criteria still unmet ...]
+
+Phase 0 (wake-up):
+  LOOP-WATCHDOG: cycles=49 phase4=0
+  Still < 50 → continue
+
+Phase 1-3:
+  Task bd-50 dispatched, NO progress (SHA unchanged)
+  cycles incremented to 50
+
+Phase 0 (wake-up):
+  LOOP-WATCHDOG: cycles=50 phase4=0
+  cycles >= 50 → STOP, alert user:
+  "Epic bd-42 stuck: 50 no-progress cycles. Manual intervention needed."
+</code>
+</example>
+
+<example>
+<scenario>Phase 4 remediation with cap enforcement</scenario>
+
+<code>
+Phase 4 (first entry):
+  3 reviews pass → final gate
+  Agent(autonomous-reviewer) → GAPS_FOUND
+  phase4 counter: 0 → 1
+  Create remediation task bd-51
+  ScheduleWakeup(60s)
+
+[... bd-51 completes, criteria still met, re-enter Phase 4 ...]
+
+Phase 4 (second entry):
+  3 reviews pass → final gate
+  Agent(review-implementation) → ISSUES_FOUND
+  phase4 counter: 1 → 2
+  NEW_PHASE4 >= 2 → STOP, alert user:
+  "Phase 4 re-entry limit (2) reached. Final gate keeps failing. Manual review needed."
+</code>
+</example>
+
+</examples>
+
+<verification_checklist>
+
+Before claiming epic execution is complete:
+- [ ] Phase 0 reconstructs full state from bd/tm on every wake-up (no session variables)
+- [ ] Exactly one task processed per turn via Agent subagent dispatch
+- [ ] ScheduleWakeup used for continuation (never stop hooks or sentinels)
+- [ ] Watchdog task created with deferred status (never selected by tm ready)
+- [ ] No-progress counter only increments on zero SHA drift, resets to 0 on genuine progress
+- [ ] Phase 4 cap (max 2 consecutive re-entries) enforced, stops and alerts user when exceeded
+- [ ] Quick-review Critical/High findings block Phase 4 entry and route back to task loop
+- [ ] Partial-progress tasks (non-closed with SHA drift) skip Phase 3 review
+- [ ] Dual final gate requires both APPROVED (autonomous-reviewer + review-implementation)
+- [ ] Phase 5 calls finishing-a-development-branch, no ScheduleWakeup after completion
+
+</verification_checklist>
