@@ -679,7 +679,7 @@ with open('$tmp', 'w') as f:
     echo "  Uses local ONNX embeddings (no API key needed for embeddings)."
     echo "  Memories stored as plain markdown files in ~/.memsearch/memory/"
     echo ""
-    read -r -p "  Install memsearch? [y/N] " answer
+    read -r -p "  Install memsearch? [y/N] " answer </dev/tty
     if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
       if command -v python3 >/dev/null 2>&1; then
         echo "  Installing memsearch[onnx]..."
@@ -770,7 +770,7 @@ install_opencode() {
     echo "  This runs the interactive routing wizard (you can also run it later"
     echo "  with: bun scripts/opencode-routing-wizard.ts)"
     echo ""
-    read -r -p "  Run routing wizard? [y/N] " answer
+    read -r -p "  Run routing wizard? [y/N] " answer </dev/tty
     if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
       bun "${REPO_ROOT}/scripts/opencode-routing-wizard.ts" || warn "Routing wizard failed"
     fi
@@ -783,7 +783,7 @@ install_opencode() {
     echo "  Uses local ONNX embeddings (no API key needed for embeddings)."
     echo "  Memories stored as plain markdown files in ~/.memsearch/memory/"
     echo ""
-    read -r -p "  Install memsearch? [y/N] " answer
+    read -r -p "  Install memsearch? [y/N] " answer </dev/tty
     if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
       if command -v python3 >/dev/null 2>&1; then
         echo "  Installing memsearch[onnx]..."
