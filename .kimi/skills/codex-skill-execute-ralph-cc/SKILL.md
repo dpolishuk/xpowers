@@ -20,7 +20,7 @@ flowchart TD
     SW2 --> W
     P4 -->|both APPROVED| P5[Phase 5: Branch Completion]
     P5 --> E([Done - no ScheduleWakeup])
-```
+```text
 
 <skill_overview>
 Execute a complete epic autonomously using Claude Code's native ScheduleWakeup tool. Each turn processes exactly one task via Agent subagent dispatch. After each task, if epic criteria remain unmet, calls ScheduleWakeup(60s) to schedule the next wake-up. On wake-up, re-enters Phase 0 which reconstructs all state from bd/tm. End-of-epic: 3 specialized reviews in parallel, then dual final gate (autonomous-reviewer + review-implementation). Branch completion via finishing-a-development-branch. No stop hooks or sentinel protocol.
@@ -63,13 +63,13 @@ This skill uses `ScheduleWakeup` for continuation instead of stop hooks or senti
 | After Phase 5 | Branch complete, present summary |
 
 **Call template:**
-```
+```text
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Continue execute-ralph-cc task loop, next task from epic bd-EPIC",
   prompt: "<<autonomous-loop-dynamic>>"
 })
-```
+```text
 
 The `prompt` parameter `<<autonomous-loop-dynamic>>` is resolved by the runtime to autonomous loop instructions on wake-up, causing re-entry into this skill's Phase 0.
 
@@ -93,23 +93,23 @@ This phase runs at the start of EVERY turn. It reconstructs all context from bd/
 
 ```bash
 bv --robot-triage || (tm ready && tm list)
-```
+```text
 **Health gate:** If dependency cycles exist, alert user and stop. Do NOT call ScheduleWakeup.
 
 ```bash
 tm list --type epic --status open
-```
+```text
 Identify the active epic. If no epic exists, alert user and stop.
 
 ```bash
 tm show bd-EPIC
-```
+```text
 Load epic requirements, success criteria (immutable), and anti-patterns.
 
 ```bash
 tm list --status in_progress
 tm ready
-```
+```text
 
 Determine the path:
 - **A) In-progress task exists** -- resume it, proceed to Phase 1.
@@ -120,22 +120,22 @@ Determine the path:
 **Branch check:**
 ```bash
 git branch --show-current
-```
+```text
 If on main/default branch, create feature branch:
 ```bash
 BRANCH_NAME=$(echo "[epic-title]" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
 git checkout -b "feature/${BRANCH_NAME}"
-```
+```text
 If already on a feature branch, continue.
 
 **Watchdog counter recovery:**
 ```bash
 tm list --type chore | grep "LOOP-WATCHDOG: bd-EPIC"
-```
+```text
 If a watchdog task exists, read its no-progress counter from the title:
 ```bash
 tm show bd-WATCHDOG --json | jq -r .title
-```
+```text
 Title format: `LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N`
 - `cycles` = total no-progress remediation cycles (max 50)
 - `phase4` = consecutive Phase 4 re-entries (max 2)
@@ -147,7 +147,7 @@ If no watchdog task exists, create one as deferred so it is never picked up by `
 tm create "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=0" --type chore --priority 4
 tm dep add bd-WATCHDOG bd-EPIC --type parent-child
 tm update bd-WATCHDOG --status deferred
-```
+```text
 
 → **CONTINUATION:** Phase 0 complete. State recovered from bd/tm. Proceed to Phase 1 (if tasks remain) or Phase 4 (if all criteria met).
 
@@ -165,7 +165,7 @@ If arriving from Phase 0 path A (in-progress task):
 If arriving from Phase 0 path B (ready task):
 ```bash
 tm update bd-N --status in_progress
-```
+```text
 
 If arriving from Phase 0 path D (auto-create):
 ```bash
@@ -173,13 +173,13 @@ tm create "Task: [criterion gap]" --type feature --priority 1 \
   --design "## Goal\n[Close unmet criterion]\n## Success Criteria\n- [ ] Gap closed"
 tm dep add bd-NEW bd-EPIC --type parent-child
 tm update bd-NEW --status in_progress
-```
+```text
 
 ### Refinement
 
 ```bash
 tm show bd-N
-```
+```text
 
 Run SRE refinement on the selected task:
 Use Skill tool: `xpowers:sre-task-refinement` (prefer Opus 4.1 model)
@@ -196,12 +196,12 @@ Load full task context:
 ```bash
 tm show bd-EPIC    # epic requirements
 tm show bd-N       # task design
-```
+```text
 
 **Before dispatching**, record current HEAD:
 ```bash
 PRE_SHA=$(git rev-parse HEAD)
-```
+```text
 
 **Launch Agent tool** using the canonical 'Dispatch Protocol' from `subagent-driven-development`.
 
@@ -216,7 +216,7 @@ Use the **Subagent Prompt Template** from `subagent-driven-development` skill, p
 POST_SHA=$(git rev-parse HEAD)
 TASK_TYPE=$(tm show bd-N --json | jq -r .type)
 STATUS=$(tm show bd-N --json | jq -r .status)
-```
+```text
 
 - **Success**:
   - Require `STATUS == "closed"`.
@@ -244,26 +244,34 @@ Dispatch `autonomous-reviewer` agent for the completed task.
 **Remediation Path**:
 If the review finds **Critical** or **High** issues:
 - Create remediation task: `tm create "Remediation: [Findings]" --parent bd-EPIC`.
-- This will be picked up on the next wake-up cycle.
+- **Do NOT proceed to Phase 4 even if criteria appear met.** Call ScheduleWakeup to return to Phase 0, which will pick up the new remediation task:
+```text
+ScheduleWakeup({
+  delaySeconds: 60,
+  reason: "Quick review found Critical/High issues, remediation task created for epic bd-EPIC",
+  prompt: "<<autonomous-loop-dynamic>>"
+})
+```
+END TURN. The remediation task must be completed before entering Phase 4.
 
 ### Criteria check
 
 ```bash
 tm show bd-EPIC   # re-read success criteria
-```
+```text
 
 **This is the loop decision point.**
 
 **A) ALL criteria are met** --> EXIT TASK LOOP. Proceed to Phase 4 (End-of-Epic Review).
 
 **B) Criteria remain unmet AND tasks exist (ready or can be created)** --> CONTINUE LOOP. Call ScheduleWakeup:
-```
+```text
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Continue execute-ralph-cc task loop, next task from epic bd-EPIC",
   prompt: "<<autonomous-loop-dynamic>>"
 })
-```
+```text
 Then END TURN. The next wake-up will enter Phase 0 and process the next task.
 
 **C) Critical blocker** --> Alert user with findings. Do NOT call ScheduleWakeup. Loop terminates.
@@ -278,7 +286,7 @@ If the task completed successfully (STATUS == "closed" with SHA drift), reset th
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=${PHASE4}"
-```
+```text
 
 **Watchdog increment (remediation only -- retry or review failure):**
 Only increment the cycles counter when a task did NOT make progress (retry path, hallucinated completion, or review found Critical/High issues). Do NOT increment after successful task completions even if criteria remain unmet.
@@ -288,7 +296,7 @@ CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
-```
+```text
 
 → **CONTINUATION (criteria unmet):** Call ScheduleWakeup(60s). END TURN.
 → **CONTINUATION (criteria met):** Proceed to Phase 4 (End-of-Epic Review).
@@ -319,16 +327,16 @@ else
   tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
   # Only call ScheduleWakeup when NOT capped
 fi
-```
+```text
 
 If Phase 4 cap NOT reached, call ScheduleWakeup:
-```
+```text
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "End-of-epic review found issues, remediation task created for epic bd-EPIC",
   prompt: "<<autonomous-loop-dynamic>>"
 })
-```
+```text
 
 If Phase 4 cap reached (phase4 >= 2): STOP and alert user. Do NOT call ScheduleWakeup. Loop terminates. Max 2 consecutive Phase 4 re-entries enforced by watchdog counter.
 
@@ -356,14 +364,14 @@ WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=0"
-```
-```
+```text
+```text
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Final gate non-approval for epic bd-EPIC, remediation task created",
   prompt: "<<autonomous-loop-dynamic>>"
 })
-```
+```text
 Then END TURN. Max 50 overall no-progress remediation cycles enforced by watchdog counter in Phase 0.
 
 Only close epic when BOTH final reviewers approve.
@@ -383,15 +391,15 @@ node --test tests/execute-ralph-cc-contract.test.js
 node --test tests/codex-*.test.js
 node --test tests/*.test.js
 node scripts/sync-codex-skills.js --check
-```
+```text
 
 If any verification fails, create remediation task and call ScheduleWakeup to return to task loop.
 
 In guarded environments, direct .git/hooks/pre-commit execution may be blocked by safety guardrails.
 
-```
+```text
 Use Skill tool: xpowers:finishing-a-development-branch
-```
+```text
 
 **Autonomous override:** When the skill presents integration options, auto-select **option 2 (Push and create Pull Request)** without waiting for user input. This is autonomous execution -- do not present options or wait.
 
@@ -403,7 +411,7 @@ AFTER FINISHING BRANCH RETURNS: Present summary (tasks completed, commits made, 
 
 If you have lost track of where you are in the loop, re-read this summary:
 
-~~~
+```text
 EVERY WAKE-UP: Phase 0 -- Read state from bd/tm (bv --robot-triage, tm show bd-EPIC, tm ready)
 
 TASK LOOP (one task per turn):
@@ -416,7 +424,7 @@ TASK LOOP (one task per turn):
 POST-LOOP:
   Phase 4 -- 3 parallel reviews + dual final gate (both must return APPROVED)
   Phase 5 -- Quality gates + branch completion -> DONE
-~~~
+```
 
 **Key rules:**
 - You are running AUTONOMOUSLY -- no user checkpoints

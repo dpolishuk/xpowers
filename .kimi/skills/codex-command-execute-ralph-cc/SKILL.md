@@ -24,7 +24,7 @@ type: flow
 
 # Usage
 
-```
+```text
 /xpowers:execute-ralph-cc [--reviewer-model=opus|sonnet]
 ```
 
