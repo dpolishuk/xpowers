@@ -63,7 +63,7 @@ export type SpawnAsyncLike = (
   },
 ) => ChildProcess
 
-interface ForkSession {
+export interface ForkSession {
   dir: string
   seedPath: string
 }
@@ -159,7 +159,7 @@ export function parseSubagentDepth(value?: string): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
 }
 
-function buildFailureResult(
+export function buildFailureResult(
   format: PiTaskFormat | undefined,
   summary: string,
   details: string,
@@ -215,7 +215,7 @@ export function buildPiTaskArgs(
   return args
 }
 
-function createForkSessionSync(sessionSeedPath: string): ForkSession {
+export function createForkSessionSync(sessionSeedPath: string): ForkSession {
   const dir = mkdtempSync(join(tmpdir(), "pi-task-runner-"))
   const seedPath = join(dir, "seed.jsonl")
   try {
@@ -227,7 +227,7 @@ function createForkSessionSync(sessionSeedPath: string): ForkSession {
   }
 }
 
-async function createForkSessionAsync(sessionSeedPath: string): Promise<ForkSession> {
+export async function createForkSessionAsync(sessionSeedPath: string): Promise<ForkSession> {
   const dir = await mkdtemp(join(tmpdir(), "pi-task-runner-"))
   const seedPath = join(dir, "seed.jsonl")
   try {
@@ -239,27 +239,27 @@ async function createForkSessionAsync(sessionSeedPath: string): Promise<ForkSess
   }
 }
 
-function cleanupForkSessionSync(session?: ForkSession): void {
+export function cleanupForkSessionSync(session?: ForkSession): void {
   if (!session) return
   rmSync(session.dir, { recursive: true, force: true })
 }
 
-async function cleanupForkSessionAsync(session?: ForkSession): Promise<void> {
+export async function cleanupForkSessionAsync(session?: ForkSession): Promise<void> {
   if (!session) return
   await rm(session.dir, { recursive: true, force: true })
 }
 
-function resolveContextMode(params: ExecutePiTaskParams): PiTaskContextMode {
+export function resolveContextMode(params: ExecutePiTaskParams): PiTaskContextMode {
   return params.contextMode ?? "fresh"
 }
 
-function prepareTask(params: ExecutePiTaskParams): string {
+export function prepareTask(params: ExecutePiTaskParams): string {
   return params.format === "structured"
     ? buildStructuredTaskPrompt(params.task)
     : params.task
 }
 
-function buildContextFailure(
+export function buildContextFailure(
   format: PiTaskFormat | undefined,
   contextMode: PiTaskContextMode,
   details = `Context mode '${contextMode}' requires a session seed path but none was provided`,

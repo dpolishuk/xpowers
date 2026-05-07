@@ -8,8 +8,6 @@ import {
   STRUCTURED_TASK_STATUSES,
   buildPiTaskArgs,
   buildStructuredTaskPrompt,
-  executeFallbackSubagent,
-  executeFallbackSubagentAsync,
   normalizeThinkingLevel,
   parseStructuredTaskOutput,
   parseSubagentDepth,
@@ -21,7 +19,8 @@ import {
   type SpawnSyncLike,
   type StructuredTaskOutput,
   type StructuredTaskStatus,
-} from "./fallback-runner"
+} from "./task-runner"
+import { executeFallbackSubagent, executeFallbackSubagentAsync } from "./fallback-runner"
 
 export type PiSubagentFormat = PiTaskFormat
 export type StructuredSubagentStatus = StructuredTaskStatus

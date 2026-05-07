@@ -4,8 +4,6 @@
  */
 
 import {
-  executeFallbackSubagent,
-  executeFallbackSubagentAsync,
   type ExecutePiTaskParams,
   type PiTaskFormat,
   type PiTaskResult,
@@ -13,7 +11,8 @@ import {
   type SpawnAsyncLike,
   buildStructuredTaskPrompt,
   PI_THINKING_LEVELS,
-} from "./fallback-runner.js"
+} from "./task-runner.js"
+import { executeFallbackSubagent, executeFallbackSubagentAsync } from "./fallback-runner.js"
 
 export interface SubagentBridgeParams extends Omit<ExecutePiTaskParams, "task"> {
   task?: string

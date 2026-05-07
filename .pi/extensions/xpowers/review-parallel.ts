@@ -4,7 +4,7 @@ import { resolveRoutingEntry, type RoutingConfig, normalizeRoutingConfig } from 
 import { readFileSync, existsSync } from "node:fs"
 import { join, dirname, basename, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { StructuredTaskOutput } from "./fallback-runner.js"
+import type { StructuredTaskOutput } from "./task-runner"
 
 export interface ResolvedParallelReviewRoute {
   model?: string | null

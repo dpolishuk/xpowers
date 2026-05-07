@@ -1,259 +1,53 @@
 /**
- * Fallback subagent runner — extracted from task-runner.ts.
+ * Fallback subagent runner — delegates to task-runner.ts.
  * Used when pi-subagents is unavailable or incompatible.
  * Preserves exact behavior of the original executePiTask / executePiTaskAsync.
  */
 
-import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process"
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs"
-import { copyFile, mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { spawn, spawnSync } from "node:child_process"
+import {
+  type PiTaskFormat,
+  type PiTaskResult,
+  type SpawnSyncLike,
+  type SpawnAsyncLike,
+  buildPiTaskArgs,
+  buildFailureResult,
+  parseStructuredTaskOutput,
+  prepareTask,
+  resolveContextMode,
+  buildContextFailure,
+  createForkSessionSync,
+  createForkSessionAsync,
+  cleanupForkSessionSync,
+  cleanupForkSessionAsync,
+  XPOWERS_SUBAGENT_DEPTH_ENV,
+  MAX_XPOWERS_SUBAGENT_DEPTH,
+  parseSubagentDepth,
+} from "./task-runner.js"
 
-export type PiTaskFormat = "text" | "structured"
-export type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
-export type PiTaskContextMode = "fresh" | "fork"
-
-export const STRUCTURED_TASK_STATUSES = ["PASS", "ISSUES_FOUND", "FAIL"] as const
-export const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const
-export const XPOWERS_SUBAGENT_DEPTH_ENV = "XPOWERS_SUBAGENT_DEPTH"
-export const MAX_XPOWERS_SUBAGENT_DEPTH = 1
-export const MAX_ASYNC_SUBAGENT_OUTPUT_BYTES = 1024 * 1024 * 10
-export type StructuredTaskStatus = typeof STRUCTURED_TASK_STATUSES[number]
-
-export interface StructuredTaskOutput {
-  status: StructuredTaskStatus
-  summary: string
-  findings: unknown[]
-  nextAction?: string
-}
-
-export interface ExecutePiTaskParams {
-  task: string
-  model?: string | null
-  effort?: string
-  cwd?: string
-  format?: PiTaskFormat
-  contextMode?: PiTaskContextMode
-  sessionSeedPath?: string
-}
-
-export type SpawnSyncLike = (
-  command: string,
-  args: string[],
-  options: {
-    encoding: "utf8"
-    timeout: number
-    maxBuffer: number
-    cwd: string
-    env: NodeJS.ProcessEnv
-  },
-) => SpawnSyncReturns<string>
-
-export interface PiTaskResult {
-  content: Array<{ type: "text"; text: string }>
-}
-
-export type SpawnAsyncLike = (
-  command: string,
-  args: string[],
-  options: {
-    cwd: string
-    env: NodeJS.ProcessEnv
-    stdio: ["ignore", "pipe", "pipe"]
-  },
-) => import("node:child_process").ChildProcess
-
-interface ForkSession {
-  dir: string
-  seedPath: string
-}
-
-export function buildStructuredTaskPrompt(task: string): string {
-  return `${task}\n\nReturn valid JSON only. Do not include markdown fences, commentary, or prose outside the JSON object. Use exactly this shape:\n{\n  "status": "PASS|ISSUES_FOUND|FAIL",\n  "summary": "short summary",\n  "findings": [],\n  "nextAction": "optional next step"\n}`
-}
-
-export function parseStructuredTaskOutput(output: string): StructuredTaskOutput {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(output)
-  } catch {
-    throw new Error("Structured subagent output was not valid JSON")
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Structured subagent output must be a JSON object")
-  }
-
-  const candidate = parsed as Record<string, unknown>
-  if (typeof candidate.status !== "string") {
-    throw new Error("Structured subagent output must include string field 'status'")
-  }
-  if (!STRUCTURED_TASK_STATUSES.includes(candidate.status as StructuredTaskStatus)) {
-    throw new Error("Structured subagent output field 'status' must be one of PASS, ISSUES_FOUND, FAIL")
-  }
-  if (typeof candidate.summary !== "string") {
-    throw new Error("Structured subagent output must include string field 'summary'")
-  }
-  if (!Array.isArray(candidate.findings)) {
-    throw new Error("Structured subagent output must include array field 'findings'")
-  }
-  if (candidate.nextAction !== undefined && typeof candidate.nextAction !== "string") {
-    throw new Error("Structured subagent output field 'nextAction' must be a string when present")
-  }
-
-  return {
-    status: candidate.status as StructuredTaskStatus,
-    summary: candidate.summary,
-    findings: candidate.findings,
-    nextAction: candidate.nextAction as string | undefined,
-  }
-}
-
-export function normalizeThinkingLevel(effort?: string): PiThinkingLevel | undefined {
-  if (!effort) return undefined
-  return PI_THINKING_LEVELS.includes(effort as PiThinkingLevel)
-    ? effort as PiThinkingLevel
-    : undefined
-}
-
-export function parseSubagentDepth(value?: string): number {
-  if (!value) return 0
-  const parsed = Number.parseInt(value, 10)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
-}
-
-function buildFailureResult(
-  format: PiTaskFormat | undefined,
-  summary: string,
-  details: string,
-  nextAction: string,
-  findingType = "subprocess-error",
-): PiTaskResult {
-  if (format === "structured") {
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({
-        status: "FAIL",
-        summary,
-        findings: [{
-          message: details,
-          type: findingType,
-          source: "pi-subagent",
-        }],
-        nextAction,
-      }) }],
-    }
-  }
-
-  return {
-    content: [{ type: "text" as const, text: `${summary}: ${details}` }],
-  }
-}
-
-export function buildPiTaskArgs(
-  task: string,
-  model?: string | null,
-  thinking?: string,
-  contextMode: PiTaskContextMode = "fresh",
-  sessionPath?: string,
-  sessionDir?: string,
-): string[] {
-  const args = ["--print"]
-  if (contextMode === "fresh") {
-    args.push("--no-session")
-  } else {
-    if (!sessionPath || !sessionDir) {
-      throw new Error("Fork context requires sessionPath and sessionDir")
-    }
-    args.push("--session", sessionPath, "--session-dir", sessionDir)
-  }
-
-  if (model) {
-    args.push("--model", model)
-  }
-  const normalizedThinking = normalizeThinkingLevel(thinking)
-  if (normalizedThinking) {
-    args.push("--thinking", normalizedThinking)
-  }
-  args.push(task)
-  return args
-}
-
-function createForkSessionSync(sessionSeedPath: string): ForkSession {
-  const dir = mkdtempSync(join(tmpdir(), "pi-task-runner-"))
-  const seedPath = join(dir, "seed.jsonl")
-  try {
-    copyFileSync(sessionSeedPath, seedPath)
-    return { dir, seedPath }
-  } catch (error) {
-    rmSync(dir, { recursive: true, force: true })
-    throw error
-  }
-}
-
-async function createForkSessionAsync(sessionSeedPath: string): Promise<ForkSession> {
-  const dir = await mkdtemp(join(tmpdir(), "pi-task-runner-"))
-  const seedPath = join(dir, "seed.jsonl")
-  try {
-    await copyFile(sessionSeedPath, seedPath)
-    return { dir, seedPath }
-  } catch (error) {
-    await rm(dir, { recursive: true, force: true })
-    throw error
-  }
-}
-
-function cleanupForkSessionSync(session?: ForkSession): void {
-  if (!session) return
-  try {
-    rmSync(session.dir, { recursive: true, force: true })
-  } catch {
-    // Best-effort cleanup — don't let cleanup errors override subagent results
-  }
-}
-
-async function cleanupForkSessionAsync(session?: ForkSession): Promise<void> {
-  if (!session) return
-  try {
-    await rm(session.dir, { recursive: true, force: true })
-  } catch {
-    // Best-effort cleanup — don't let cleanup errors override subagent results
-  }
-}
-
-function resolveContextMode(params: ExecutePiTaskParams): PiTaskContextMode {
-  return params.contextMode ?? "fresh"
-}
-
-function prepareTask(params: ExecutePiTaskParams): string {
-  return params.format === "structured"
-    ? buildStructuredTaskPrompt(params.task)
-    : params.task
-}
-
-function buildContextFailure(
-  format: PiTaskFormat | undefined,
-  contextMode: PiTaskContextMode,
-  details = `Context mode '${contextMode}' requires a session seed path but none was provided`,
-): PiTaskResult {
-  const isMissingSeed = details.includes("session seed path")
-  const summary = isMissingSeed
-    ? `Subagent failed (${contextMode} context unavailable)`
-    : `Subagent failed (${contextMode} context setup error)`
-  const nextAction = isMissingSeed
-    ? "Retry with a fresh context or supply a valid parent session seed before using fork mode"
-    : "Inspect the error details and retry with a fresh context if the issue persists"
-  return buildFailureResult(
-    format,
-    summary,
-    details,
-    nextAction,
-    isMissingSeed ? "missing-session" : "fork-setup-error",
-  )
-}
+export {
+  type PiTaskFormat,
+  type PiTaskResult,
+  type SpawnSyncLike,
+  type SpawnAsyncLike,
+  buildStructuredTaskPrompt,
+  parseStructuredTaskOutput,
+  normalizeThinkingLevel,
+  parseSubagentDepth,
+  XPOWERS_SUBAGENT_DEPTH_ENV,
+  MAX_XPOWERS_SUBAGENT_DEPTH,
+  MAX_ASYNC_SUBAGENT_OUTPUT_BYTES,
+  PI_THINKING_LEVELS,
+  STRUCTURED_TASK_STATUSES,
+  type StructuredTaskStatus,
+  type StructuredTaskOutput,
+  type ExecutePiTaskParams,
+  type PiThinkingLevel,
+  type PiTaskContextMode,
+} from "./task-runner.js"
 
 export function executeFallbackSubagent(
-  params: ExecutePiTaskParams,
+  params: import("./task-runner.js").ExecutePiTaskParams,
   run: SpawnSyncLike = spawnSync,
 ): PiTaskResult {
   const task = prepareTask(params)
@@ -274,7 +68,7 @@ export function executeFallbackSubagent(
     return buildContextFailure(params.format, contextMode)
   }
 
-  let forkSession: ForkSession | undefined
+  let forkSession: { dir: string; seedPath: string } | undefined
   try {
     if (contextMode === "fork" && params.sessionSeedPath) {
       try {
@@ -347,7 +141,7 @@ export function executeFallbackSubagent(
 }
 
 export async function executeFallbackSubagentAsync(
-  params: ExecutePiTaskParams,
+  params: import("./task-runner.js").ExecutePiTaskParams,
   run: SpawnAsyncLike = spawn,
   signal?: AbortSignal,
 ): Promise<PiTaskResult> {
@@ -379,7 +173,7 @@ export async function executeFallbackSubagentAsync(
     return buildContextFailure(params.format, contextMode)
   }
 
-  let forkSession: ForkSession | undefined
+  let forkSession: { dir: string; seedPath: string } | undefined
   try {
     if (contextMode === "fork" && params.sessionSeedPath) {
       try {
@@ -476,11 +270,11 @@ export async function executeFallbackSubagentAsync(
         if (settled || pendingExitResult) return
         stdout += chunk
         stdoutBytes += Buffer.byteLength(chunk)
-        if (stdoutBytes > MAX_ASYNC_SUBAGENT_OUTPUT_BYTES) {
+        if (stdoutBytes > 1024 * 1024 * 10) {
           requestTermination(buildFailureResult(
             params.format,
             "Subagent failed (output exceeded max buffer)",
-            `stdout exceeded ${MAX_ASYNC_SUBAGENT_OUTPUT_BYTES} bytes`,
+            `stdout exceeded ${1024 * 1024 * 10} bytes`,
             "Reduce delegated output volume or narrow the task scope before retrying",
             "output-limit",
           ), "output-limit")
@@ -490,11 +284,11 @@ export async function executeFallbackSubagentAsync(
         if (settled || pendingExitResult) return
         stderr += chunk
         stderrBytes += Buffer.byteLength(chunk)
-        if (stderrBytes > MAX_ASYNC_SUBAGENT_OUTPUT_BYTES) {
+        if (stderrBytes > 1024 * 1024 * 10) {
           requestTermination(buildFailureResult(
             params.format,
             "Subagent failed (output exceeded max buffer)",
-            `stderr exceeded ${MAX_ASYNC_SUBAGENT_OUTPUT_BYTES} bytes`,
+            `stderr exceeded ${1024 * 1024 * 10} bytes`,
             "Reduce delegated output volume or narrow the task scope before retrying",
             "output-limit",
           ), "output-limit")
