@@ -15,7 +15,7 @@ This skill wraps the source file `commands/execute-ralph-cc.md` for Codex Skills
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: execute-ralph-cc
 description: "Execute entire bd epic autonomously via ScheduleWakeup task-per-turn loop. Claude Code only. No stop hooks."
@@ -42,7 +42,7 @@ Executes a complete bd epic autonomously using Claude Code's native `ScheduleWak
 2. **Phase 1 - Get Task & Refine:** Uses `bv --robot-triage` output from Phase 0 to determine next task. Claims or auto-creates the next task. Runs SRE refinement.
 3. **Phase 2 - Dispatch Subagent:** Records `PRE_SHA`, dispatches Agent tool with subagent-driven-development protocol. Verifies SHA drift and task status.
 4. **Phase 3 - Post-Task Check:** Quick review. Re-reads epic criteria. If criteria unmet, calls `ScheduleWakeup(60s)` and ends turn. If criteria met, proceeds to Phase 4.
-5. **Phase 4 - End-of-Epic Review:** Dispatches 3 specialized agents in parallel (review-quality, security-scanner, test-effectiveness-analyst), then dual final gate (autonomous-reviewer + review-implementation). Both must return APPROVED. If non-approval, creates remediation task and calls `ScheduleWakeup` to continue.
+5. **Phase 4 - End-of-Epic Review:** Dispatches 3 specialized agents in parallel (review-quality, security-scanner, test-effectiveness-analyst), then dual final gate (autonomous-reviewer + review-implementation). `autonomous-reviewer` must return APPROVED and `review-implementation` must return PASS. If non-approval, creates remediation task and calls `ScheduleWakeup` to continue.
 6. **Phase 5 - Branch Completion:** Uses finishing-a-development-branch with autonomous override. Presents summary. No ScheduleWakeup -- loop ends naturally.
 
 ## ScheduleWakeup Loop Contract
@@ -123,4 +123,4 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 ---
 
 Use the `execute-ralph-cc` skill exactly as written. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
-```
+````

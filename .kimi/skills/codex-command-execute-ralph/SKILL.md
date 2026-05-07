@@ -15,7 +15,7 @@ This skill wraps the source file `commands/execute-ralph.md` for Codex Skills co
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: execute-ralph
 description: Execute entire epic autonomously with continuous review. No user checkpoints.
@@ -144,4 +144,4 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 ---
 
 Use the `execute-ralph` skill exactly as written. If Platform Routing directed you to `execute-ralph-cc`, load that skill instead. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
-```
+````

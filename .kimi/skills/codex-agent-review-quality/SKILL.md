@@ -15,7 +15,7 @@ This skill wraps the source file `agents/review-quality.md` for Codex Skills com
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: review-quality
 description: Quality reviewer - finds bugs, race conditions, error handling gaps, resource leaks. Returns PASS or ISSUES_FOUND with severity.
@@ -85,4 +85,4 @@ Recommendations:
 - Performance unless it's a clear problem
 - Documentation gaps (review-documentation handles this)
 - Security vulnerabilities (security-scanner handles OWASP, secrets, CVEs)
-```
+````

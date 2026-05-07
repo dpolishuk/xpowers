@@ -15,7 +15,7 @@ This skill wraps the source file `agents/codebase-investigator.md` for Codex Ski
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: codebase-investigator
@@ -127,4 +127,4 @@ When investigating a codebase, you will:
    - LARGE: Architecture overview, key locations, areas requiring follow-up
 
 Your goal is to provide accurate, verified information about codebase state so that planning and design decisions are grounded in reality, not assumptions. Be thorough in investigation, honest about what you can't find, and concise in reporting.
-```
+````

@@ -15,7 +15,7 @@ This skill wraps the source file `agents/review-simplification.md` for Codex Ski
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: review-simplification
 description: Simplification reviewer - detects over-engineering, unnecessary complexity, premature abstractions. Returns PASS or ISSUES_FOUND.
@@ -93,4 +93,4 @@ Dead Code:
 - Abstractions with multiple consumers
 - Code that follows established project patterns
 - Defensive coding for known edge cases
-```
+````

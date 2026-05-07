@@ -15,7 +15,7 @@ This skill wraps the source file `agents/ralph.md` for Codex Skills compatibilit
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: ralph
@@ -165,4 +165,4 @@ You invoke:
 - `test-effectiveness-analyst` agent (end-of-epic test effectiveness review)
 
 You are the hands-off execution mode for users who trust autonomous operation.
-```
+````

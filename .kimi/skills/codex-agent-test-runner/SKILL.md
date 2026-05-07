@@ -15,7 +15,7 @@ This skill wraps the source file `agents/test-runner.md` for Codex Skills compat
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: test-runner
@@ -377,4 +377,4 @@ If tests hang, note that you're still waiting after reasonable time.
 **DO NOT truncate or summarize failures.** The user needs complete information to debug and fix issues.
 
 Your goal is to provide clean, actionable results without polluting the requestor's context with successful output or verbose formatting changes, while ensuring complete failure details for effective debugging.
-```
+````

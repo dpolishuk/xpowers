@@ -15,10 +15,10 @@ This skill wraps the source file `commands/recall.md` for Codex Skills compatibi
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Search long-term memory from previous sessions
 ---
 
 Use the xpowers:recall skill exactly as written
-```
+````

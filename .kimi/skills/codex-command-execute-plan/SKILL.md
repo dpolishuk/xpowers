@@ -15,7 +15,7 @@ This skill wraps the source file `commands/execute-plan.md` for Codex Skills com
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Execute plan in batches with review checkpoints
 ---
@@ -34,4 +34,4 @@ If no context is provided, resume from current bd state.
 4. Repeat until epic complete
 
 **Checkpoints:** Each task execution ends with a STOP checkpoint. User must run this command again to continue.
-```
+````

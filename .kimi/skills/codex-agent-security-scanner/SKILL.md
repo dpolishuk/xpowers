@@ -15,7 +15,7 @@ This skill wraps the source file `agents/security-scanner.md` for Codex Skills c
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: security-scanner
 description: Security scanner - performs OWASP Top 10 scanning, secrets detection, and dependency vulnerability checks. Returns PASS or ISSUES_FOUND with severity.
@@ -150,4 +150,4 @@ Scope: [number] files scanned, [number] dependency checks performed.
 3. **Read-only**: You scan and report. You never modify code.
 4. **Graceful degradation**: If WebFetch fails for CVE checks, note it and continue
 5. **Scope clarity**: Always report how many files were scanned
-```
+````

@@ -15,7 +15,7 @@ This skill wraps the source file `agents/code-reviewer.md` for Codex Skills comp
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: code-reviewer
@@ -75,4 +75,4 @@ When reviewing completed work, you will:
    - Always acknowledge what was done well before highlighting issues
 
 Your output should be structured, actionable, and focused on helping maintain high code quality while ensuring project goals are met. Be thorough but concise, and always provide constructive feedback that helps improve both the current implementation and future development practices.
-```
+````

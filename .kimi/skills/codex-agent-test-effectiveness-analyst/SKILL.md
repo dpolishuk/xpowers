@@ -15,7 +15,7 @@ This skill wraps the source file `agents/test-effectiveness-analyst.md` for Code
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: test-effectiveness-analyst
@@ -399,4 +399,4 @@ Target: 80%+ mutation score for critical modules
 - Rush categorization without reading production code first
 
 **Fight these temptations.** Junior engineers write plausible-looking tests. Your job is to be the skeptic who verifies they actually work.
-```
+````

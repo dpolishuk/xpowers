@@ -37,7 +37,7 @@ STRICT - Follow the six-phase flow exactly. Epic requirements are immutable. Nev
 | **1. Get Task** | Claim ready / resume in-progress / auto-create | Task identified |
 | **2. Dispatch Subagent** | Agent tool runs task end-to-end | Task done or retried |
 | **3. Post-Task Check** | Verify + criteria check | ScheduleWakeup or Phase 4 |
-| **4. End-of-Epic Review** | 3 reviews + final gate (both must return APPROVED) | Epic validated or remediation |
+| **4. End-of-Epic Review** | 3 reviews + final gate (autonomous-reviewer=APPROVED + review-implementation=PASS) | Epic validated or remediation |
 | **5. Branch Completion** | finishing-a-development-branch | Epic closed |
 
 </quick_reference>
@@ -106,13 +106,13 @@ tm show bd-EPIC
 Load epic requirements, success criteria (immutable), and anti-patterns.
 
 ```bash
-tm list --status in_progress
-tm ready
+tm list --status in_progress --parent bd-EPIC
+tm dep tree bd-EPIC  # show ready tasks scoped to this epic
 ```
 
 Determine the path:
-- **A) In-progress task exists** -- resume it, proceed to Phase 1.
-- **B) Ready task exists** -- claim it: `tm update bd-N --status in_progress`, proceed to Phase 1.
+- **A) In-progress task exists (child of bd-EPIC)** -- resume it, proceed to Phase 1.
+- **B) Ready task exists (child of bd-EPIC)** -- claim it: `tm update bd-N --status in_progress`, proceed to Phase 1.
 - **C) All criteria met and no in-progress tasks** -- proceed to Phase 4 (end-of-epic review).
 - **D) No tasks, criteria unmet** -- auto-create next task (see Phase 1), proceed to Phase 1.
 
@@ -251,6 +251,14 @@ Dispatch `autonomous-reviewer` agent for the completed task.
 **Remediation Path**:
 If the review finds **Critical** or **High** issues:
 - Create remediation task: `tm create "Remediation: [Findings]" --parent bd-EPIC`.
+- **Increment watchdog counter** (review failure is a no-progress cycle):
+```bash
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+NEW_CYCLES=$((CYCLES + 1))
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
+```
 - **Do NOT proceed to Phase 4 even if criteria appear met.** Call ScheduleWakeup to return to Phase 0, which will pick up the new remediation task:
 ```text
 ScheduleWakeup({
@@ -518,7 +526,7 @@ Phase 0 (first wake-up):
 
 Phase 1:
   tm update bd-43 --status in_progress
-  # SRE refinement on bd-43
+  \# SRE refinement on bd-43
   Agent(subagent-driven-development, task=bd-43)
 
 Phase 2:
@@ -612,7 +620,7 @@ Before claiming epic execution is complete:
 - [ ] Phase 4 cap (max 2 consecutive re-entries) enforced, stops and alerts user when exceeded
 - [ ] Quick-review Critical/High findings block Phase 4 entry and route back to task loop
 - [ ] Partial-progress tasks (non-closed with SHA drift) skip Phase 3 review
-- [ ] Dual final gate requires both APPROVED (autonomous-reviewer + review-implementation)
+- [ ] Dual final gate requires autonomous-reviewer=APPROVED and review-implementation=PASS
 - [ ] Phase 5 calls finishing-a-development-branch, no ScheduleWakeup after completion
 
 </verification_checklist>
