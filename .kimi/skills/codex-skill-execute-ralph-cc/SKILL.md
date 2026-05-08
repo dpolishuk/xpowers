@@ -66,12 +66,12 @@ This skill uses `ScheduleWakeup` for continuation instead of stop hooks or senti
 ```text
 ScheduleWakeup({
   delaySeconds: 60,
-  reason: "Continue execute-ralph-cc task loop, next task from epic bd-EPIC",
-  prompt: "<<autonomous-loop-dynamic>>"
+  reason: "<descriptive reason referencing bd-EPIC and current phase>",
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 
-The `prompt` parameter `<<autonomous-loop-dynamic>>` is resolved by the runtime to autonomous loop instructions on wake-up, causing re-entry into this skill's Phase 0.
+The `prompt` parameter contains concrete Phase 0 re-entry instructions so the wake-up always knows how to resume regardless of runtime sentinel support.
 
 **This variant does NOT use or depend on RALPH AUTOPILOT ACTIVE/COMPLETE/BLOCKED sentinels.** The loop is entirely managed by ScheduleWakeup. Do not emit sentinel markers.
 
@@ -240,7 +240,7 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   ScheduleWakeup({
     delaySeconds: 60,
     reason: "Task bd-N partial progress (turn limit hit), resuming in Phase 0",
-    prompt: "<<autonomous-loop-dynamic>>"
+    prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
   })
   ```
   END TURN. The next wake-up will find the task as in-progress and resume from Phase 0.
@@ -258,7 +258,7 @@ STATUS=$(tm show bd-N --json | jq -r .status)
     ScheduleWakeup({
       delaySeconds: 60,
       reason: "Task bd-N deferred after retry exhaustion, returning to Phase 0 for next task",
-      prompt: "<<autonomous-loop-dynamic>>"
+      prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
     })
     ```
     END TURN. Phase 0 will select a different ready task or check epic completion.
@@ -293,7 +293,7 @@ tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Quick review found Critical/High issues, remediation task created for epic bd-EPIC",
-  prompt: "<<autonomous-loop-dynamic>>"
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 END TURN. The remediation task must be completed before entering Phase 4.
@@ -320,7 +320,7 @@ Then call ScheduleWakeup:
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Continue execute-ralph-cc task loop, next task from epic bd-EPIC",
-  prompt: "<<autonomous-loop-dynamic>>"
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 END TURN. The next wake-up will enter Phase 0 and process the next task.
@@ -377,7 +377,7 @@ If Phase 4 cap NOT reached, call ScheduleWakeup:
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "End-of-epic review found issues, remediation task created for epic bd-EPIC",
-  prompt: "<<autonomous-loop-dynamic>>"
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 
@@ -413,7 +413,7 @@ tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Final gate non-approval for epic bd-EPIC, remediation task created",
-  prompt: "<<autonomous-loop-dynamic>>"
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 Then END TURN. Max 50 overall no-progress remediation cycles enforced by watchdog counter in Phase 0.
@@ -450,7 +450,7 @@ tm create "Remediation: Phase 5 quality gate failure" --parent bd-EPIC
 ScheduleWakeup({
   delaySeconds: 60,
   reason: "Phase 5 quality gate failed for epic bd-EPIC, remediation task created",
-  prompt: "<<autonomous-loop-dynamic>>"
+  prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
 END TURN. Do NOT proceed to branch completion with failing verification.
@@ -599,7 +599,7 @@ Phase 2:
 Phase 3:
   POST_SHA != PRE_SHA → genuine progress
   bv --robot-triage bd-42 → criteria NOT all met
-  ScheduleWakeup(60s, "<<autonomous-loop-dynamic>>")
+  ScheduleWakeup(60s, "Continue execute-ralph-cc. Phase 0: run bv --robot-triage, find active epic, read tasks from bd/tm.")
 
 [... 2 more task cycles for bd-44, bd-45 ...]
 

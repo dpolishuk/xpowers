@@ -12,7 +12,7 @@ test("test_execute_ralph_cc_uses_schedulewakeup_for_continuation", () => {
 
   assert.equal(skill.includes("ScheduleWakeup"), true)
   assert.equal(skill.includes("delaySeconds: 60"), true)
-  assert.equal(skill.includes("<<autonomous-loop-dynamic>>"), true)
+  assert.equal(skill.includes("Continue execute-ralph-cc. Load the skill and start at Phase 0"), true)
 })
 
 test("test_execute_ralph_cc_does_not_use_sentinels_as_operational_control", () => {

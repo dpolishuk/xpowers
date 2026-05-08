@@ -49,7 +49,7 @@ Executes a complete bd epic autonomously using Claude Code's native `ScheduleWak
 
 The loop uses Claude Code's native `ScheduleWakeup` tool for continuation:
 
-- **Continuation**: At end of Phase 3 or Phase 4 (when criteria unmet or reviews fail), calls `ScheduleWakeup` with `delaySeconds: 60` and prompt `<<autonomous-loop-dynamic>>`. The runtime resolves the sentinel to autonomous loop instructions on wake-up, re-entering the skill at Phase 0.
+- **Continuation**: At end of Phase 3 or Phase 4 (when criteria unmet or reviews fail), calls `ScheduleWakeup` with `delaySeconds: 60` and a concrete Phase 0 re-entry prompt. The prompt contains explicit instructions to load the skill and start at Phase 0, ensuring re-entry regardless of runtime sentinel support.
 - **Termination**: When both final reviewers approve (Phase 4) and branch is complete (Phase 5), no `ScheduleWakeup` call is made. The loop ends naturally.
 - **Idempotent state**: All state comes from bd/tm. No session-scoped variables or custom state files. Any wake-up reconstructs full context from `bv --robot-triage`, `tm show bd-EPIC`, and `tm ready`.
 - **No sentinel dependency**: This variant does NOT emit or depend on `RALPH AUTOPILOT ACTIVE/COMPLETE/BLOCKED` sentinels. The loop is entirely managed by `ScheduleWakeup`.
