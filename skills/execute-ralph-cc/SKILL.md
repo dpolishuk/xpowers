@@ -430,7 +430,8 @@ Then END TURN. Max 50 overall no-progress remediation cycles enforced by watchdo
 Only close epic when BOTH final reviewers approve.
 
 → **CONTINUATION (both APPROVED):** Proceed to Phase 5 (Branch Completion).
-→ **CONTINUATION (non-approval):** Call ScheduleWakeup(60s). END TURN.
+→ **CONTINUATION (non-approval, cap NOT reached):** Call ScheduleWakeup(60s). END TURN.
+→ **CONTINUATION (non-approval, cap reached):** STOP and alert user. Do NOT call ScheduleWakeup. Loop terminates.
 
 ---
 
