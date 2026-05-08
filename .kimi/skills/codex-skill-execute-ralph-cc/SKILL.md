@@ -246,7 +246,7 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   END TURN. The next wake-up will find the task as in-progress and resume from Phase 0.
 - **Retry (Not Closed and No Drift)**: If `STATUS != "closed"` AND `POST_SHA == PRE_SHA`:
   - If subagent summary claims success, **retry once** with 'Verification Emphasis' prompt.
-  - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), increment watchdog counter (no-progress cycle), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
+  - If retry also fails, clean worktree (`git checkout . && git clean -fd`), defer the task (`tm update bd-N --status deferred`), increment watchdog counter (no-progress cycle), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
     ```bash
     WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
     CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
@@ -279,7 +279,7 @@ Dispatch `autonomous-reviewer` agent for the completed task.
 
 **Remediation Path**:
 If the review finds **Critical** or **High** issues:
-- Create remediation task: `tm create "Remediation: [Findings]" --parent bd-EPIC`.
+- Create remediation task: `tm create "Remediation: [Findings]"` then `tm dep add bd-REM bd-EPIC --type parent-child`.
 - **Increment watchdog counter** (review failure is a no-progress cycle):
 ```bash
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
@@ -356,7 +356,8 @@ Dispatch specialized reviews **in parallel** via Agent tool:
 
 If any issues found, create remediation task and check watchdog counters:
 ```bash
-tm create "Remediation: Phase 4 specialized review findings" --parent bd-EPIC
+REMEDIATION_ID=$(tm create "Remediation: Phase 4 specialized review findings" | grep -o 'bd-[0-9]*' | head -1)
+tm dep add $REMEDIATION_ID bd-EPIC --type parent-child
 # Increment both cycle and phase4 counters
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
@@ -402,7 +403,8 @@ Unknown or malformed verdict must create a remediation task and continue the loo
 
 Non-approval --> create remediation task, increment watchdog counter, check cap, call ScheduleWakeup:
 ```bash
-tm create "Remediation: Final gate non-approval (findings from autonomous-reviewer/review-implementation)" --parent bd-EPIC
+REMEDIATION_ID=$(tm create "Remediation: Final gate non-approval (findings from autonomous-reviewer/review-implementation)" | grep -o 'bd-[0-9]*' | head -1)
+tm dep add $REMEDIATION_ID bd-EPIC --type parent-child
 # Increment both cycle and phase4 counters
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
@@ -455,7 +457,8 @@ CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
-tm create "Remediation: Phase 5 quality gate failure" --parent bd-EPIC
+REMEDIATION_ID=$(tm create "Remediation: Phase 5 quality gate failure" | grep -o 'bd-[0-9]*' | head -1)
+tm dep add $REMEDIATION_ID bd-EPIC --type parent-child
 ```
 ```text
 ScheduleWakeup({
@@ -635,7 +638,8 @@ Phase 5:
 <code>
 Phase 0 (wake-up):
   bv --robot-triage bd-42 → criteria NOT met, no ready task
-  tm create "Auto-task: remaining criteria" --parent bd-42
+  tm create "Auto-task: remaining criteria"
+  tm dep add bd-NEW bd-42 --type parent-child
   LOOP-WATCHDOG task found: cycles=48 phase4=0
   cycles < 50 → continue
 
