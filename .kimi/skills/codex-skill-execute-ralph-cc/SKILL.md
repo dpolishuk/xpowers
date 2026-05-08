@@ -402,6 +402,7 @@ Unknown or malformed verdict must create a remediation task and continue the loo
 
 Non-approval --> create remediation task, increment watchdog counter, call ScheduleWakeup:
 ```bash
+tm create "Remediation: Final gate non-approval (findings from autonomous-reviewer/review-implementation)" --parent bd-EPIC
 # Increment cycle counter (keep phase4 since remediation will re-enter Phase 4)
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
