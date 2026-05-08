@@ -246,7 +246,7 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   END TURN. The next wake-up will find the task as in-progress and resume from Phase 0.
 - **Retry (Not Closed and No Drift)**: If `STATUS != "closed"` AND `POST_SHA == PRE_SHA`:
   - If subagent summary claims success, **retry once** with 'Verification Emphasis' prompt.
-  - If retry also fails, clean worktree (`git checkout . && git clean -fd`), defer the task (`tm update bd-N --status deferred`), increment watchdog counter (no-progress cycle), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
+  - If retry also fails, clean worktree (`git reset --hard HEAD && git clean -fd`), defer the task (`tm update bd-N --status deferred`), increment watchdog counter (no-progress cycle), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
     ```bash
     WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
     CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
