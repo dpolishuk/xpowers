@@ -355,19 +355,19 @@ Dispatch specialized reviews **in parallel** via Agent tool:
 
 If any issues found, create remediation task and check watchdog counters:
 ```bash
+tm create "Remediation: Phase 4 specialized review findings" --parent bd-EPIC
 # Increment both cycle and phase4 counters
 WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
 CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 NEW_PHASE4=$((PHASE4 + 1))
-# Enforce phase4 cap
+# Enforce phase4 cap BEFORE scheduling
 if [ "$NEW_PHASE4" -ge 2 ]; then
   echo "Phase 4 re-entry limit reached. STOP and alert user."
   # Do NOT call ScheduleWakeup -- STOP here
 else
   tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
-  # Only call ScheduleWakeup when NOT capped
 fi
 ```
 
@@ -399,7 +399,7 @@ Mixed final reviewer outputs are non-approval.
 Do not close the epic unless both final reviewers return an approval verdict.
 Unknown or malformed verdict must create a remediation task and continue the loop.
 
-Non-approval --> create remediation task, increment watchdog counter, call ScheduleWakeup:
+Non-approval --> create remediation task, increment watchdog counter, check cap, call ScheduleWakeup:
 ```bash
 tm create "Remediation: Final gate non-approval (findings from autonomous-reviewer/review-implementation)" --parent bd-EPIC
 # Increment both cycle and phase4 counters
@@ -408,8 +408,15 @@ CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 NEW_PHASE4=$((PHASE4 + 1))
-tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
+# Enforce phase4 cap BEFORE scheduling
+if [ "$NEW_PHASE4" -ge 2 ]; then
+  echo "Phase 4 re-entry limit reached. STOP and alert user."
+  # Do NOT call ScheduleWakeup -- STOP here
+else
+  tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
+fi
 ```
+If Phase 4 cap NOT reached:
 ```text
 ScheduleWakeup({
   delaySeconds: 60,
@@ -417,6 +424,7 @@ ScheduleWakeup({
   prompt: "Continue execute-ralph-cc. Load the skill and start at Phase 0: run bv --robot-triage, find the active epic, read tasks and criteria from bd/tm. All state from bd/tm."
 })
 ```
+If Phase 4 cap reached (phase4 >= 2): STOP and alert user. Do NOT call ScheduleWakeup. Loop terminates.
 Then END TURN. Max 50 overall no-progress remediation cycles enforced by watchdog counter in Phase 0.
 
 Only close epic when BOTH final reviewers approve.
