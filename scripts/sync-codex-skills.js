@@ -173,9 +173,9 @@ This skill wraps the source file \`${sourcePath}\` for Codex Skills compatibilit
 
 ## Source Content
 
-\`\`\`markdown
+\`\`\`\`markdown
 ${originalContent.trimEnd()}
-\`\`\`
+\`\`\`\`
 `)
 }
 

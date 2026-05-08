@@ -15,7 +15,7 @@ This skill wraps the source file `commands/analyze-tests.md` for Codex Skills co
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Audit test quality - identify tautological tests, coverage gaming, missing corner cases
 ---
@@ -25,4 +25,4 @@ Use the xpowers:analyzing-test-effectiveness skill exactly as written.
 Scope: $ARGUMENTS
 
 If no scope is provided, analyze test quality across the repository.
-```
+````

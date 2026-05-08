@@ -15,11 +15,17 @@ This skill wraps the source file `commands/execute-ralph.md` for Codex Skills co
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: execute-ralph
 description: Execute entire epic autonomously with continuous review. No user checkpoints.
 ---
+
+## Platform Routing
+
+**Before loading any skill**, determine which platform you are running on:
+- **Claude Code** (you see "You are Claude Code" in your system prompt): Load the `execute-ralph-cc` skill instead. It uses ScheduleWakeup for reliable autonomous looping in Claude Code.
+- **All other platforms** (OpenCode, Gemini CLI, Kimi, etc.): Continue with the `execute-ralph` skill below. It uses stop hooks for continuation.
 
 # Usage
 
@@ -137,5 +143,5 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 
 ---
 
-Use the `execute-ralph` skill exactly as written. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
-```
+Use the `execute-ralph` skill exactly as written. If Platform Routing directed you to `execute-ralph-cc`, load that skill instead. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
+````

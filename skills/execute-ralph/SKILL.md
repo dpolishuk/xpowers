@@ -19,7 +19,7 @@ flowchart TD
 ```
 
 <skill_overview>
-Execute a complete epic autonomously by dispatching one Agent subagent per task. Each subagent handles SRE refinement, TDD, test-runner, commit, and task closure in its own context. The main loop only tracks git log progress and epic criteria. End-of-epic: 3 specialized reviews (review-quality, security-scanner, test-effectiveness-analyst) in parallel, then dual final gate (autonomous-reviewer + review-implementation). Branch completion via finishing-a-development-branch.
+Execute a complete epic autonomously by dispatching one Agent subagent per task. **Platform routing:** If running in Claude Code (you see "You are Claude Code" in your system prompt), stop now and load the `execute-ralph-cc` skill instead -- it uses ScheduleWakeup for reliable autonomous looping in Claude Code. Continue with this skill only on other platforms (OpenCode, Gemini CLI, Kimi). Each subagent handles SRE refinement, TDD, test-runner, commit, and task closure in its own context. The main loop only tracks git log progress and epic criteria. End-of-epic: 3 specialized reviews (review-quality, security-scanner, test-effectiveness-analyst) in parallel, then dual final gate (autonomous-reviewer + review-implementation). Branch completion via finishing-a-development-branch.
 </skill_overview>
 
 <rigidity_level>

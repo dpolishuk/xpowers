@@ -15,7 +15,7 @@ This skill wraps the source file `agents/review-implementation.md` for Codex Ski
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: review-implementation
 description: Spec-focused implementation reviewer - verifies code achieves stated goals and requirements alignment. Checks each requirement against actual code with file:line evidence. Contrast with code-reviewer (human-facing, broad quality) and autonomous-reviewer (machine-facing, verdict-only). Returns PASS or ISSUES_FOUND.
@@ -91,4 +91,4 @@ Missing Implementation:
 - Test coverage (other agent handles this)
 - Documentation (other agent handles this)
 - Over-engineering (other agent handles this)
-```
+````

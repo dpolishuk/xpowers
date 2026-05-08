@@ -15,7 +15,7 @@ This skill wraps the source file `agents/autonomous-reviewer.md` for Codex Skill
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: autonomous-reviewer
 description: Machine-facing reviewer for automated pipelines. Returns structured verdicts (PASS/NEEDS_FIX/APPROVED/GAPS_FOUND) with actionable fix instructions for orchestrators to act on. Can research unclear patterns via web search. Use during continuous execution (ralph, execute-ralph). Contrast with code-reviewer (human-facing, narrative explanations) and review-implementation (spec-focused, requirements checklist).
@@ -151,4 +151,4 @@ Research: [Supporting research for these findings]
 - Tests failing or missing for new code
 - Security vulnerabilities
 - Breaking changes to existing functionality
-```
+````
