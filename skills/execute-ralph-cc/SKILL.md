@@ -245,7 +245,14 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   END TURN. The next wake-up will find the task as in-progress and resume from Phase 0.
 - **Retry (Not Closed and No Drift)**: If `STATUS != "closed"` AND `POST_SHA == PRE_SHA`:
   - If subagent summary claims success, **retry once** with 'Verification Emphasis' prompt.
-  - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
+  - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), increment watchdog counter (no-progress cycle), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
+    ```bash
+    WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+    CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+    NEW_CYCLES=$((CYCLES + 1))
+    PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+    tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
+    ```
     ```text
     ScheduleWakeup({
       delaySeconds: 60,
@@ -300,7 +307,14 @@ tm show bd-EPIC   # re-read success criteria
 
 **A) ALL criteria are met** --> EXIT TASK LOOP. Proceed to Phase 4 (End-of-Epic Review).
 
-**B) Criteria remain unmet AND tasks exist (ready or can be created)** --> CONTINUE LOOP. Call ScheduleWakeup:
+**B) Criteria remain unmet AND tasks exist (ready or can be created)** --> CONTINUE LOOP.
+First, if the task completed successfully (STATUS == "closed" with SHA drift), reset the no-progress counter since genuine progress was made:
+```bash
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=${PHASE4}"
+```
+Then call ScheduleWakeup:
 ```text
 ScheduleWakeup({
   delaySeconds: 60,
@@ -308,21 +322,13 @@ ScheduleWakeup({
   prompt: "<<autonomous-loop-dynamic>>"
 })
 ```
-Then END TURN. The next wake-up will enter Phase 0 and process the next task.
+END TURN. The next wake-up will enter Phase 0 and process the next task.
 
 **C) Critical blocker** --> Alert user with findings. Do NOT call ScheduleWakeup. Loop terminates.
 
 **CRITICAL: Task list exhaustion alone is NEVER a stop condition.** If no ready or in-progress tasks exist and criteria are still unmet, Phase 0 will auto-create the next task on the next wake-up.
 
 Track max 50 no-progress remediation cycles across all phases. After 50, STOP and alert user. Do NOT call ScheduleWakeup.
-
-**Watchdog reset on verified task progress:**
-If the task completed successfully (STATUS == "closed" with SHA drift), reset the no-progress counter since genuine progress was made:
-```bash
-WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
-PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
-tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=0 phase4=${PHASE4}"
-```
 
 **Watchdog increment (remediation only -- retry or review failure):**
 Only increment the cycles counter when a task did NOT make progress (retry path, hallucinated completion, or review found Critical/High issues). Do NOT increment after successful task completions even if criteria remain unmet.
