@@ -430,7 +430,23 @@ node --test tests/*.test.js
 node scripts/sync-codex-skills.js --check
 ```
 
-If any verification fails, create remediation task and call ScheduleWakeup to return to task loop.
+If any verification fails, create remediation task, increment watchdog counter, and call ScheduleWakeup to return to task loop:
+```bash
+WATCHDOG_TITLE=$(tm show bd-WATCHDOG --json | jq -r .title)
+CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
+NEW_CYCLES=$((CYCLES + 1))
+PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${PHASE4}"
+tm create "Remediation: Phase 5 quality gate failure" --parent bd-EPIC
+```
+```text
+ScheduleWakeup({
+  delaySeconds: 60,
+  reason: "Phase 5 quality gate failed for epic bd-EPIC, remediation task created",
+  prompt: "<<autonomous-loop-dynamic>>"
+})
+```
+END TURN. Do NOT proceed to branch completion with failing verification.
 
 In guarded environments, direct .git/hooks/pre-commit execution may be blocked by safety guardrails.
 
