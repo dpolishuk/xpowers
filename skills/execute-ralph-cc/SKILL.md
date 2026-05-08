@@ -450,6 +450,12 @@ END TURN. Do NOT proceed to branch completion with failing verification.
 
 In guarded environments, direct .git/hooks/pre-commit execution may be blocked by safety guardrails.
 
+**Watchdog cleanup:** Close the watchdog task BEFORE branch completion so the cleanup is included in the final commit/push:
+```bash
+tm close bd-WATCHDOG --reason="Epic bd-EPIC completed successfully"
+git add .beads/ && git commit -m "chore: close watchdog for completed epic bd-EPIC"
+```
+
 ```text
 Use Skill tool: xpowers:finishing-a-development-branch
 ```
@@ -457,11 +463,6 @@ Use Skill tool: xpowers:finishing-a-development-branch
 **Autonomous override:** When the skill presents integration options, auto-select **option 2 (Push and create Pull Request)** without waiting for user input. This is autonomous execution -- do not present options or wait.
 
 AFTER FINISHING BRANCH RETURNS: Present summary (tasks completed, commits made, review results, any flagged items). Do NOT call ScheduleWakeup. The loop ends naturally here.
-
-**Watchdog cleanup:** Close the watchdog task so stale state never confuses future runs:
-```bash
-tm close bd-WATCHDOG --reason="Epic bd-EPIC completed successfully"
-```
 
 ---
 
