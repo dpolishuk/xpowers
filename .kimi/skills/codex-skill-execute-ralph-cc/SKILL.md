@@ -101,14 +101,15 @@ Recover the active epic ID from the watchdog task BEFORE listing epics. This pre
 ```bash
 tm list --type chore | grep "LOOP-WATCHDOG:"
 ```
-If a watchdog task exists, extract the epic ID from its title:
+If a watchdog task exists, extract the epic ID from its title and verify the epic is still open:
 ```bash
 # Title format: LOOP-WATCHDOG: bd-EPIC cycles=N phase4=N
 # Extract bd-EPIC from the title to identify the active epic
+tm show bd-EPIC --json | jq -r .status
 ```
-Set `bd-EPIC` to the epic ID from the watchdog title. This is the authoritative anchor for which epic this loop is executing.
+If the epic is still open (not closed/done), set `bd-EPIC` from the watchdog. If the epic is closed (stale watchdog from a previous run), ignore it and fall through to epic listing.
 
-If NO watchdog task exists (first run), list epics and select:
+If NO watchdog task exists (or watchdog is stale), list epics and select:
 ```bash
 tm list --type epic --status open
 ```
@@ -432,6 +433,11 @@ Use Skill tool: xpowers:finishing-a-development-branch
 
 AFTER FINISHING BRANCH RETURNS: Present summary (tasks completed, commits made, review results, any flagged items). Do NOT call ScheduleWakeup. The loop ends naturally here.
 
+**Watchdog cleanup:** Close the watchdog task so stale state never confuses future runs:
+```bash
+tm close bd-WATCHDOG --reason="Epic bd-EPIC completed successfully"
+```
+
 ---
 
 ## execute-ralph-cc LOOP REMINDER (Context Recovery)
@@ -463,6 +469,20 @@ POST-LOOP:
 - Do NOT call ScheduleWakeup after Phase 5 -- the loop ends naturally
 
 </the_process>
+
+<critical_rules>
+
+- Never use stop hooks or sentinel markers in this variant. Use ScheduleWakeup only.
+- Never ask for user confirmation or checkpoints during autonomous loop execution.
+- Process exactly one task per turn, then either ScheduleWakeup or proceed by phase contract.
+- Reconstruct all state from bd/tm on every wake-up. Do not rely on session memory.
+- Do not close the epic unless autonomous-reviewer=APPROVED and review-implementation=PASS.
+- Verify task completion via SHA drift (`git rev-parse HEAD`), never trust subagent claims alone.
+- Every task requires SRE refinement before implementation. No exceptions for "simple" tasks.
+- Max 50 no-progress remediation cycles (watchdog) and max 2 consecutive Phase 4 re-entries.
+- Close the watchdog task on successful epic completion to prevent stale state in future runs.
+
+</critical_rules>
 
 <common_rationalizations>
 
