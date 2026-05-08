@@ -246,7 +246,15 @@ STATUS=$(tm show bd-N --json | jq -r .status)
   END TURN. The next wake-up will find the task as in-progress and resume from Phase 0.
 - **Retry (Not Closed and No Drift)**: If `STATUS != "closed"` AND `POST_SHA == PRE_SHA`:
   - If subagent summary claims success, **retry once** with 'Verification Emphasis' prompt.
-  - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), and proceed to Phase 3 criteria check.
+  - If retry also fails, clean worktree (`git checkout .`), defer the task (`tm update bd-N --status deferred`), and call ScheduleWakeup to return to Phase 0. Do NOT proceed to Phase 3 quick review -- there is no completed task to review.
+    ```text
+    ScheduleWakeup({
+      delaySeconds: 60,
+      reason: "Task bd-N deferred after retry exhaustion, returning to Phase 0 for next task",
+      prompt: "<<autonomous-loop-dynamic>>"
+    })
+    ```
+    END TURN. Phase 0 will select a different ready task or check epic completion.
 - **Failure (Closed but no SHA drift on implementation task)**:
   - If `STATUS == "closed"` and `POST_SHA == PRE_SHA` for an implementation task (feature/bug/task/chore type), flag as hallucinated completion and STOP. Do NOT call ScheduleWakeup.
 
@@ -257,6 +265,8 @@ STATUS=$(tm show bd-N --json | jq -r .status)
 ## Phase 3: Post-Task Verification & Criteria Check
 
 ### Quick review
+
+Only run if the task from Phase 2 was successfully closed (`STATUS == "closed"`). If the task was deferred or left in-progress, skip directly to criteria check below.
 
 Dispatch `autonomous-reviewer` agent for the completed task.
 
