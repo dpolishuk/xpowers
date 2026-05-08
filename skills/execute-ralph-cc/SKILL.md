@@ -362,12 +362,12 @@ CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 NEW_PHASE4=$((PHASE4 + 1))
+# Always persist counters BEFORE checking cap (durable across resumes)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
 # Enforce phase4 cap BEFORE scheduling
 if [ "$NEW_PHASE4" -ge 2 ]; then
   echo "Phase 4 re-entry limit reached. STOP and alert user."
   # Do NOT call ScheduleWakeup -- STOP here
-else
-  tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
 fi
 ```
 
@@ -408,12 +408,12 @@ CYCLES=$(echo "$WATCHDOG_TITLE" | grep -o 'cycles=[0-9]*' | cut -d= -f2)
 NEW_CYCLES=$((CYCLES + 1))
 PHASE4=$(echo "$WATCHDOG_TITLE" | grep -o 'phase4=[0-9]*' | cut -d= -f2)
 NEW_PHASE4=$((PHASE4 + 1))
+# Always persist counters BEFORE checking cap (durable across resumes)
+tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
 # Enforce phase4 cap BEFORE scheduling
 if [ "$NEW_PHASE4" -ge 2 ]; then
   echo "Phase 4 re-entry limit reached. STOP and alert user."
   # Do NOT call ScheduleWakeup -- STOP here
-else
-  tm update bd-WATCHDOG --title "LOOP-WATCHDOG: bd-EPIC cycles=${NEW_CYCLES} phase4=${NEW_PHASE4}"
 fi
 ```
 If Phase 4 cap NOT reached:
