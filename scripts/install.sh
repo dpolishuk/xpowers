@@ -923,6 +923,12 @@ install_gemini() {
     return 1
   fi
 
+  # Remove legacy hyperpowers extension if present
+  local gemini_ext_home="${HOME}/.gemini/extensions"
+  if [[ -d "${gemini_ext_home}/hyperpowers" ]]; then
+    rm -rf "${gemini_ext_home}/hyperpowers"
+  fi
+
   # Gemini CLI manages its own directory structure
   local gemini_stderr
   if [[ "$USE_SYMLINKS" == true ]]; then
