@@ -45,10 +45,13 @@ function installEnv(home, extra = {}) {
     XPOWERS_SKIP_THIRD_PARTY_FEATURES: "1",
     ...extra,
   }
-  if (env.PATH) {
+  const shouldProvisionShims = typeof extra.PATH === "string" && extra.PATH.length > 0
+  if (shouldProvisionShims && env.PATH) {
     const parts = env.PATH.split(path.delimiter)
     const firstPart = parts[0]
-    if (firstPart && fs.existsSync(firstPart)) {
+    const tmpPrefix = path.resolve(os.tmpdir()) + path.sep
+    const isTempDir = firstPart && path.resolve(firstPart).startsWith(tmpPrefix)
+    if (isTempDir && fs.existsSync(firstPart)) {
       const bashSymlink = path.join(firstPart, "bash")
       if (!fs.existsSync(bashSymlink)) {
         try {

@@ -384,12 +384,9 @@ detect_pi()      {
 }
 detect_antigravity() {
   if command -v agy &>/dev/null; then
-    # Verify it is our Antigravity CLI (v1.0.x)
-    local ver
-    if ver=$(timeout 2s agy --version 2>/dev/null); then
-      if [[ "$ver" == 1.0.* ]]; then
-        AGENT_PATHS[antigravity]="$(command -v agy)"
-      fi
+    # Verify it runs successfully
+    if timeout 2s agy --version &>/dev/null; then
+      AGENT_PATHS[antigravity]="$(command -v agy)"
     fi
   fi
 }
@@ -1125,7 +1122,7 @@ uninstall_antigravity() {
     if [[ "$DRY_RUN" == true ]]; then
       info "Would run: agy plugin uninstall xpowers"
     else
-      timeout 5s agy plugin uninstall xpowers 2>/dev/null || true
+      timeout 5s agy plugin uninstall xpowers 2>/dev/null
     fi
   fi
 }
@@ -1580,8 +1577,8 @@ install_graphify_for_agents() {
         ;;
       antigravity)
         label="Antigravity CLI"
-        try_command="graphify install --platform gemini"
-        graphify_args=(install --platform gemini)
+        try_command="graphify antigravity install"
+        graphify_args=(antigravity install)
         ;;
       pi)
         label="Pi Agent"

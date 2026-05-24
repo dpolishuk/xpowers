@@ -94,7 +94,7 @@ const GRAPHIFY_TARGETS = [
   { hostId: "codex", label: "Codex", args: ["graphify", "install", "--platform", "codex"] },
   { hostId: "opencode", label: "OpenCode", args: ["graphify", "install", "--platform", "opencode"] },
   { hostId: "gemini", label: "Gemini CLI", args: ["graphify", "install", "--platform", "gemini"] },
-  { hostId: "antigravity", label: "Antigravity CLI", args: ["graphify", "install", "--platform", "gemini"] },
+  { hostId: "antigravity", label: "Antigravity CLI", args: ["graphify", "antigravity", "install"] },
   { hostId: "pi", label: "Pi Agent", args: ["graphify", "install", "--platform", "pi"] },
 ]
 
@@ -305,8 +305,7 @@ const HOSTS: HostConfig[] = [
       try {
         const verResult = Bun.spawnSync(["agy", "--version"], { stdout: "pipe", stderr: "pipe" })
         if (verResult.exitCode === 0) {
-          const ver = verResult.stdout.toString().trim()
-          return ver.startsWith("1.0.")
+          return true
         }
       } catch {
         return false
