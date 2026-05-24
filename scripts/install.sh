@@ -1122,7 +1122,7 @@ uninstall_antigravity() {
     if [[ "$DRY_RUN" == true ]]; then
       info "Would run: agy plugin uninstall xpowers"
     else
-      timeout 5s agy plugin uninstall xpowers 2>/dev/null
+      timeout 5s agy plugin uninstall xpowers 2>/dev/null || true
     fi
   fi
 }

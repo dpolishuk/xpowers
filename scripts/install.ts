@@ -2,6 +2,7 @@
 
 import * as p from "@clack/prompts"
 import { existsSync, readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { cp, mkdir, readFile, readdir, rm, writeFile, symlink, unlink, stat, rename, chmod } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -303,8 +304,8 @@ const HOSTS: HostConfig[] = [
     detect: () => {
       if (!commandExists("agy")) return false
       try {
-        const verResult = Bun.spawnSync(["agy", "--version"], { stdout: "pipe", stderr: "pipe" })
-        if (verResult.exitCode === 0) {
+        const verResult = spawnSync("agy", ["--version"], { timeout: 2000 })
+        if (verResult.status === 0) {
           return true
         }
       } catch {
