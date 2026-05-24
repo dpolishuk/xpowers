@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Shim for 'timeout' command (missing by default on macOS)
+if ! command -v timeout &>/dev/null; then
+  timeout() {
+    if command -v gtimeout &>/dev/null; then
+      gtimeout "$@"
+    else
+      local duration="$1"
+      shift
+      "$@"
+    fi
+  }
+fi
+
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
 # Supports: Claude Code, OpenCode, Kimi CLI, Codex CLI, Gemini CLI, Pi Agent
@@ -338,9 +351,10 @@ declare -A AGENT_LABELS=(
   [kimi]="Kimi CLI"
   [codex]="Codex CLI"
   [gemini]="Gemini CLI"
+  [antigravity]="Antigravity CLI"
   [pi]="Pi Agent"
 )
-AGENT_ORDER=(claude opencode kimi codex gemini pi)
+AGENT_ORDER=(claude opencode kimi codex gemini antigravity pi)
 
 detect_claude()  { [[ -d "${HOME}/.claude" ]] && AGENT_PATHS[claude]="${HOME}/.claude" || true; }
 detect_opencode(){ [[ -d "${XDG_CFG}/opencode" ]] && AGENT_PATHS[opencode]="${XDG_CFG}/opencode" || true; }
@@ -368,6 +382,14 @@ detect_pi()      {
     AGENT_PATHS[pi]="${HOME}/.pi/agent"
   fi
 }
+detect_antigravity() {
+  if command -v agy &>/dev/null; then
+    # Verify it runs successfully
+    if timeout 2s agy --version &>/dev/null; then
+      AGENT_PATHS[antigravity]="$(command -v agy)"
+    fi
+  fi
+}
 
 detect_all() {
   detect_claude
@@ -375,6 +397,7 @@ detect_all() {
   detect_kimi
   detect_codex
   detect_gemini
+  detect_antigravity
   detect_pi
 }
 
@@ -944,6 +967,35 @@ install_gemini() {
   fi
 }
 
+install_antigravity() {
+  if ! command -v agy &>/dev/null; then
+    error "agy (Antigravity CLI) not found in PATH"
+    return 1
+  fi
+
+  local ext_dir="${REPO_ROOT}/.gemini-extension"
+  if [[ ! -d "$ext_dir" ]]; then
+    error "Antigravity extension directory not found: ${ext_dir}"
+    return 1
+  fi
+
+  # agy manages its own directory structure
+  local agy_stderr
+  if [[ "$USE_SYMLINKS" == true ]]; then
+    # agy doesn't have a direct 'link' for local plugins that works like 'extensions link'
+    # but we can import it.
+    agy_stderr=$(timeout 10s agy plugin import "$ext_dir" 2>&1) || {
+      error "agy plugin import failed: ${agy_stderr}"
+      return 1
+    }
+  else
+    agy_stderr=$(timeout 10s agy plugin import "$ext_dir" 2>&1) || {
+      error "agy plugin import failed: ${agy_stderr}"
+      return 1
+    }
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Validation functions
 # ---------------------------------------------------------------------------
@@ -1005,8 +1057,18 @@ validate_codex() {
 
 validate_gemini() {
   if command -v gemini &>/dev/null; then
-    gemini extensions list 2>/dev/null | grep -q xpowers || {
+    timeout 5s gemini extensions list 2>/dev/null | grep -q xpowers || {
       warn "Gemini: extension not found in 'gemini extensions list'"
+      return 1
+    }
+  fi
+  return 0
+}
+
+validate_antigravity() {
+  if command -v agy &>/dev/null; then
+    timeout 5s agy plugin list 2>/dev/null | grep -q xpowers || {
+      warn "Antigravity: extension not found in 'agy plugin list'"
       return 1
     }
   fi
@@ -1050,7 +1112,17 @@ uninstall_gemini() {
     if [[ "$DRY_RUN" == true ]]; then
       info "Would run: gemini extensions uninstall xpowers"
     else
-      gemini extensions uninstall xpowers 2>/dev/null || true
+      timeout 5s gemini extensions uninstall xpowers 2>/dev/null || true
+    fi
+  fi
+}
+
+uninstall_antigravity() {
+  if command -v agy &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: agy plugin uninstall xpowers"
+    else
+      timeout 5s agy plugin uninstall xpowers 2>/dev/null || true
     fi
   fi
 }
@@ -1158,12 +1230,19 @@ status_codex() {
     echo -e "  ${DIM}✗ Codex CLI      not installed${RESET}"
   fi
 }
-
 status_gemini() {
-  if command -v gemini &>/dev/null && gemini extensions list 2>/dev/null | grep -q xpowers; then
+  if command -v gemini &>/dev/null && timeout 5s gemini extensions list 2>/dev/null | grep -q xpowers; then
     echo -e "  ${GREEN}✓${RESET} Gemini CLI     ${BOLD}installed${RESET}"
   else
     echo -e "  ${DIM}✗ Gemini CLI     not installed${RESET}"
+  fi
+}
+
+status_antigravity() {
+  if command -v agy &>/dev/null && timeout 5s agy plugin list 2>/dev/null | grep -q xpowers; then
+    echo -e "  ${GREEN}✓${RESET} Antigravity CLI ${BOLD}installed${RESET}"
+  else
+    echo -e "  ${DIM}✗ Antigravity CLI not installed${RESET}"
   fi
 }
 
@@ -1447,7 +1526,7 @@ install_graphify_for_agents() {
       continue
     fi
     case "$agent" in
-      claude|codex|opencode|gemini|pi) targets+=("$agent") ;;
+      claude|codex|opencode|gemini|antigravity|pi) targets+=("$agent") ;;
     esac
   done
 
@@ -1455,7 +1534,7 @@ install_graphify_for_agents() {
     if [[ "$skipped_delegated_pi" == true ]]; then
       info "Skipping Pi graphify; Pi delegation already handled it"
     else
-      warn "graphify skipped — Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent not selected"
+      warn "graphify skipped — Claude Code, Codex, OpenCode, Gemini CLI, Antigravity CLI, or Pi Agent not selected"
     fi
     return 0
   fi
@@ -1495,6 +1574,11 @@ install_graphify_for_agents() {
         label="Gemini CLI"
         try_command="graphify install --platform gemini"
         graphify_args=(install --platform gemini)
+        ;;
+      antigravity)
+        label="Antigravity CLI"
+        try_command="graphify antigravity install"
+        graphify_args=(antigravity install)
         ;;
       pi)
         label="Pi Agent"
@@ -1604,6 +1688,14 @@ install_third_party_tools() {
           warn "claude-mem install failed for Gemini CLI — try: npx --yes claude-mem install --ide gemini-cli"
         fi
         ;;
+      antigravity)
+        if npx --yes claude-mem install --ide gemini-cli >/dev/null 2>&1; then
+          installed_cmem+=("Antigravity CLI")
+          third_party_mark_installed "claude-mem"
+        else
+          warn "claude-mem install failed for Antigravity CLI — try: npx --yes claude-mem install --ide gemini-cli"
+        fi
+        ;;
     esac
   done
 
@@ -1704,7 +1796,8 @@ AGENTS:
     --kimi              Install to Kimi CLI (~/.config/agents)
     --codex             Install to Codex CLI (~/.codex)
     --gemini            Install to Gemini CLI (native extension)
-    --hosts <list>      Comma-separated agents: claude,opencode,kimi,codex,gemini,pi,all
+    --antigravity       Install to Antigravity CLI (native extension)
+    --hosts <list>      Comma-separated agents: claude,opencode,kimi,codex,gemini,antigravity,pi,all
     --all               Install to all detected agents
 
 MODES:
@@ -1773,6 +1866,7 @@ main() {
       --kimi)       SELECTED_AGENTS+=(kimi);     INTERACTIVE=false; shift ;;
       --codex)      SELECTED_AGENTS+=(codex);    INTERACTIVE=false; shift ;;
       --gemini)     SELECTED_AGENTS+=(gemini);   INTERACTIVE=false; shift ;;
+      --antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false; shift ;;
       --hosts)
         shift
         if [[ $# -eq 0 ]]; then
@@ -1788,6 +1882,7 @@ main() {
             kimi)     SELECTED_AGENTS+=(kimi);     INTERACTIVE=false ;;
             codex)    SELECTED_AGENTS+=(codex);    INTERACTIVE=false ;;
             gemini)   SELECTED_AGENTS+=(gemini);   INTERACTIVE=false ;;
+            antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false ;;
             pi)       SELECTED_AGENTS+=(pi);       INTERACTIVE=false ;;
             all)      SELECT_ALL=true; INTERACTIVE=false ;;
             *)        error "Unknown host: $h"; usage >&2; exit 1 ;;
@@ -1881,6 +1976,7 @@ main() {
     status_kimi
     status_codex
     status_gemini
+    status_antigravity
     status_pi
     echo
     exit 0

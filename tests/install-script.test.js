@@ -37,7 +37,7 @@ function runGit(args, options = {}) {
 }
 
 function installEnv(home, extra = {}) {
-  return {
+  const env = {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
@@ -45,6 +45,43 @@ function installEnv(home, extra = {}) {
     XPOWERS_SKIP_THIRD_PARTY_FEATURES: "1",
     ...extra,
   }
+  const shouldProvisionShims = typeof extra.PATH === "string" && extra.PATH.length > 0
+  if (shouldProvisionShims && env.PATH) {
+    const parts = env.PATH.split(path.delimiter)
+    const firstPart = parts[0]
+    const tmpPrefix = path.resolve(os.tmpdir()) + path.sep
+    const isTempDir = firstPart && path.resolve(firstPart).startsWith(tmpPrefix)
+    if (isTempDir && fs.existsSync(firstPart)) {
+      const bashSymlink = path.join(firstPart, "bash")
+      if (!fs.existsSync(bashSymlink)) {
+        try {
+          const bashPath = findExecutable("bash") || "/bin/bash"
+          fs.symlinkSync(bashPath, bashSymlink)
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+      const npmMock = path.join(firstPart, "npm")
+      if (!fs.existsSync(npmMock)) {
+        try {
+          fs.writeFileSync(npmMock, "#!/usr/bin/env bash\nexit 0\n", "utf8")
+          fs.chmodSync(npmMock, 0o755)
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+      const npxMock = path.join(firstPart, "npx")
+      if (!fs.existsSync(npxMock)) {
+        try {
+          fs.writeFileSync(npxMock, "#!/usr/bin/env bash\nexit 0\n", "utf8")
+          fs.chmodSync(npxMock, 0o755)
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+    }
+  }
+  return env
 }
 
 function findExecutable(name) {
@@ -68,6 +105,8 @@ function linkManifestRuntime(binDir) {
   } else {
     fs.symlinkSync(process.execPath, path.join(binDir, "bun"))
   }
+  const bashPath = findExecutable("bash") || "/bin/bash"
+  fs.symlinkSync(bashPath, path.join(binDir, "bash"))
 }
 
 function linkCommand(binDir, name) {
@@ -447,18 +486,24 @@ test("install.sh --all detects Pi when pi executable is in PATH even without ~/.
 
 test("install.sh mixed claude+pi skips Pi when Bun is missing and continues with Claude", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-no-bun-home-"))
+  const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-mixed-pi-no-bun-bin-"))
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
 
-  const result = spawnSync("bash", ["scripts/install.sh", "--hosts", "claude,pi", "--yes", "--allow-conflicts"], {
+  const bashPath = findExecutable("bash") || "/bin/bash"
+  fs.symlinkSync(bashPath, path.join(tmpBinDir, "bash"))
+
+  const result = spawnSync(bashPath, ["scripts/install.sh", "--hosts", "claude,pi", "--yes", "--allow-conflicts"], {
     cwd: repoRoot,
     encoding: "utf8",
     env: installEnv(home, {
-      PATH: "/usr/bin:/bin",
+      PATH: `${tmpBinDir}${path.delimiter}/usr/bin${path.delimiter}/bin`,
     }),
     timeout: 120000,
   })
 
   const output = combinedOutput(result)
+  fs.rmSync(tmpBinDir, { recursive: true, force: true })
+
   assert.notEqual(result.status, 0, output)
   assert.match(output, /Claude Code/)
   assert.match(output, /Pi Agent/)
@@ -647,7 +692,8 @@ test("bun installer runs graphify platform setup for each supported selected hos
   const pythonLog = path.join(home, "python-calls")
   const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true })
-  fs.symlinkSync("/bin/bash", path.join(tmpBinDir, "bash"))
+  const bashPath = spawnSync("bash", ["-lc", "command -v bash"], { encoding: "utf8" }).stdout.trim() || "/bin/bash"
+  fs.symlinkSync(bashPath, path.join(tmpBinDir, "bash"))
   fs.writeFileSync(
     path.join(tmpBinDir, "python3"),
     [
@@ -700,7 +746,8 @@ test("bun installer reports claude-mem skipped before requiring npx for unsuppor
   const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-claude-mem-skip-bin-"))
   const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
   fs.mkdirSync(path.join(home, ".config", "agents"), { recursive: true })
-  fs.symlinkSync("/bin/bash", path.join(tmpBinDir, "bash"))
+  const bashPath = spawnSync("bash", ["-lc", "command -v bash"], { encoding: "utf8" }).stdout.trim() || "/bin/bash"
+  fs.symlinkSync(bashPath, path.join(tmpBinDir, "bash"))
 
   const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "kimi", "--features", "claude-mem", "--yes", "--json", "--allow-conflicts"], {
     cwd: repoRoot,
@@ -712,7 +759,7 @@ test("bun installer reports claude-mem skipped before requiring npx for unsuppor
   const output = combinedOutput(result)
   assert.equal(result.status, 0, output)
   const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
-  assert.equal(manifest.features["claude-mem"].metadata.lastResult, "skipped (Claude Code, OpenCode, or Gemini CLI not selected)")
+  assert.equal(manifest.features["claude-mem"].metadata.lastResult, "skipped (Claude Code, OpenCode, Gemini CLI, or Antigravity CLI not selected)")
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
@@ -1935,9 +1982,8 @@ test("pi installer fails when dependency install tooling is unavailable", { time
   fs.writeFileSync(agentsPath, originalAgents, "utf8")
   fs.writeFileSync(piShimPath, "#!/bin/sh\nexit 0\n", "utf8")
   fs.chmodSync(piShimPath, 0o755)
-  fs.symlinkSync(bunPath, path.join(tmpBinDir, "bun"))
 
-  const result = spawnSync("bun", ["scripts/install.ts", "--hosts", "pi", "--yes"], {
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "pi", "--yes"], {
     cwd: repoRoot,
     encoding: "utf8",
     env: installEnv(home, { PATH: tmpBinDir }),
@@ -1962,7 +2008,6 @@ test("pi installer json mode reports failure when host install fails", { timeout
   fs.mkdirSync(piHome, { recursive: true })
   fs.writeFileSync(piShimPath, "#!/bin/sh\nexit 0\n", "utf8")
   fs.chmodSync(piShimPath, 0o755)
-  fs.symlinkSync(bunPath, path.join(tmpBinDir, "bun"))
 
   const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "pi", "--features", "__none__", "--yes", "--json"], {
     cwd: repoRoot,
@@ -1993,9 +2038,8 @@ test("pi installer rollback preserves pre-existing extension files on failure", 
   fs.writeFileSync(routingPath, originalRouting, "utf8")
   fs.writeFileSync(piShimPath, "#!/bin/sh\nexit 0\n", "utf8")
   fs.chmodSync(piShimPath, 0o755)
-  fs.symlinkSync(bunPath, path.join(tmpBinDir, "bun"))
 
-  const result = spawnSync("bun", ["scripts/install.ts", "--hosts", "pi", "--yes"], {
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "pi", "--yes"], {
     cwd: repoRoot,
     encoding: "utf8",
     env: installEnv(home, { PATH: tmpBinDir }),

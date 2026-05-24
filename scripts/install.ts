@@ -2,6 +2,7 @@
 
 import * as p from "@clack/prompts"
 import { existsSync, readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { cp, mkdir, readFile, readdir, rm, writeFile, symlink, unlink, stat, rename, chmod } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -88,12 +89,13 @@ const skipThirdPartyFeatures = () => {
 
 const thirdPartySkipMessage = () => `skipped (${THIRD_PARTY_SKIP_ENV}=1)`
 
-const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent"
+const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, Antigravity CLI, or Pi Agent"
 const GRAPHIFY_TARGETS = [
   { hostId: "claude", label: "Claude Code", args: ["graphify", "install"] },
   { hostId: "codex", label: "Codex", args: ["graphify", "install", "--platform", "codex"] },
   { hostId: "opencode", label: "OpenCode", args: ["graphify", "install", "--platform", "opencode"] },
   { hostId: "gemini", label: "Gemini CLI", args: ["graphify", "install", "--platform", "gemini"] },
+  { hostId: "antigravity", label: "Antigravity CLI", args: ["graphify", "antigravity", "install"] },
   { hostId: "pi", label: "Pi Agent", args: ["graphify", "install", "--platform", "pi"] },
 ]
 
@@ -297,6 +299,38 @@ const HOSTS: HostConfig[] = [
     },
   },
   {
+    id: "antigravity",
+    name: "Antigravity CLI",
+    detect: () => {
+      if (!commandExists("agy")) return false
+      try {
+        const verResult = spawnSync("agy", ["--version"], { timeout: 2000 })
+        if (verResult.status === 0) {
+          return true
+        }
+      } catch {
+        return false
+      }
+      return false
+    },
+    targetDir: () => join(REPO_ROOT, ".gemini-extension"),
+    sources: {},
+    availableFeatures: ["graphify", "claude-mem"],
+    postInstall: async () => {
+      if (!commandExists("agy")) {
+        throw new Error("agy (Antigravity CLI) not found — cannot install plugin")
+      }
+      const installResult = Bun.spawnSync(["agy", "plugin", "import", join(REPO_ROOT, ".gemini-extension")], { stdout: "pipe", stderr: "pipe" })
+      throwOnSpawnFailure(installResult, "Antigravity plugin import failed")
+    },
+    postUninstall: async () => {
+      if (commandExists("agy")) {
+        const uninstallResult = Bun.spawnSync(["agy", "plugin", "uninstall", "xpowers"], { stdout: "pipe", stderr: "pipe" })
+        throwOnSpawnFailure(uninstallResult, "Antigravity plugin uninstall failed")
+      }
+    },
+  },
+  {
     id: "pi",
     name: "Pi Agent",
     detect: () => commandExists("pi"),
@@ -492,7 +526,7 @@ const FEATURES: FeatureConfig[] = [
       }
       const result = Bun.spawnSync([
         "bash",
-        "-lc",
+        "-c",
         `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
@@ -516,7 +550,7 @@ const FEATURES: FeatureConfig[] = [
       }
       const result = Bun.spawnSync([
         "bash",
-        "-lc",
+        "-c",
         `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
@@ -552,7 +586,7 @@ const FEATURES: FeatureConfig[] = [
       for (const target of targets) {
         const result = Bun.spawnSync([
           "bash",
-          "-lc",
+          "-c",
           `PATH="$HOME/.local/bin:$PATH" ${target.args.map(shellQuote).join(" ")}`,
         ], { stdout: "pipe", stderr: "pipe" })
         if (result.exitCode !== 0) {
@@ -578,7 +612,7 @@ const FEATURES: FeatureConfig[] = [
   {
     id: "claude-mem",
     name: "Claude-Mem",
-    hint: "persistent memory plugin for Claude Code, OpenCode, and Gemini CLI",
+    hint: "persistent memory plugin for Claude Code, OpenCode, Gemini CLI, and Antigravity CLI",
     install: async (hosts) => {
       if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
 
@@ -586,8 +620,9 @@ const FEATURES: FeatureConfig[] = [
       if (hosts.includes("claude")) targets.push({ label: "Claude Code", args: ["npx", "--yes", "claude-mem", "install"] })
       if (hosts.includes("opencode")) targets.push({ label: "OpenCode", args: ["npx", "--yes", "claude-mem", "install", "--ide", "opencode"] })
       if (hosts.includes("gemini")) targets.push({ label: "Gemini CLI", args: ["npx", "--yes", "claude-mem", "install", "--ide", "gemini-cli"] })
+      if (hosts.includes("antigravity")) targets.push({ label: "Antigravity CLI", args: ["npx", "--yes", "claude-mem", "install", "--ide", "gemini-cli"] })
 
-      if (targets.length === 0) return "skipped (Claude Code, OpenCode, or Gemini CLI not selected)"
+      if (targets.length === 0) return "skipped (Claude Code, OpenCode, Gemini CLI, or Antigravity CLI not selected)"
       if (!commandExists("npx")) return "npx not found — install manually: npx --yes claude-mem install"
 
       const installed: string[] = []
@@ -989,7 +1024,7 @@ Options:
   --yes, -y          Auto-install all detected hosts and features
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove all installed files and features
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,gemini,pi
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,gemini,antigravity,pi
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help
