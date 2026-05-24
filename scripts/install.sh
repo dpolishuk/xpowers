@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Shim for 'timeout' command (missing by default on macOS)
+if ! command -v timeout &>/dev/null; then
+  timeout() {
+    if command -v gtimeout &>/dev/null; then
+      gtimeout "$@"
+    else
+      local duration="$1"
+      shift
+      "$@"
+    fi
+  }
+fi
+
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
 # Supports: Claude Code, OpenCode, Kimi CLI, Codex CLI, Gemini CLI, Pi Agent
