@@ -395,6 +395,13 @@ const HOSTS: HostConfig[] = [
           console.warn(`kimi plugin remove failed${stderr ? `: ${stderr}` : ""}`)
         }
       }
+      // `kimi plugin remove` leaves the managed directory behind, so clean it
+      // up explicitly to match the user's expectation that uninstall removes
+      // the XPowers code.
+      const managedDir = join(target, "plugins", "managed", "xpowers")
+      if (existsSync(managedDir)) {
+        await rm(managedDir, { recursive: true, force: true })
+      }
       // Remove XPowers hooks block from config.toml
       const configFile = join(target, "config.toml")
       if (existsSync(configFile)) {

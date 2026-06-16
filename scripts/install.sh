@@ -1216,6 +1216,18 @@ uninstall_kimi_code() {
     fi
   fi
 
+  # `kimi plugin remove` leaves the managed directory behind, so clean it up
+  # explicitly to match the user's expectation that uninstall removes the
+  # XPowers code.
+  local managed_dir="${home}/plugins/managed/xpowers"
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ -e "$managed_dir" ]]; then
+      info "Would remove managed plugin directory: ${managed_dir}"
+    fi
+  else
+    rm -rf "$managed_dir" 2>/dev/null || true
+  fi
+
   # Remove fallback user-level skills and version marker tracked by manifest.
   if [[ -f "${home}/.xpowers-manifest" ]]; then
     uninstall_from_manifest "$home"
