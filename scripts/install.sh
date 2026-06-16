@@ -534,6 +534,23 @@ uninstall_from_json_manifest() {
       rm -rf "${home}/${f}" 2>/dev/null || true
     fi
   done <<< "$files"
+
+  # Remove the kimi_code host entry so stale ownership records do not affect
+  # later installs. Delete the manifest entirely when no hosts remain.
+  if [[ "$DRY_RUN" != true ]]; then
+    python3 -c "
+import json, sys, os
+path = sys.argv[1]
+with open(path) as fh:
+    d = json.load(fh)
+d.setdefault('hosts', {}).pop('kimi_code', None)
+if not d.get('hosts') and not d.get('features'):
+    os.remove(path)
+else:
+    with open(path, 'w') as fh:
+        json.dump(d, fh, indent=2)
+" "$json_manifest" 2>/dev/null || true
+  fi
 }
 
 uninstall_from_manifest() {

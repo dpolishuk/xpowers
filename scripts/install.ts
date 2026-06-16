@@ -290,10 +290,13 @@ const HOSTS: HostConfig[] = [
       // manifest so users can switch between the two documented installers
       // without losing upgrade/uninstall tracking.
       const prevManifest = await readManifest()
+      const prevKimiHost = prevManifest?.hosts?.kimi_code
       const ownedFromJson =
-        prevManifest?.hosts?.kimi_code?.files
-          ?.filter((f) => f.startsWith("skills/"))
-          ?.map((f) => f.split("/")[1]) ?? []
+        prevKimiHost?.targetDir === target
+          ? (prevKimiHost.files
+              ?.filter((f) => f.startsWith("skills/"))
+              ?.map((f) => f.split("/")[1]) ?? [])
+          : []
       const shellManifestPath = join(target, ".xpowers-manifest")
       const ownedFromShell = existsSync(shellManifestPath)
         ? (await readFile(shellManifestPath, "utf8"))
