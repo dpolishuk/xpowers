@@ -29,7 +29,7 @@ type HostConfig = {
   detect: () => boolean
   targetDir: () => string
   sources: Record<string, SourceMapping>
-  postInstall?: (targetDir: string) => Promise<void>
+  postInstall?: (targetDir: string, installedFiles: string[]) => Promise<void>
   postUninstall?: (targetDir: string) => Promise<void>
   availableFeatures: string[]
 }
@@ -284,15 +284,29 @@ const HOSTS: HostConfig[] = [
       skills: { from: ".kimi-code/skills", exclude: ["common-patterns"] },
     },
     availableFeatures: [],
-    postInstall: async (target) => {
+    postInstall: async (target, installedFiles) => {
       // Register the plugin with Kimi Code so MCP servers and sessionStart load.
+      let pluginInstalled = false
       if (commandExists("kimi")) {
         const installResult = Bun.spawnSync(["kimi", "plugin", "install", REPO_ROOT], { stdout: "pipe", stderr: "pipe" })
-        if (installResult.exitCode !== 0) {
+        pluginInstalled = installResult.exitCode === 0
+        if (!pluginInstalled) {
           const stderr = installResult.stderr.toString().trim()
           console.warn(`kimi plugin install failed${stderr ? `: ${stderr}` : ""}`)
         }
       }
+
+      if (pluginInstalled) {
+        // Managed plugin provides skills; remove the fallback copies.
+        const skillsDir = join(target, "skills")
+        if (existsSync(skillsDir)) {
+          await rm(skillsDir, { recursive: true, force: true })
+          for (let i = installedFiles.length - 1; i >= 0; i--) {
+            if (installedFiles[i].startsWith("skills/")) installedFiles.splice(i, 1)
+          }
+        }
+      }
+
       // Install guard hooks into ~/.kimi-code/config.toml
       const hookScript = join(REPO_ROOT, "scripts", "install-kimi-code-hooks.sh")
       if (existsSync(hookScript)) {
@@ -869,7 +883,7 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
 
     // Run post-install and track additional files (before writing version marker)
     if (host.postInstall) {
-      await host.postInstall(target)
+      await host.postInstall(target, installedFiles)
       // Re-scan for files that postInstall may have added
       if (host.id === "opencode") {
         for (const f of ["package.json", "task-context.json", "cass-memory.json"]) {
