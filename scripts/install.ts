@@ -297,12 +297,13 @@ const HOSTS: HostConfig[] = [
       }
 
       if (pluginInstalled) {
-        // Managed plugin provides skills; remove the fallback copies.
-        const skillsDir = join(target, "skills")
-        if (existsSync(skillsDir)) {
-          await rm(skillsDir, { recursive: true, force: true })
-          for (let i = installedFiles.length - 1; i >= 0; i--) {
-            if (installedFiles[i].startsWith("skills/")) installedFiles.splice(i, 1)
+        // Managed plugin provides skills; remove only the fallback copies we
+        // just installed, leaving any pre-existing user skills untouched.
+        for (let i = installedFiles.length - 1; i >= 0; i--) {
+          const entry = installedFiles[i]
+          if (entry.startsWith("skills/")) {
+            await rm(join(target, entry), { recursive: true, force: true })
+            installedFiles.splice(i, 1)
           }
         }
       }
