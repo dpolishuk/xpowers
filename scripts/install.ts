@@ -280,9 +280,7 @@ const HOSTS: HostConfig[] = [
     name: "Kimi Code CLI",
     detect: () => existsSync(join(homedir(), ".kimi-code")) || existsSync(join(xdgConfig(), "kimi-code")) || commandExists("kimi"),
     targetDir: () => process.env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"),
-    sources: {
-      skills: { from: ".kimi-code/skills", exclude: ["common-patterns"] },
-    },
+    sources: {},
     availableFeatures: [],
     postInstall: async (target, installedFiles) => {
       // Register the plugin with Kimi Code so MCP servers and sessionStart load.
@@ -296,14 +294,29 @@ const HOSTS: HostConfig[] = [
         }
       }
 
-      if (pluginInstalled) {
-        // Managed plugin provides skills; remove only the fallback copies we
-        // just installed, leaving any pre-existing user skills untouched.
-        for (let i = installedFiles.length - 1; i >= 0; i--) {
-          const entry = installedFiles[i]
-          if (entry.startsWith("skills/")) {
-            await rm(join(target, entry), { recursive: true, force: true })
-            installedFiles.splice(i, 1)
+      if (!pluginInstalled) {
+        // Fallback: copy skills to the canonical user-level path. Kimi Code
+        // discovers skills under ~/.kimi-code/skills/ automatically, so this
+        // works when the `kimi` binary is unavailable or plugin registration
+        // failed. We only copy here to avoid clobbering/restoring backups when
+        // the managed plugin path succeeds.
+        const sourceSkills = join(REPO_ROOT, ".kimi-code", "skills")
+        const targetSkills = join(target, "skills")
+        if (existsSync(sourceSkills)) {
+          await mkdir(targetSkills, { recursive: true })
+          const items = await listItems(sourceSkills, undefined, ["common-patterns"])
+          for (const item of items) {
+            if (item.startsWith("codex-")) continue
+            const srcPath = join(sourceSkills, item)
+            const destPath = join(targetSkills, item)
+            const s = await stat(srcPath)
+            if (s.isDirectory()) {
+              await copyDir(srcPath, destPath)
+              installedFiles.push(`skills/${item}/`)
+            } else {
+              await copyFile(srcPath, destPath)
+              installedFiles.push(`skills/${item}`)
+            }
           }
         }
       }
