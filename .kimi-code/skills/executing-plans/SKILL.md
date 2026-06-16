@@ -269,7 +269,7 @@ tm show bd-1  # Check success criteria
 - [Remaining criteria]
 
 ### To Continue
-Run `//skill:execute-plan` to execute the next task.
+Run `/skill:executing-plans` to execute the next task.
 ```
 
 **Why STOP is mandatory:**
@@ -509,7 +509,7 @@ Continues directly to execute bd-3 without STOP checkpoint.
 - Remaining: password reset, rate limiting
 
 ### To Continue
-Run `//skill:execute-plan` to execute the next task.
+Run `/skill:executing-plans` to execute the next task.
 ```
 
 2. **STOP and wait for user**
@@ -608,7 +608,7 @@ Before closing epic:
 - finishing-a-development-branch (after review approves)
 
 **This skill is called by:**
-- User (via //skill:execute-plan command)
+- User (via /skill:executing-plans command)
 - After writing-plans creates epic
 - Explicitly to resume after checkpoint (user runs command again)
 
@@ -617,9 +617,9 @@ Before closing epic:
 
 **Workflow pattern:**
 ```
-//skill:execute-plan → Execute task → STOP
+/skill:executing-plans → Execute task → STOP
 [User clears context, reviews]
-//skill:execute-plan → Execute next task → STOP
+/skill:executing-plans → Execute next task → STOP
 [Repeat until epic complete]
 ```
 

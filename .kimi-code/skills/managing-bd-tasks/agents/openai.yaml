@@ -1,4 +1,0 @@
-interface:
-  display_name: "Managing Bd Tasks"
-  short_description: "Help with Managing Bd Tasks tasks"
-  default_prompt: "Use $managing-bd-tasks to run this workflow."

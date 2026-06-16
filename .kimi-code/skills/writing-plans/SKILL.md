@@ -462,7 +462,7 @@ Before finishing all tasks:
 - executing-plans (offered after all tasks expanded)
 
 **This skill is called by:**
-- User (via //skill:write-plan command)
+- User (via /skill:writing-plans command)
 - After brainstorming creates epic
 
 **Agents used:**
