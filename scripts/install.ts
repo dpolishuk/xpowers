@@ -283,6 +283,27 @@ const HOSTS: HostConfig[] = [
     sources: {},
     availableFeatures: [],
     postInstall: async (target, installedFiles) => {
+      // Determine which fallback skills (if any) are already owned by a
+      // previous XPowers install, so we can refresh them safely or remove them
+      // when the plugin path takes over. We inspect both the TypeScript
+      // installer JSON manifest and the shell installer's per-home text
+      // manifest so users can switch between the two documented installers
+      // without losing upgrade/uninstall tracking.
+      const prevManifest = await readManifest()
+      const ownedFromJson =
+        prevManifest?.hosts?.kimi_code?.files
+          ?.filter((f) => f.startsWith("skills/"))
+          ?.map((f) => f.split("/")[1]) ?? []
+      const shellManifestPath = join(target, ".xpowers-manifest")
+      const ownedFromShell = existsSync(shellManifestPath)
+        ? (await readFile(shellManifestPath, "utf8"))
+            .split(/\n/)
+            .map((l) => l.trim())
+            .filter((l) => l.startsWith("skills/"))
+            .map((l) => l.split("/")[1])
+        : []
+      const ownedSkills = new Set([...ownedFromJson, ...ownedFromShell])
+
       // Register the plugin with Kimi Code so MCP servers and sessionStart load.
       let pluginInstalled = false
       if (commandExists("kimi")) {
@@ -291,6 +312,19 @@ const HOSTS: HostConfig[] = [
         if (!pluginInstalled) {
           const stderr = installResult.stderr.toString().trim()
           console.warn(`kimi plugin install failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+
+      if (pluginInstalled) {
+        // Managed plugin provides skills. If a previous fallback install left
+        // XPowers-owned skill copies on disk, remove them so they don't
+        // duplicate the plugin's skills or become untracked orphans.
+        for (const dirname of ownedSkills) {
+          const skillPath = join(target, "skills", dirname)
+          if (existsSync(skillPath)) {
+            await rm(skillPath, { recursive: true, force: true })
+            p.log.info(`Removed managed fallback skill (plugin now provides it): ${dirname}`)
+          }
         }
       }
 
@@ -304,25 +338,6 @@ const HOSTS: HostConfig[] = [
         const targetSkills = join(target, "skills")
         if (existsSync(sourceSkills)) {
           await mkdir(targetSkills, { recursive: true })
-          // Refresh skills owned by a previous XPowers fallback install; skip
-          // anything else so we do not overwrite unrelated user skills. We
-          // inspect both the TypeScript installer JSON manifest and the shell
-          // installer's per-home text manifest so users can switch between the
-          // two documented installers without losing upgrade/uninstall tracking.
-          const prevManifest = await readManifest()
-          const ownedFromJson =
-            prevManifest?.hosts?.kimi_code?.files
-              ?.filter((f) => f.startsWith("skills/"))
-              ?.map((f) => f.split("/")[1]) ?? []
-          const shellManifestPath = join(target, ".xpowers-manifest")
-          const ownedFromShell = existsSync(shellManifestPath)
-            ? (await readFile(shellManifestPath, "utf8"))
-                .split(/\n/)
-                .map((l) => l.trim())
-                .filter((l) => l.startsWith("skills/"))
-                .map((l) => l.split("/")[1])
-            : []
-          const ownedSkills = new Set([...ownedFromJson, ...ownedFromShell])
           const items = await listItems(sourceSkills, undefined, ["common-patterns"])
           for (const item of items) {
             if (item.startsWith("codex-")) continue
@@ -355,6 +370,20 @@ const HOSTS: HostConfig[] = [
         if (hookResult.exitCode !== 0) {
           const stderr = hookResult.stderr.toString().trim()
           console.warn(`Kimi Code hook installation failed${stderr ? `: ${stderr}` : ""}`)
+        } else {
+          // Track the guard hooks so uninstall can remove them cleanly.
+          const guardHooks = [
+            "hooks/pre-tool-use/block-beads-direct-read.py",
+            "hooks/pre-tool-use/01-block-pre-commit-edits.py",
+            "hooks/pre-tool-use/block-dangerous-bash.py",
+            "hooks/pre-tool-use/block-env-writes.py",
+            "hooks/post-tool-use/02-block-bd-truncation.py",
+            "hooks/post-tool-use/03-block-pre-commit-bash.py",
+            "hooks/post-tool-use/04-block-pre-existing-checks.py",
+          ]
+          for (const hook of guardHooks) {
+            installedFiles.push(hook)
+          }
         }
       }
     },

@@ -280,7 +280,7 @@ remove_legacy() {
       if [[ -n "$agent_home" ]]; then
         for legacy_name in hyperpowers myhyperpowers superpowers; do
           local legacy_manifest="${agent_home}/.${legacy_name}-manifest"
-          if [[ -f "$legacy_manifest" && "$processed_manifests" != *"${legacy_manifest}"* ]]; then
+          if [[ -f "$legacy_manifest" && "$processed_manifests" != *"${legacy_manifest}"$'\n'* ]]; then
             if [[ "$DRY_RUN" != true ]] && [[ "$PURGE" != true ]]; then
               while IFS= read -r entry; do
                 [[ -z "$entry" ]] && continue
@@ -907,6 +907,30 @@ install_kimi_code() {
         warn "kimi plugin install failed: ${install_stderr}"
       fi
     fi
+  fi
+
+  # If a previous fallback install left XPowers-owned skills on disk and the
+  # plugin path now succeeds, remove those managed copies so they don't
+  # duplicate the plugin's own skills or become untracked orphans.
+  if [[ "$plugin_installed" == true ]]; then
+    local -a prev_owned=()
+    if [[ -f "${home}/.xpowers-manifest" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && prev_owned+=("$line")
+      done < <(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 || true)
+    fi
+    if [[ -f "${HOME}/.xpowers/manifest.json" ]] && command -v python3 >/dev/null 2>&1; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && prev_owned+=("$line")
+      done < <(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 || true)
+    fi
+    for dirname in "${prev_owned[@]}"; do
+      local skill_path="${home}/skills/${dirname}"
+      if [[ -e "$skill_path" ]]; then
+        rm -rf "$skill_path"
+        info "Removed managed fallback skill (plugin now provides it): ${dirname}"
+      fi
+    done
   fi
 
   # Fallback: copy skills to the canonical user-level skill path. Kimi Code
@@ -2106,9 +2130,11 @@ main() {
     # Merge explicitly-selected agents (e.g. --hosts all,pi) without duplicates
     for agent in "${SELECTED_AGENTS[@]}"; do
       local already_in=false
-      for r in ${resolved_agents[@]:+${resolved_agents[@]}}; do
-        [[ "$r" == "$agent" ]] && already_in=true && break
-      done
+      if (( ${#resolved_agents[@]} > 0 )); then
+        for r in "${resolved_agents[@]}"; do
+          [[ "$r" == "$agent" ]] && already_in=true && break
+        done
+      fi
       [[ "$already_in" != true ]] && resolved_agents+=("$agent")
     done
     SELECTED_AGENTS=("${resolved_agents[@]}")
@@ -2119,9 +2145,11 @@ main() {
     local -a deduped=()
     for agent in "${SELECTED_AGENTS[@]}"; do
       local already=false
-      for d in ${deduped[@]:+${deduped[@]}}; do
-        [[ "$d" == "$agent" ]] && already=true && break
-      done
+      if (( ${#deduped[@]} > 0 )); then
+        for d in "${deduped[@]}"; do
+          [[ "$d" == "$agent" ]] && already=true && break
+        done
+      fi
       [[ "$already" != true ]] && deduped+=("$agent")
     done
     SELECTED_AGENTS=("${deduped[@]}")
