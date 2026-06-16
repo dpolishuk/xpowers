@@ -309,6 +309,10 @@ const HOSTS: HostConfig[] = [
             if (item.startsWith("codex-")) continue
             const srcPath = join(sourceSkills, item)
             const destPath = join(targetSkills, item)
+            if (existsSync(destPath)) {
+              p.log.warn(`Skipping fallback skill ${item}: already exists at ${destPath}`)
+              continue
+            }
             const s = await stat(srcPath)
             if (s.isDirectory()) {
               await copyDir(srcPath, destPath)

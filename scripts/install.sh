@@ -920,6 +920,10 @@ install_kimi_code() {
       local dirname; dirname="$(basename "$skill_dir")"
       [[ "$dirname" == codex-* ]] && continue
       [[ "$dirname" == common-patterns ]] && continue
+      if [[ -e "${home}/skills/${dirname}" ]]; then
+        warn "Skipping fallback skill ${dirname}: already exists at ${home}/skills/${dirname}"
+        continue
+      fi
       copy_item "$skill_dir" "${home}/skills/${dirname}"
       manifest_add "skills/${dirname}/"
     done
