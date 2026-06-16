@@ -34,27 +34,34 @@ For development (symlinks for live reload):
 | Location | Contents |
 |----------|----------|
 | `~/.kimi-code/skills/` | 20+ XPowers skills (brainstorming, TDD, refactoring, etc.) |
-| `~/.kimi-code/plugins/xpowers/kimi.plugin.json` | Plugin metadata for `kimi plugin list` |
 | `~/.kimi-code/hooks/` | Guard hooks (dangerous bash, env writes, beads truncation, etc.) |
 | `~/.kimi-code/config.toml` | `[[hooks]]` entries for PreToolUse / PostToolUse |
 | `~/.local/bin/tm` | Shared `tm` task-management runtime |
+
+The installer also tries `kimi plugin install` to register `kimi.plugin.json` from the repo root. If your `kimi` binary does not yet have a `plugin` subcommand, the skills and hooks still work; register the plugin later via the Kimi Code TUI (`/plugins install`) or copy `kimi.plugin.json` to `~/.kimi-code/plugins/xpowers/kimi.plugin.json` manually.
+
+### Using the TypeScript Installer
+
+```bash
+bun scripts/install.ts --yes --hosts kimi-code
+```
 
 ### Manual Install
 
 ```bash
 # 1. Create config directories
 mkdir -p ~/.kimi-code/skills
-mkdir -p ~/.kimi-code/plugins/xpowers
 mkdir -p ~/.kimi-code/hooks
 
 # 2. Copy skills (exclude codex-* wrappers and common-patterns)
 cp -r .kimi-code/skills/* ~/.kimi-code/skills/
 
-# 3. Copy plugin metadata
-cp kimi.plugin.json ~/.kimi-code/plugins/xpowers/kimi.plugin.json
-
-# 4. Install guard hooks
+# 3. Install guard hooks
 bash scripts/install-kimi-code-hooks.sh
+
+# 4. Optionally register plugin metadata if plugin install is unavailable
+mkdir -p ~/.kimi-code/plugins/xpowers
+cp kimi.plugin.json ~/.kimi-code/plugins/xpowers/kimi.plugin.json
 
 # 5. Verify the shared tm runtime
 ~/.local/bin/tm --help

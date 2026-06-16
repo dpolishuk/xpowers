@@ -276,6 +276,63 @@ const HOSTS: HostConfig[] = [
     },
   },
   {
+    id: "kimi_code",
+    name: "Kimi Code CLI",
+    detect: () => existsSync(join(homedir(), ".kimi-code")) || existsSync(join(xdgConfig(), "kimi-code")) || commandExists("kimi"),
+    targetDir: () => process.env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"),
+    sources: {
+      skills: { from: ".kimi-code/skills", exclude: ["common-patterns"] },
+    },
+    availableFeatures: [],
+    postInstall: async (target) => {
+      // Register the plugin with Kimi Code so MCP servers and sessionStart load.
+      if (commandExists("kimi")) {
+        const installResult = Bun.spawnSync(["kimi", "plugin", "install", REPO_ROOT], { stdout: "pipe", stderr: "pipe" })
+        if (installResult.exitCode !== 0) {
+          const stderr = installResult.stderr.toString().trim()
+          console.warn(`kimi plugin install failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+      // Install guard hooks into ~/.kimi-code/config.toml
+      const hookScript = join(REPO_ROOT, "scripts", "install-kimi-code-hooks.sh")
+      if (existsSync(hookScript)) {
+        const hookResult = Bun.spawnSync(["bash", hookScript], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, KIMI_CODE_HOME: target },
+        })
+        if (hookResult.exitCode !== 0) {
+          const stderr = hookResult.stderr.toString().trim()
+          console.warn(`Kimi Code hook installation failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+    },
+    postUninstall: async (target) => {
+      if (commandExists("kimi")) {
+        const removeResult = Bun.spawnSync(["kimi", "plugin", "remove", "xpowers"], { stdout: "pipe", stderr: "pipe" })
+        if (removeResult.exitCode !== 0) {
+          const stderr = removeResult.stderr.toString().trim()
+          console.warn(`kimi plugin remove failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+      // Remove XPowers hooks block from config.toml
+      const configFile = join(target, "config.toml")
+      if (existsSync(configFile)) {
+        let config = await readFile(configFile, "utf8")
+        config = config
+          .split(/\n/)
+          .filter((line, index, lines) => {
+            const startIdx = lines.findIndex((l) => l.includes("# BEGIN XPOWERS KIMI-CODE HOOKS"))
+            const endIdx = lines.findIndex((l) => l.includes("# END XPOWERS KIMI-CODE HOOKS"))
+            if (startIdx === -1 || endIdx === -1) return true
+            return index < startIdx || index > endIdx
+          })
+          .join("\n")
+        await writeFile(configFile, config, "utf8")
+      }
+    },
+  },
+  {
     id: "gemini",
     name: "Gemini CLI",
     detect: () => commandExists("gemini"),
@@ -921,6 +978,12 @@ type CliArgs = {
   allowConflicts: boolean
 }
 
+const HOST_ID_ALIASES: Record<string, string> = {
+  "kimi-code": "kimi_code",
+}
+
+const normalizeHostId = (id: string) => HOST_ID_ALIASES[id] || id
+
 const parseArgs = (): CliArgs => {
   const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, allowConflicts: false }
   const argv = process.argv.slice(2)
@@ -941,7 +1004,7 @@ const parseArgs = (): CliArgs => {
         args.yes = true // JSON implies non-interactive
         break
       case "--hosts":
-        args.hosts = (argv[++i] || "").split(",").filter(Boolean)
+        args.hosts = (argv[++i] || "").split(",").filter(Boolean).map(normalizeHostId)
         break
       case "--features":
         args.features = (argv[++i] || "").split(",").filter(Boolean)
@@ -989,7 +1052,7 @@ Options:
   --yes, -y          Auto-install all detected hosts and features
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove all installed files and features
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,gemini,pi
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,pi (kimi-code is also accepted)
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help

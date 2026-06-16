@@ -2329,10 +2329,9 @@ test("setup-pi.sh shim rejects piped execution with helpful error", { timeout: 6
   assert.match(output, /universal installer instead/i)
 })
 
-test("install.sh --kimi-code installs skills, plugin metadata, and guard hooks", { timeout: 120000 }, () => {
+test("install.sh --kimi-code installs skills, hooks, and version marker", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-kimi-code-test-"))
-  const kimiHome = path.join(home, ".config", "kimi-code")
-  const pluginDir = path.join(kimiHome, "plugins", "xpowers")
+  const kimiHome = path.join(home, ".kimi-code")
 
   const result = spawnSync("bash", ["scripts/install.sh", "--kimi-code", "--yes"], {
     cwd: repoRoot,
@@ -2344,21 +2343,13 @@ test("install.sh --kimi-code installs skills, plugin metadata, and guard hooks",
   const output = combinedOutput(result)
   assert.equal(result.status, 0, output)
 
-  // Skills copied to canonical user-level path (exclude codex-* and common-patterns)
+  // Fallback: skills copied to canonical user-level path when `kimi` binary is unavailable
   const skillsDir = path.join(kimiHome, "skills")
   assert.equal(fs.existsSync(skillsDir), true)
   const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
   assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
   assert.equal(skills.some((n) => n.startsWith("codex-")), false, "codex-* skills should not be installed")
   assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
-
-  // Plugin manifest copied and valid JSON
-  const manifestPath = path.join(pluginDir, "kimi.plugin.json")
-  assert.equal(fs.existsSync(manifestPath), true, "kimi.plugin.json should be installed")
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
-  assert.equal(typeof manifest.name, "string")
-  assert.equal(typeof manifest.version, "string")
-  assert.equal(manifest.skills, "../../skills/")
 
   // Version marker
   const versionPath = path.join(kimiHome, ".xpowers-version")
