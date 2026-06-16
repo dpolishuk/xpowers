@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refactoring Safely"
+  short_description: "Help with Refactoring Safely tasks"
+  default_prompt: "Use $refactoring-safely to run this workflow."

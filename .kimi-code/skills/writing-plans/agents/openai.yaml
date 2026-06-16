@@ -1,0 +1,4 @@
+interface:
+  display_name: "Writing Plans"
+  short_description: "Help with Writing Plans tasks"
+  default_prompt: "Use $writing-plans to run this workflow."

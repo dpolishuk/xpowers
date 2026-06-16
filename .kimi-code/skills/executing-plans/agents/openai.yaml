@@ -1,0 +1,4 @@
+interface:
+  display_name: "Executing Plans"
+  short_description: "Help with Executing Plans tasks"
+  default_prompt: "Use $executing-plans to run this workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Implementation"
+  short_description: "Help with Review Implementation tasks"
+  default_prompt: "Use $review-implementation to run this workflow."

@@ -2328,3 +2328,53 @@ test("setup-pi.sh shim rejects piped execution with helpful error", { timeout: 6
   assert.match(output, /cannot determine script location when piped/i)
   assert.match(output, /universal installer instead/i)
 })
+
+test("install.sh --kimi-code installs skills, plugin metadata, and guard hooks", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-kimi-code-test-"))
+  const kimiHome = path.join(home, ".config", "kimi-code")
+  const pluginDir = path.join(kimiHome, "plugins", "xpowers")
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--kimi-code", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+
+  // Skills copied to canonical user-level path (exclude codex-* and common-patterns)
+  const skillsDir = path.join(kimiHome, "skills")
+  assert.equal(fs.existsSync(skillsDir), true)
+  const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
+  assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
+  assert.equal(skills.some((n) => n.startsWith("codex-")), false, "codex-* skills should not be installed")
+  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+
+  // Plugin manifest copied and valid JSON
+  const manifestPath = path.join(pluginDir, "kimi.plugin.json")
+  assert.equal(fs.existsSync(manifestPath), true, "kimi.plugin.json should be installed")
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+  assert.equal(typeof manifest.name, "string")
+  assert.equal(typeof manifest.version, "string")
+  assert.equal(manifest.skills, "../../skills/")
+
+  // Version marker
+  const versionPath = path.join(kimiHome, ".xpowers-version")
+  assert.equal(fs.existsSync(versionPath), true)
+  assert.equal(fs.readFileSync(versionPath, "utf8").trim(), JSON.parse(fs.readFileSync(path.join(repoRoot, "kimi.plugin.json"), "utf8")).version)
+
+  // Guard hooks installed and config block present
+  const hooksDir = path.join(kimiHome, "hooks")
+  assert.equal(fs.existsSync(path.join(hooksDir, "pre-tool-use", "block-dangerous-bash.py")), true)
+  assert.equal(fs.existsSync(path.join(hooksDir, "post-tool-use", "02-block-bd-truncation.py")), true)
+
+  const configPath = path.join(kimiHome, "config.toml")
+  assert.equal(fs.existsSync(configPath), true)
+  const config = fs.readFileSync(configPath, "utf8")
+  assert.match(config, /# BEGIN XPOWERS KIMI-CODE HOOKS/)
+  assert.match(config, /# END XPOWERS KIMI-CODE HOOKS/)
+  assert.match(config, /event = "PreToolUse"/)
+  assert.match(config, /event = "PostToolUse"/)
+})

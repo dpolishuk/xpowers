@@ -3,7 +3,7 @@ set -euo pipefail
 
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
-# Supports: Claude Code, OpenCode, Kimi CLI, Codex CLI, Gemini CLI, Pi Agent
+# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Pi Agent
 
 # ---------------------------------------------------------------------------
 # Common infrastructure
@@ -335,12 +335,13 @@ declare -A AGENT_PATHS=()
 declare -A AGENT_LABELS=(
   [claude]="Claude Code"
   [opencode]="OpenCode"
-  [kimi]="Kimi CLI"
+  [kimi_code]="Kimi Code CLI"
+  [kimi]="Kimi CLI (legacy)"
   [codex]="Codex CLI"
   [gemini]="Gemini CLI"
   [pi]="Pi Agent"
 )
-AGENT_ORDER=(claude opencode kimi codex gemini pi)
+AGENT_ORDER=(claude opencode kimi_code kimi codex gemini pi)
 
 detect_claude()  { [[ -d "${HOME}/.claude" ]] && AGENT_PATHS[claude]="${HOME}/.claude" || true; }
 detect_opencode(){ [[ -d "${XDG_CFG}/opencode" ]] && AGENT_PATHS[opencode]="${XDG_CFG}/opencode" || true; }
@@ -349,6 +350,15 @@ detect_kimi()    {
     AGENT_PATHS[kimi]="${XDG_CFG}/agents"
   elif [[ -d "${HOME}/.kimi" ]]; then
     AGENT_PATHS[kimi]="${HOME}/.kimi"
+  fi
+}
+detect_kimi_code() {
+  if command -v kimi &>/dev/null; then
+    AGENT_PATHS[kimi_code]="$(command -v kimi)"
+  elif [[ -d "${XDG_CFG}/kimi-code" ]]; then
+    AGENT_PATHS[kimi_code]="${XDG_CFG}/kimi-code"
+  elif [[ -d "${HOME}/.kimi-code" ]]; then
+    AGENT_PATHS[kimi_code]="${HOME}/.kimi-code"
   fi
 }
 detect_codex()   {
@@ -372,6 +382,7 @@ detect_pi()      {
 detect_all() {
   detect_claude
   detect_opencode
+  detect_kimi_code
   detect_kimi
   detect_codex
   detect_gemini
@@ -858,6 +869,77 @@ install_kimi() {
   write_manifest "$home"
 }
 
+install_kimi_code() {
+  local home="${XDG_CFG}/kimi-code"
+  MANIFEST_ENTRIES=()
+  ensure_dir "${home}/skills"
+
+  # Canonical user-level skill path for Kimi Code CLI. Kimi Code discovers
+  # skills under ~/.kimi-code/skills/ automatically, so this works even when
+  # the native `kimi plugin` command is unavailable.
+  local source_skills="${REPO_ROOT}/.kimi-code/skills"
+  for skill_dir in "${source_skills}"/*/; do
+    [[ -d "$skill_dir" ]] || continue
+    local dirname; dirname="$(basename "$skill_dir")"
+    [[ "$dirname" == codex-* ]] && continue
+    [[ "$dirname" == common-patterns ]] && continue
+    copy_item "$skill_dir" "${home}/skills/${dirname}"
+    manifest_add "skills/${dirname}/"
+  done
+
+  # Plugin registration: when the `kimi` binary is available, register the
+  # repository as a plugin so MCP servers and plugin metadata are loaded.
+  if command -v kimi &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: kimi plugin install ${REPO_ROOT}"
+    else
+      local install_stderr
+      install_stderr=$(kimi plugin install "$REPO_ROOT" 2>&1) || {
+        warn "kimi plugin install failed: ${install_stderr}"
+      }
+    fi
+  fi
+
+  # Also copy plugin metadata to a local plugin directory so the repo can be
+  # loaded as a plugin even when the plugin manager did not run.
+  if [[ -f "${REPO_ROOT}/kimi.plugin.json" ]]; then
+    local plugin_dir="${home}/plugins/xpowers"
+    ensure_dir "$plugin_dir"
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c "
+import json, sys
+src = sys.argv[1]
+dst = sys.argv[2]
+with open(src) as f:
+    data = json.load(f)
+# Local copy keeps skills in the canonical user-level skills directory.
+data['skills'] = '../../skills/'
+with open(dst, 'w') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+" "${REPO_ROOT}/kimi.plugin.json" "${plugin_dir}/kimi.plugin.json"
+    else
+      cp "${REPO_ROOT}/kimi.plugin.json" "${plugin_dir}/kimi.plugin.json"
+      warn "python3 not found — ${plugin_dir}/kimi.plugin.json skills path may need manual adjustment"
+    fi
+    manifest_add "plugins/xpowers/kimi.plugin.json"
+  fi
+
+  # Install guard hooks into ~/.kimi-code/config.toml
+  local hook_script="${REPO_ROOT}/scripts/install-kimi-code-hooks.sh"
+  if [[ -x "$hook_script" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: ${hook_script}"
+    else
+      bash "$hook_script" || warn "Kimi Code hook installation failed"
+    fi
+  fi
+
+  manifest_add ".xpowers-version"
+  echo "${VERSION}" > "${home}/.xpowers-version"
+  write_manifest "$home"
+}
+
 install_codex() {
   MANIFEST_ENTRIES=()
 
@@ -988,6 +1070,24 @@ validate_kimi() {
   $ok
 }
 
+validate_kimi_code() {
+  local home="${XDG_CFG}/kimi-code"
+  local plugin_dir="${home}/plugins/xpowers"
+  local ok=true
+  local sk; sk=$(count_items "${home}/skills/*/")
+  [[ "$sk" -ge 15 ]] || { warn "Kimi Code: only ${sk} skills (expected 15+)"; ok=false; }
+  # shellcheck disable=SC2012,SC2086
+  local codex_count; codex_count=$(ls -1d ${home}/skills/codex-*/ 2>/dev/null | wc -l)
+  [[ "$codex_count" -eq 0 ]] || { warn "Kimi Code: found ${codex_count} codex-* dirs (should be 0)"; ok=false; }
+  if [[ -f "${plugin_dir}/kimi.plugin.json" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json,sys; json.load(open(sys.argv[1]))" "${plugin_dir}/kimi.plugin.json" >/dev/null 2>&1 \
+      || { warn "Kimi Code: plugin manifest is invalid JSON"; ok=false; }
+  fi
+  local vf="${home}/.xpowers-version"
+  [[ -f "$vf" ]] && [[ "$(cat "$vf")" == "$VERSION" ]] || { warn "Kimi Code: version mismatch"; ok=false; }
+  $ok
+}
+
 validate_codex() {
   local home
   if [[ "$CODEX_SCOPE" == "local" ]]; then
@@ -1033,6 +1133,51 @@ uninstall_opencode() {
 
 uninstall_kimi() {
   uninstall_from_manifest "${AGENT_PATHS[kimi]:-${XDG_CFG}/agents}"
+}
+
+uninstall_kimi_code() {
+  local home="${XDG_CFG}/kimi-code"
+  local plugin_dir="${home}/plugins/xpowers"
+
+  if command -v kimi &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: kimi plugin uninstall xpowers"
+    else
+      kimi plugin uninstall xpowers 2>/dev/null || true
+    fi
+  fi
+
+  # Remove manually-copied plugin files tracked by manifest (if any)
+  if [[ -f "${home}/.xpowers-manifest" ]]; then
+    uninstall_from_manifest "$home"
+  elif [[ -d "$plugin_dir" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  Would remove: ${plugin_dir}/"
+    else
+      rm -rf "$plugin_dir"
+    fi
+  fi
+
+  # Remove XPowers hooks block from config.toml
+  local config_file="${home}/config.toml"
+  if [[ -f "$config_file" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  Would remove XPowers hooks block from: ${config_file}"
+    else
+      local tmp; tmp="$(mktemp)"
+      awk '
+        /# BEGIN XPOWERS KIMI-CODE HOOKS/ { in_block = 1; next }
+        /# END XPOWERS KIMI-CODE HOOKS/   { in_block = 0; next }
+        !in_block { print }
+      ' "$config_file" > "$tmp"
+      mv "$tmp" "$config_file"
+    fi
+  fi
+
+  # Remove version marker if manifest removal missed it
+  if [[ "$DRY_RUN" != true ]]; then
+    rm -f "${home}/.xpowers-version"
+  fi
 }
 
 uninstall_codex() {
@@ -1144,6 +1289,18 @@ status_kimi() {
     echo -e "  ${GREEN}✓${RESET} Kimi CLI       ${BOLD}v${iv}${RESET}  (${sk} skills)"
   else
     echo -e "  ${DIM}✗ Kimi CLI       not installed${RESET}"
+  fi
+}
+
+status_kimi_code() {
+  local home="${XDG_CFG}/kimi-code"
+  local vf="${home}/.xpowers-version"
+  if [[ -f "$vf" ]]; then
+    local iv; iv=$(cat "$vf")
+    local sk; sk=$(count_items "${home}/skills/*/")
+    echo -e "  ${GREEN}✓${RESET} Kimi Code CLI  ${BOLD}v${iv}${RESET}  (${sk} skills)"
+  else
+    echo -e "  ${DIM}✗ Kimi Code CLI  not installed${RESET}"
   fi
 }
 
@@ -1701,10 +1858,11 @@ Unified installer for XPowers across all AI coding agents.
 AGENTS:
     --claude            Install to Claude Code (~/.claude)
     --opencode          Install to OpenCode (~/.config/opencode)
-    --kimi              Install to Kimi CLI (~/.config/agents)
+    --kimi-code         Install to Kimi Code CLI (~/.config/kimi-code)
+    --kimi              Install to Kimi CLI (legacy, ~/.config/agents)
     --codex             Install to Codex CLI (~/.codex)
     --gemini            Install to Gemini CLI (native extension)
-    --hosts <list>      Comma-separated agents: claude,opencode,kimi,codex,gemini,pi,all
+    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,pi,all
     --all               Install to all detected agents
 
 MODES:
@@ -1730,7 +1888,8 @@ GENERAL:
 EXAMPLES:
     $(basename "$0")                    # Interactive: detect + confirm
     $(basename "$0") --all              # Install to all detected agents
-    $(basename "$0") --claude --kimi    # Install to specific agents
+    $(basename "$0") --claude --kimi-code  # Install to specific agents
+    $(basename "$0") --kimi           # Install to legacy Kimi CLI
     $(basename "$0") --status           # Show what's installed
     $(basename "$0") --uninstall --all  # Remove from all agents
     $(basename "$0") --uninstall --claude --dry-run  # Preview removal
@@ -1768,11 +1927,12 @@ main() {
     case "$1" in
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "xpowers $VERSION"; exit 0 ;;
-      --claude)     SELECTED_AGENTS+=(claude);   INTERACTIVE=false; shift ;;
-      --opencode)   SELECTED_AGENTS+=(opencode); INTERACTIVE=false; shift ;;
-      --kimi)       SELECTED_AGENTS+=(kimi);     INTERACTIVE=false; shift ;;
-      --codex)      SELECTED_AGENTS+=(codex);    INTERACTIVE=false; shift ;;
-      --gemini)     SELECTED_AGENTS+=(gemini);   INTERACTIVE=false; shift ;;
+      --claude)     SELECTED_AGENTS+=(claude);    INTERACTIVE=false; shift ;;
+      --opencode)   SELECTED_AGENTS+=(opencode);  INTERACTIVE=false; shift ;;
+      --kimi-code)  SELECTED_AGENTS+=(kimi_code); INTERACTIVE=false; shift ;;
+      --kimi)       SELECTED_AGENTS+=(kimi);      INTERACTIVE=false; shift ;;
+      --codex)      SELECTED_AGENTS+=(codex);     INTERACTIVE=false; shift ;;
+      --gemini)     SELECTED_AGENTS+=(gemini);    INTERACTIVE=false; shift ;;
       --hosts)
         shift
         if [[ $# -eq 0 ]]; then
@@ -1783,14 +1943,15 @@ main() {
         IFS=',' read -ra HOST_LIST <<< "$1"
         for h in "${HOST_LIST[@]}"; do
           case "$h" in
-            claude)   SELECTED_AGENTS+=(claude);   INTERACTIVE=false ;;
-            opencode) SELECTED_AGENTS+=(opencode); INTERACTIVE=false ;;
-            kimi)     SELECTED_AGENTS+=(kimi);     INTERACTIVE=false ;;
-            codex)    SELECTED_AGENTS+=(codex);    INTERACTIVE=false ;;
-            gemini)   SELECTED_AGENTS+=(gemini);   INTERACTIVE=false ;;
-            pi)       SELECTED_AGENTS+=(pi);       INTERACTIVE=false ;;
-            all)      SELECT_ALL=true; INTERACTIVE=false ;;
-            *)        error "Unknown host: $h"; usage >&2; exit 1 ;;
+            claude)    SELECTED_AGENTS+=(claude);    INTERACTIVE=false ;;
+            opencode)  SELECTED_AGENTS+=(opencode);  INTERACTIVE=false ;;
+            kimi-code) SELECTED_AGENTS+=(kimi_code); INTERACTIVE=false ;;
+            kimi)      SELECTED_AGENTS+=(kimi);      INTERACTIVE=false ;;
+            codex)     SELECTED_AGENTS+=(codex);     INTERACTIVE=false ;;
+            gemini)    SELECTED_AGENTS+=(gemini);    INTERACTIVE=false ;;
+            pi)        SELECTED_AGENTS+=(pi);        INTERACTIVE=false ;;
+            all)       SELECT_ALL=true; INTERACTIVE=false ;;
+            *)         error "Unknown host: $h"; usage >&2; exit 1 ;;
           esac
         done
         shift
@@ -1878,6 +2039,7 @@ main() {
     echo
     status_claude
     status_opencode
+    status_kimi_code
     status_kimi
     status_codex
     status_gemini

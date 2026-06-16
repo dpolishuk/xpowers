@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dispatching Parallel Agents"
+  short_description: "Help with Dispatching Parallel Agents tasks"
+  default_prompt: "Use $dispatching-parallel-agents to run this workflow."

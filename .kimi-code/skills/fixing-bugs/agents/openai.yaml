@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fixing Bugs"
+  short_description: "Help with Fixing Bugs tasks"
+  default_prompt: "Use $fixing-bugs to run this workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing Anti Patterns"
+  short_description: "Help with Testing Anti Patterns tasks"
+  default_prompt: "Use $testing-anti-patterns to run this workflow."

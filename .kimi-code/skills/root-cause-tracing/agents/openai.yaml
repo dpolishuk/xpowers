@@ -1,0 +1,4 @@
+interface:
+  display_name: "Root Cause Tracing"
+  short_description: "Help with Root Cause Tracing tasks"
+  default_prompt: "Use $root-cause-tracing to run this workflow."

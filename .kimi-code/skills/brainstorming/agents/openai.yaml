@@ -1,0 +1,4 @@
+interface:
+  display_name: "Brainstorming"
+  short_description: "Help with Brainstorming tasks"
+  default_prompt: "Use $brainstorming to run this workflow."

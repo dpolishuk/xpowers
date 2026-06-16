@@ -1,0 +1,25 @@
+{
+  "name": "xpowers",
+  "version": "2.14.1",
+  "description": "Structured engineering workflows for Kimi Code CLI: brainstorming, TDD, planning, autonomous execution, and multi-agent reviews.",
+  "skills": "./.kimi-code/skills/",
+  "sessionStart": {
+    "skill": "using-hyper"
+  },
+  "skillInstructions": "XPowers is tm-first. Check tm ready for work, use test-driven-development for implementation, and run verification-before-completion before claiming success. When delegating, use the built-in subagents: explore for research, plan for architecture, coder for implementation/review/testing.",
+  "interface": {
+    "displayName": "XPowers",
+    "shortDescription": "Structured engineering workflows for Kimi Code CLI",
+    "longDescription": "XPowers adds reusable skills for brainstorming, writing plans, executing plans autonomously, test-driven development, bug fixing, refactoring, and parallel review. It assumes a tm-first task tracker backend.",
+    "developerName": "Dmitry Polishuk",
+    "websiteURL": "https://github.com/dpolishuk/xpowers"
+  },
+  "mcpServers": {
+    "context7": {
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      }
+    }
+  }
+}

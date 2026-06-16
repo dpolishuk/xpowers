@@ -1,0 +1,4 @@
+interface:
+  display_name: "XPowers Agents"
+  short_description: "Help with XPowers Agents tasks"
+  default_prompt: "Use $xpowers-agents to run this workflow."

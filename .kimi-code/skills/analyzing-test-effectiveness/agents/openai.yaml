@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyzing Test Effectiveness"
+  short_description: "Help with Analyzing Test Effectiveness tasks"
+  default_prompt: "Use $analyzing-test-effectiveness to run this workflow."

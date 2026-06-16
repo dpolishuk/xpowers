@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debugging with Tools"
+  short_description: "Help with Debugging with Tools tasks"
+  default_prompt: "Use $debugging-with-tools to run this workflow."

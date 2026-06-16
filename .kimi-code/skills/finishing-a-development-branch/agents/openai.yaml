@@ -1,0 +1,4 @@
+interface:
+  display_name: "Finishing A Development Branch"
+  short_description: "Help with Finishing A Development Branch tasks"
+  default_prompt: "Use $finishing-a-development-branch to run this workflow."

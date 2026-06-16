@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verification Before Completion"
+  short_description: "Help with Verification Before Completion tasks"
+  default_prompt: "Use $verification-before-completion to run this workflow."

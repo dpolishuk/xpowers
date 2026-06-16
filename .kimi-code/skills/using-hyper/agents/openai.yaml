@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using Hyper"
+  short_description: "Help with Using Hyper tasks"
+  default_prompt: "Use $using-hyper to run this workflow."

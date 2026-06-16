@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sre Task Refinement"
+  short_description: "Help with Sre Task Refinement tasks"
+  default_prompt: "Use $sre-task-refinement to run this workflow."
