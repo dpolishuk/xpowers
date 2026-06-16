@@ -503,6 +503,39 @@ write_manifest() {
   } > "$manifest"
 }
 
+# uninstall_from_json_manifest <agent_home>  — remove entries recorded by the
+# TypeScript installer in ~/.xpowers/manifest.json. This keeps shell and TS
+# uninstall paths consistent.
+uninstall_from_json_manifest() {
+  local home="$1"
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  [[ -f "$json_manifest" ]] || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "Skipping JSON manifest cleanup: python3 not available"
+    return 0
+  fi
+
+  local files
+  files=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "$json_manifest" 2>/dev/null || true)
+  [[ -n "$files" ]] || return 0
+
+  local f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    # Only accept relative, single-component-or-subpath entries.
+    case "$f" in
+      /*|*..*|"."|".") continue ;;
+    esac
+    if [[ "$DRY_RUN" == true ]]; then
+      if [[ -e "${home}/${f}" ]]; then
+        info "Would remove (JSON manifest): ${home}/${f}"
+      fi
+    else
+      rm -rf "${home}/${f}" 2>/dev/null || true
+    fi
+  done <<< "$files"
+}
+
 uninstall_from_manifest() {
   # uninstall_from_manifest <agent_home>  — remove only manifest-listed entries
   local home="$1"
@@ -1232,6 +1265,10 @@ uninstall_kimi_code() {
   if [[ -f "${home}/.xpowers-manifest" ]]; then
     uninstall_from_manifest "$home"
   fi
+
+  # The TypeScript installer records files in ~/.xpowers/manifest.json; make
+  # sure the shell uninstaller cleans those up too.
+  uninstall_from_json_manifest "$home"
 
   # Remove XPowers hooks block from config.toml
   local config_file="${home}/config.toml"

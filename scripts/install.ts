@@ -318,8 +318,14 @@ const HOSTS: HostConfig[] = [
       if (pluginInstalled) {
         // Managed plugin provides skills. If a previous fallback install left
         // XPowers-owned skill copies on disk, remove them so they don't
-        // duplicate the plugin's skills or become untracked orphans.
+        // duplicate the plugin's skills or become untracked orphans. Validate
+        // names first to avoid path traversal from corrupt manifests.
+        const safeSkillName = /^[a-z0-9_-]+$/i
         for (const dirname of ownedSkills) {
+          if (!safeSkillName.test(dirname)) {
+            p.log.warn(`Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}`)
+            continue
+          }
           const skillPath = join(target, "skills", dirname)
           if (existsSync(skillPath)) {
             await rm(skillPath, { recursive: true, force: true })
