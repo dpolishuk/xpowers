@@ -1,7 +1,6 @@
 ---
 
 name: review-documentation
-model: inherit
 description: Documentation reviewer - checks if docs need updates for API changes, new features, config changes. Returns PASS or ISSUES_FOUND.
 tools:
   Read: true
