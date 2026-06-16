@@ -925,6 +925,12 @@ install_kimi_code() {
       done < <(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 || true)
     fi
     for dirname in "${prev_owned[@]}"; do
+      case "$dirname" in
+        ""|"."|".."|*/*|*..*)
+          warn "Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}"
+          continue
+          ;;
+      esac
       local skill_path="${home}/skills/${dirname}"
       if [[ -e "$skill_path" ]]; then
         rm -rf "$skill_path"

@@ -99,41 +99,41 @@ build_hook_config() {
 # Pre-tool hooks: inspect every tool call before execution.
 [[hooks]]
 event = "PreToolUse"
-command = "python3 ${KIMI_CODE_HOME}/hooks/pre-tool-use/block-beads-direct-read.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/pre-tool-use/block-beads-direct-read.py\""
 timeout = 5
 
 [[hooks]]
 event = "PreToolUse"
-command = "python3 ${KIMI_CODE_HOME}/hooks/pre-tool-use/01-block-pre-commit-edits.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/pre-tool-use/01-block-pre-commit-edits.py\""
 timeout = 5
 
 [[hooks]]
 event = "PreToolUse"
-command = "python3 ${KIMI_CODE_HOME}/hooks/pre-tool-use/block-dangerous-bash.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/pre-tool-use/block-dangerous-bash.py\""
 timeout = 5
 
 [[hooks]]
 event = "PreToolUse"
-command = "python3 ${KIMI_CODE_HOME}/hooks/pre-tool-use/block-env-writes.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/pre-tool-use/block-env-writes.py\""
 timeout = 5
 
 # Post-tool hooks: inspect tool results after execution.
 [[hooks]]
 event = "PostToolUse"
 matcher = "Bash"
-command = "python3 ${KIMI_CODE_HOME}/hooks/post-tool-use/02-block-bd-truncation.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/post-tool-use/02-block-bd-truncation.py\""
 timeout = 5
 
 [[hooks]]
 event = "PostToolUse"
 matcher = "Bash"
-command = "python3 ${KIMI_CODE_HOME}/hooks/post-tool-use/03-block-pre-commit-bash.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/post-tool-use/03-block-pre-commit-bash.py\""
 timeout = 5
 
 [[hooks]]
 event = "PostToolUse"
 matcher = "Bash"
-command = "python3 ${KIMI_CODE_HOME}/hooks/post-tool-use/04-block-pre-existing-checks.py"
+command = "python3 \"${KIMI_CODE_HOME}/hooks/post-tool-use/04-block-pre-existing-checks.py\""
 timeout = 5
 # END XPOWERS KIMI-CODE HOOKS
 TOML
