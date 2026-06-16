@@ -2332,11 +2332,15 @@ test("setup-pi.sh shim rejects piped execution with helpful error", { timeout: 6
 test("install.sh --kimi-code installs skills, hooks, and version marker", { timeout: 120000 }, () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-kimi-code-test-"))
   const kimiHome = path.join(home, ".kimi-code")
+  const pathWithoutKimi = (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter((dir) => !fs.existsSync(path.join(dir, "kimi")))
+    .join(path.delimiter)
 
   const result = spawnSync("bash", ["scripts/install.sh", "--kimi-code", "--yes"], {
     cwd: repoRoot,
     encoding: "utf8",
-    env: installEnv(home),
+    env: installEnv(home, { PATH: pathWithoutKimi }),
     timeout: 120000,
   })
 
