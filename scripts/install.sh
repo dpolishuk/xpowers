@@ -922,10 +922,10 @@ install_kimi_code() {
     # the two documented installers without losing upgrade/uninstall tracking.
     local owned_skills=""
     if [[ -f "${home}/.xpowers-manifest" ]]; then
-      owned_skills+=" $(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+      owned_skills+=" $(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
     fi
     if [[ -f "${HOME}/.xpowers/manifest.json" ]] && command -v python3 >/dev/null 2>&1; then
-      owned_skills+=" $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+      owned_skills+=" $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
     fi
     for skill_dir in "${source_skills}"/*/; do
       [[ -d "$skill_dir" ]] || continue
