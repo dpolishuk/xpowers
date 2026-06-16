@@ -1122,7 +1122,7 @@ validate_kimi_code() {
 
   # If the plugin was registered via `kimi plugin install`, the managed copy
   # contains the skills and manifest. Otherwise skills live in ~/.kimi-code/skills/.
-  if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers\s'; then
+  if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers[[:space:]]'; then
     plugin_installed=true
   fi
 
@@ -1358,7 +1358,7 @@ status_kimi_code() {
   if [[ -f "$vf" ]]; then
     local iv; iv=$(cat "$vf")
     local plugin_installed=false
-    if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers\s'; then
+    if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers[[:space:]]'; then
       plugin_installed=true
     fi
     if [[ "$plugin_installed" == true ]]; then

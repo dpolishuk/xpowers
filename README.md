@@ -514,7 +514,7 @@ Use the shared installer to provision the new TypeScript Kimi Code CLI support:
 ./scripts/install.sh --kimi-code
 ```
 
-Or use the interactive TypeScript installer:
+Or use the TypeScript installer non-interactively:
 
 ```bash
 bun scripts/install.ts --yes --hosts kimi-code
