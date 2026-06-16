@@ -304,12 +304,20 @@ const HOSTS: HostConfig[] = [
         const targetSkills = join(target, "skills")
         if (existsSync(sourceSkills)) {
           await mkdir(targetSkills, { recursive: true })
+          // Refresh skills owned by a previous XPowers fallback install; skip
+          // anything else so we do not overwrite unrelated user skills.
+          const prevManifest = await readManifest()
+          const ownedSkills = new Set(
+            prevManifest?.hosts?.kimi_code?.files
+              ?.filter((f) => f.startsWith("skills/"))
+              ?.map((f) => f.split("/")[1]) ?? [],
+          )
           const items = await listItems(sourceSkills, undefined, ["common-patterns"])
           for (const item of items) {
             if (item.startsWith("codex-")) continue
             const srcPath = join(sourceSkills, item)
             const destPath = join(targetSkills, item)
-            if (existsSync(destPath)) {
+            if (existsSync(destPath) && !ownedSkills.has(item)) {
               p.log.warn(`Skipping fallback skill ${item}: already exists at ${destPath}`)
               continue
             }

@@ -915,12 +915,18 @@ install_kimi_code() {
   if [[ "$plugin_installed" != true ]]; then
     ensure_dir "${home}/skills"
     local source_skills="${REPO_ROOT}/.kimi-code/skills"
+    # Skills already owned by a previous XPowers fallback install may be
+    # refreshed; everything else is treated as a user skill and skipped.
+    local owned_skills=""
+    if [[ -f "${home}/.xpowers-manifest" ]]; then
+      owned_skills="$(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+    fi
     for skill_dir in "${source_skills}"/*/; do
       [[ -d "$skill_dir" ]] || continue
       local dirname; dirname="$(basename "$skill_dir")"
       [[ "$dirname" == codex-* ]] && continue
       [[ "$dirname" == common-patterns ]] && continue
-      if [[ -e "${home}/skills/${dirname}" ]]; then
+      if [[ -e "${home}/skills/${dirname}" && " ${owned_skills} " != *" ${dirname} "* ]]; then
         warn "Skipping fallback skill ${dirname}: already exists at ${home}/skills/${dirname}"
         continue
       fi
