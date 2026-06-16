@@ -545,9 +545,9 @@ uninstall_from_json_manifest() {
   local f
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    # Only accept relative, single-component-or-subpath entries.
+    # Only accept relative paths and reject traversal markers.
     case "$f" in
-      ""|"."|".."|/*|*/*|*..*) continue ;;
+      ""|"."|".."|/*|*..*) continue ;;
     esac
     if [[ "$DRY_RUN" == true ]]; then
       if [[ -e "${home}/${f}" ]]; then
