@@ -503,20 +503,43 @@ write_manifest() {
   } > "$manifest"
 }
 
+# Read the TypeScript installer's global JSON manifest for the kimi_code host.
+# Prints the recorded targetDir on the first line, then one file entry per line.
+# Returns empty output if the manifest or host entry is missing.
+read_kimi_json_manifest() {
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  [[ -f "$json_manifest" ]] || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    h = d.get('hosts', {}).get('kimi_code', {})
+    print(h.get('targetDir', ''))
+    for f in h.get('files', []):
+        print(f)
+except Exception:
+    pass
+" "$json_manifest" 2>/dev/null || true
+}
+
 # uninstall_from_json_manifest <agent_home>  — remove entries recorded by the
 # TypeScript installer in ~/.xpowers/manifest.json. This keeps shell and TS
 # uninstall paths consistent.
 uninstall_from_json_manifest() {
   local home="$1"
-  local json_manifest="${HOME}/.xpowers/manifest.json"
-  [[ -f "$json_manifest" ]] || return 0
-  if ! command -v python3 >/dev/null 2>&1; then
-    warn "Skipping JSON manifest cleanup: python3 not available"
-    return 0
-  fi
+  local manifest_data
+  manifest_data=$(read_kimi_json_manifest)
+  [[ -n "$manifest_data" ]] || return 0
+
+  local target_dir
+  target_dir=$(printf '%s\n' "$manifest_data" | head -1)
+  [[ "$target_dir" == "$home" ]] || return 0
 
   local files
-  files=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "$json_manifest" 2>/dev/null || true)
+  files=$(printf '%s\n' "$manifest_data" | tail -n +2)
   [[ -n "$files" ]] || return 0
 
   local f
@@ -538,6 +561,7 @@ uninstall_from_json_manifest() {
   # Remove the kimi_code host entry so stale ownership records do not affect
   # later installs. Delete the manifest entirely when no hosts remain.
   if [[ "$DRY_RUN" != true ]]; then
+    local json_manifest="${HOME}/.xpowers/manifest.json"
     python3 -c "
 import json, sys, os
 path = sys.argv[1]
@@ -969,10 +993,16 @@ install_kimi_code() {
         [[ -n "$line" ]] && prev_owned+=("$line")
       done < <(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 || true)
     fi
-    if [[ -f "${HOME}/.xpowers/manifest.json" ]] && command -v python3 >/dev/null 2>&1; then
-      while IFS= read -r line; do
-        [[ -n "$line" ]] && prev_owned+=("$line")
-      done < <(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 || true)
+    local json_manifest_data
+    json_manifest_data=$(read_kimi_json_manifest)
+    if [[ -n "$json_manifest_data" ]]; then
+      local json_target_dir
+      json_target_dir=$(printf '%s\n' "$json_manifest_data" | head -1)
+      if [[ "$json_target_dir" == "$home" ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && prev_owned+=("$line")
+        done < <(printf '%s\n' "$json_manifest_data" | tail -n +2 | grep '^skills/' | cut -d/ -f2 || true)
+      fi
     fi
     for dirname in "${prev_owned[@]}"; do
       case "$dirname" in
@@ -1004,8 +1034,14 @@ install_kimi_code() {
     if [[ -f "${home}/.xpowers-manifest" ]]; then
       owned_skills+=" $(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
     fi
-    if [[ -f "${HOME}/.xpowers/manifest.json" ]] && command -v python3 >/dev/null 2>&1; then
-      owned_skills+=" $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
+    local json_manifest_data
+    json_manifest_data=$(read_kimi_json_manifest)
+    if [[ -n "$json_manifest_data" ]]; then
+      local json_target_dir
+      json_target_dir=$(printf '%s\n' "$json_manifest_data" | head -1)
+      if [[ "$json_target_dir" == "$home" ]]; then
+        owned_skills+=" $(printf '%s\n' "$json_manifest_data" | tail -n +2 | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
+      fi
     fi
     for skill_dir in "${source_skills}"/*/; do
       [[ -d "$skill_dir" ]] || continue
