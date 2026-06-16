@@ -4,7 +4,7 @@ This document provides essential information for AI coding agents working with t
 
 ## Project Overview
 
-**XPowers** supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Kimi CLI, and Codex CLI), providing structured workflows, best practices, and specialized agents for software development. Think of it as a pair programming partner that ensures proven development patterns are followed.
+**XPowers** supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi), providing structured workflows, best practices, and specialized agents for software development. Think of it as a pair programming partner that ensures proven development patterns are followed.
 
 ### Key Components
 
@@ -106,6 +106,10 @@ python3 -m pip --version >/dev/null 2>&1 || true  # Optional: ensure CLI deps ar
 │   ├── commands/          # Gemini command definitions
 │   ├── mcp/               # MCP servers for Gemini tools
 │   └── tests/             # Extension-focused tests
+├── .kimi-code/            # Kimi Code CLI-specific files
+│   ├── skills/            # Kimi Code skill definitions
+│   ├── AGENTS.md          # Kimi Code guidance
+│   └── INSTALL.md         # Kimi Code install instructions
 ├── .agents/               # Codex-compatible generated wrappers (skills)
 │   └── skills/            # Generated codex-* SKILL.md directories
 ├── .claude-plugin/        # Claude Code plugin metadata

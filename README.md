@@ -5,7 +5,7 @@
 <h1 align="center">XPowers</h1>
 
 <p align="center">
-  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi CLI, Codex CLI, and Pi.</strong>
+  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi.</strong>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 
 ---
 
-XPowers turns Claude Code, OpenCode, Gemini CLI, Kimi CLI, and Codex CLI into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
+XPowers turns Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, and Codex CLI into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/main/scripts/inst
 curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/main/scripts/install.sh | bash -s -- --remove-legacy --yes
 ```
 
-Install docs for other hosts are in [Host-Specific Instructions](#host-specific-instructions), with standalone guides for [Kimi CLI](.kimi/INSTALL.md) and [Pi](docs/pi.md).
+Install docs for other hosts are in [Host-Specific Instructions](#host-specific-instructions), with standalone guides for [Kimi Code CLI](.kimi-code/INSTALL.md), [Kimi CLI](.kimi/INSTALL.md), and [Pi](docs/pi.md).
 
 ## Why XPowers
 
@@ -502,6 +502,27 @@ Or install all detected hosts at once:
 ```
 
 For Kimi-specific manual install, directory layout, and tm/Linear preview notes, see `.kimi/INSTALL.md`.
+
+</details>
+
+<details>
+<summary><strong>Kimi Code CLI</strong></summary>
+
+Use the shared installer to provision the new TypeScript Kimi Code CLI support:
+
+```bash
+./scripts/install.sh --kimi-code
+```
+
+Or install all detected hosts at once:
+
+```bash
+./scripts/install.sh --all
+```
+
+This copies skills into `~/.kimi-code/skills/`, registers plugin metadata, and installs guard hooks into `~/.kimi-code/config.toml`. After installation, restart Kimi Code or run `kimi /reload`.
+
+For Kimi Code-specific manual install and troubleshooting, see `.kimi-code/INSTALL.md`.
 
 </details>
 

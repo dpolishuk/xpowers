@@ -15,7 +15,8 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 
 - [../.opencode/INSTALL.md](../.opencode/INSTALL.md) — OpenCode install and tm runtime setup
 - [../.gemini-extension/README.md](../.gemini-extension/README.md) — Gemini extension install and tm/Linear support
-- [../.kimi/INSTALL.md](../.kimi/INSTALL.md) — Kimi install and workflow guide
+- [../.kimi-code/INSTALL.md](../.kimi-code/INSTALL.md) — Kimi Code CLI install and workflow guide
+- [../.kimi/INSTALL.md](../.kimi/INSTALL.md) — Kimi CLI (legacy) install and workflow guide
 - [../.codex/INSTALL.md](../.codex/INSTALL.md) — Codex wrapper install guide
 
 ## Backend / Tracker Context
