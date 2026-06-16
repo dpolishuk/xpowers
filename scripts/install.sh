@@ -547,7 +547,7 @@ uninstall_from_json_manifest() {
     [[ -z "$f" ]] && continue
     # Only accept relative, single-component-or-subpath entries.
     case "$f" in
-      /*|*..*|"."|".") continue ;;
+      ""|"."|".."|/*|*/*|*..*) continue ;;
     esac
     if [[ "$DRY_RUN" == true ]]; then
       if [[ -e "${home}/${f}" ]]; then
