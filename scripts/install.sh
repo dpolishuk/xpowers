@@ -916,10 +916,16 @@ install_kimi_code() {
     ensure_dir "${home}/skills"
     local source_skills="${REPO_ROOT}/.kimi-code/skills"
     # Skills already owned by a previous XPowers fallback install may be
-    # refreshed; everything else is treated as a user skill and skipped.
+    # refreshed; everything else is treated as a user skill and skipped. We
+    # inspect both the shell installer's per-home text manifest and the
+    # TypeScript installer's global JSON manifest so users can switch between
+    # the two documented installers without losing upgrade/uninstall tracking.
     local owned_skills=""
     if [[ -f "${home}/.xpowers-manifest" ]]; then
-      owned_skills="$(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+      owned_skills+=" $(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+    fi
+    if [[ -f "${HOME}/.xpowers/manifest.json" ]] && command -v python3 >/dev/null 2>&1; then
+      owned_skills+=" $(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('\\n'.join(d.get('hosts',{}).get('kimi_code',{}).get('files',[])))" "${HOME}/.xpowers/manifest.json" 2>/dev/null | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ')"
     fi
     for skill_dir in "${source_skills}"/*/; do
       [[ -d "$skill_dir" ]] || continue

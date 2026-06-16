@@ -305,13 +305,24 @@ const HOSTS: HostConfig[] = [
         if (existsSync(sourceSkills)) {
           await mkdir(targetSkills, { recursive: true })
           // Refresh skills owned by a previous XPowers fallback install; skip
-          // anything else so we do not overwrite unrelated user skills.
+          // anything else so we do not overwrite unrelated user skills. We
+          // inspect both the TypeScript installer JSON manifest and the shell
+          // installer's per-home text manifest so users can switch between the
+          // two documented installers without losing upgrade/uninstall tracking.
           const prevManifest = await readManifest()
-          const ownedSkills = new Set(
+          const ownedFromJson =
             prevManifest?.hosts?.kimi_code?.files
               ?.filter((f) => f.startsWith("skills/"))
-              ?.map((f) => f.split("/")[1]) ?? [],
-          )
+              ?.map((f) => f.split("/")[1]) ?? []
+          const shellManifestPath = join(target, ".xpowers-manifest")
+          const ownedFromShell = existsSync(shellManifestPath)
+            ? (await readFile(shellManifestPath, "utf8"))
+                .split(/\n/)
+                .map((l) => l.trim())
+                .filter((l) => l.startsWith("skills/"))
+                .map((l) => l.split("/")[1])
+            : []
+          const ownedSkills = new Set([...ownedFromJson, ...ownedFromShell])
           const items = await listItems(sourceSkills, undefined, ["common-patterns"])
           for (const item of items) {
             if (item.startsWith("codex-")) continue
