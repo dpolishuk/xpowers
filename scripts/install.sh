@@ -506,13 +506,13 @@ write_manifest() {
 # Read the TypeScript installer's global JSON manifest for the kimi_code host.
 # Prints the recorded targetDir on the first line, then one file entry per line.
 # Returns empty output if the manifest or host entry is missing.
+# Falls back to node if python3 is not available so cleanup does not silently
+# skip TS-installed files.
 read_kimi_json_manifest() {
   local json_manifest="${HOME}/.xpowers/manifest.json"
   [[ -f "$json_manifest" ]] || return 0
-  if ! command -v python3 >/dev/null 2>&1; then
-    return 0
-  fi
-  python3 -c "
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -523,6 +523,61 @@ try:
 except Exception:
     pass
 " "$json_manifest" 2>/dev/null || true
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+const fs = require('fs');
+const p = process.argv[1];
+try {
+  const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+  const h = (d.hosts && d.hosts.kimi_code) || {};
+  console.log(h.targetDir || '');
+  (h.files || []).forEach(f => console.log(f));
+} catch (e) {}
+" "$json_manifest" 2>/dev/null || true
+  fi
+}
+
+# Remove the hosts.kimi_code entry from the TypeScript installer's global
+# manifest. Delete the manifest entirely when no hosts remain. Falls back to
+# node if python3 is not available.
+clear_kimi_code_json_manifest() {
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  [[ -f "$json_manifest" ]] || return 0
+  if [[ "$DRY_RUN" == true ]]; then
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, sys, os
+path = sys.argv[1]
+with open(path) as fh:
+    d = json.load(fh)
+d.setdefault('hosts', {}).pop('kimi_code', None)
+if not d.get('hosts') and not d.get('features'):
+    os.remove(path)
+else:
+    with open(path, 'w') as fh:
+        json.dump(d, fh, indent=2)
+" "$json_manifest" 2>/dev/null || true
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+const fs = require('fs');
+const p = process.argv[1];
+try {
+  const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+  if (d.hosts) delete d.hosts.kimi_code;
+  const hasHosts = d.hosts && Object.keys(d.hosts).length > 0;
+  const hasFeatures = d.features && Object.keys(d.features).length > 0;
+  if (!hasHosts && !hasFeatures) {
+    fs.unlinkSync(p);
+  } else {
+    fs.writeFileSync(p, JSON.stringify(d, null, 2));
+  }
+} catch (e) {}
+" "$json_manifest" 2>/dev/null || true
+  else
+    warn "Cannot update ${json_manifest}: python3 or node required"
+  fi
 }
 
 # uninstall_from_json_manifest <agent_home>  — remove entries recorded by the
@@ -559,22 +614,8 @@ uninstall_from_json_manifest() {
   done <<< "$files"
 
   # Remove the kimi_code host entry so stale ownership records do not affect
-  # later installs. Delete the manifest entirely when no hosts remain.
-  if [[ "$DRY_RUN" != true ]]; then
-    local json_manifest="${HOME}/.xpowers/manifest.json"
-    python3 -c "
-import json, sys, os
-path = sys.argv[1]
-with open(path) as fh:
-    d = json.load(fh)
-d.setdefault('hosts', {}).pop('kimi_code', None)
-if not d.get('hosts') and not d.get('features'):
-    os.remove(path)
-else:
-    with open(path, 'w') as fh:
-        json.dump(d, fh, indent=2)
-" "$json_manifest" 2>/dev/null || true
-  fi
+  # later installs.
+  clear_kimi_code_json_manifest
 }
 
 uninstall_from_manifest() {
@@ -1019,6 +1060,12 @@ install_kimi_code() {
         fi
       done
     fi
+
+    # Fallback skills are now provided by the managed plugin. Clear the stale
+    # ownership records from both installers so a later fallback install does
+    # not mistake user-recreated skills for XPowers-owned ones.
+    rm -f "${home}/.xpowers-manifest" 2>/dev/null || true
+    clear_kimi_code_json_manifest
   fi
 
   # Fallback: copy skills to the canonical user-level skill path. Kimi Code

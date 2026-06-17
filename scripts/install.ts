@@ -335,6 +335,14 @@ const HOSTS: HostConfig[] = [
             p.log.info(`Removed managed fallback skill (plugin now provides it): ${dirname}`)
           }
         }
+
+        // Clear the stale per-home text manifest from a previous shell fallback
+        // install so a later fallback install doesn't treat user-recreated
+        // skills as XPowers-owned.
+        const shellManifest = join(target, ".xpowers-manifest")
+        if (existsSync(shellManifest)) {
+          await rm(shellManifest, { force: true })
+        }
       }
 
       if (!pluginInstalled) {
