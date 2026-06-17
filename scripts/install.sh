@@ -1292,17 +1292,9 @@ uninstall_kimi() {
   uninstall_from_manifest "${_kimi_home}"
 }
 
-uninstall_kimi_code() {
-  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
-
-  # Remove the plugin registered via `kimi plugin install` (managed copy).
-  if command -v kimi &>/dev/null; then
-    if [[ "$DRY_RUN" == true ]]; then
-      info "Would run: kimi plugin remove xpowers"
-    else
-      kimi plugin remove xpowers 2>/dev/null || true
-    fi
-  fi
+# Clean a single Kimi Code home (current or legacy) during uninstall.
+_clean_kimi_home() {
+  local home="$1"
 
   # `kimi plugin remove` leaves the managed directory behind, so clean it up
   # explicitly to match the user's expectation that uninstall removes the
@@ -1344,6 +1336,29 @@ uninstall_kimi_code() {
   # Remove version marker if manifest removal missed it
   if [[ "$DRY_RUN" != true ]]; then
     rm -f "${home}/.xpowers-version"
+  fi
+}
+
+uninstall_kimi_code() {
+  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  local legacy_home="${XDG_CFG}/kimi-code"
+
+  # Remove the plugin registered via `kimi plugin install` (managed copy).
+  if command -v kimi &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: kimi plugin remove xpowers"
+    else
+      kimi plugin remove xpowers 2>/dev/null || true
+    fi
+  fi
+
+  _clean_kimi_home "$home"
+
+  # Older versions of this installer used the XDG config home
+  # (~/.config/kimi-code). Clean that up too when it differs from the current
+  # canonical home so upgrades from the legacy path do not leave stale files.
+  if [[ "$home" != "$legacy_home" ]]; then
+    _clean_kimi_home "$legacy_home"
   fi
 }
 
