@@ -535,7 +535,7 @@ You can also use `/skills` in Codex UI to discover and select the same wrappers.
 <details>
 <summary><strong>After Installation: Configure Models</strong></summary>
 
-All agents use `model: inherit` by default, meaning they follow your current model selection.
+All agents inherit your top-level `model` by default, meaning they follow your current model selection.
 
 **Quick setup - copy an example config:**
 

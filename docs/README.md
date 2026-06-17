@@ -52,7 +52,7 @@ Example configuration files for **OpenCode** and **Claude Code** with different 
 
 - Simplest configuration
 - Just set the `model` field at the top level
-- All agents use `model: inherit` by default
+- All agents inherit your top-level `model` natively (no per-agent `model` needed)
 - Add agent-specific overrides only if needed
 
 #### `opencode.example.anthropic.json`
@@ -128,9 +128,11 @@ model: anthropic/claude-haiku-4-5  # Full providerID/modelID
 
 | Format | Example | Use Case |
 |--------|---------|----------|
-| `inherit` | `model: inherit` | Use parent's/current model (default) |
+| *(omit `model`)* | _(no `model` field)_ | Inherit parent's/current model natively (default) |
 | `providerID/modelID` | `model: proxy1/claude-haiku-4-5` | Explicit provider and model |
 | `modelID` (OpenCode only) | `model: claude-haiku-4-5` | Shorthand for built-in providers |
+
+> **⚠️ Do not use `model: inherit`** in OpenCode agent files — it resolves to `undefined` and causes `ProviderModelNotFoundError`. Omit the `model` field to inherit natively.
 
 **Precedence order:**
 

@@ -33,5 +33,5 @@
     "lsp": "allow",
     "patch": "allow"
   },
-  "note": "No agent section needed - all agents use 'model: inherit' by default. Override specific agents by adding an 'agent' section if desired."
+  "note": "No agent section needed - all agents inherit the top-level 'model' natively. Override specific agents by adding an 'agent' section if desired."
 }
