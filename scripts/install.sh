@@ -1062,10 +1062,17 @@ install_kimi_code() {
     fi
 
     # Fallback skills are now provided by the managed plugin. Clear the stale
-    # ownership records from both installers so a later fallback install does
-    # not mistake user-recreated skills for XPowers-owned ones.
+    # per-home text manifest so a later fallback install does not mistake
+    # user-recreated skills for XPowers-owned ones.
     rm -f "${home}/.xpowers-manifest" 2>/dev/null || true
-    clear_kimi_code_json_manifest
+
+    # Only clear the global JSON manifest entry when it refers to this same
+    # home, preserving ownership records for other/custom Kimi Code homes.
+    local json_target_dir
+    json_target_dir=$(read_kimi_json_manifest | head -1)
+    if [[ "$json_target_dir" == "$home" ]]; then
+      clear_kimi_code_json_manifest
+    fi
   fi
 
   # Fallback: copy skills to the canonical user-level skill path. Kimi Code
