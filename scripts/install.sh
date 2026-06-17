@@ -366,10 +366,13 @@ detect_kimi()    {
 detect_kimi_code() {
   if [[ -d "${HOME}/.kimi-code" ]]; then
     AGENT_PATHS_kimi_code="${HOME}/.kimi-code"
-  elif [[ -d "${KIMI_CODE_HOME:-${HOME}/.kimi-code}" ]]; then
-    AGENT_PATHS_kimi_code="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  elif [[ -n "${KIMI_CODE_HOME:-}" && -d "${KIMI_CODE_HOME}" ]]; then
+    AGENT_PATHS_kimi_code="${KIMI_CODE_HOME}"
+  elif [[ -d "${XDG_CFG}/kimi-code" ]]; then
+    # Legacy XDG location used by earlier versions of this installer.
+    AGENT_PATHS_kimi_code="${XDG_CFG}/kimi-code"
   elif command -v kimi &>/dev/null; then
-    AGENT_PATHS_kimi_code="$(command -v kimi)"
+    AGENT_PATHS_kimi_code="${HOME}/.kimi-code"
   fi
 }
 detect_codex()   {
