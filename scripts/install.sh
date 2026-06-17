@@ -300,7 +300,7 @@ remove_legacy() {
             local count
             count=$(remove_legacy_from_manifest "$agent_home" "$legacy_manifest")
             total_removed=$((total_removed + count))
-            processed_manifests="${processed_manifests}${legacy_manifest}$'\n'"
+            processed_manifests="${processed_manifests}${legacy_manifest}"$'\n'
           fi
         done
       fi
