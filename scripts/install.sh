@@ -1004,19 +1004,21 @@ install_kimi_code() {
         done < <(printf '%s\n' "$json_manifest_data" | tail -n +2 | grep '^skills/' | cut -d/ -f2 || true)
       fi
     fi
-    for dirname in "${prev_owned[@]}"; do
-      case "$dirname" in
-        ""|"."|".."|*/*|*..*)
-          warn "Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}"
-          continue
-          ;;
-      esac
-      local skill_path="${home}/skills/${dirname}"
-      if [[ -e "$skill_path" ]]; then
-        rm -rf "$skill_path"
-        info "Removed managed fallback skill (plugin now provides it): ${dirname}"
-      fi
-    done
+    if (( ${#prev_owned[@]} > 0 )); then
+      for dirname in "${prev_owned[@]}"; do
+        case "$dirname" in
+          ""|"."|".."|*/*|*..*)
+            warn "Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}"
+            continue
+            ;;
+        esac
+        local skill_path="${home}/skills/${dirname}"
+        if [[ -e "$skill_path" ]]; then
+          rm -rf "$skill_path"
+          info "Removed managed fallback skill (plugin now provides it): ${dirname}"
+        fi
+      done
+    fi
   fi
 
   # Fallback: copy skills to the canonical user-level skill path. Kimi Code
