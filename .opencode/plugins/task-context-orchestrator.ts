@@ -426,10 +426,12 @@ const readAgentFrontmatterModel = async (rootDir: string, agentName: string) => 
     try {
       const raw = await readFile(agentPath, "utf8")
       const model = parseFrontmatterModel(raw)
-      // Explicit `model: inherit` in a local file is terminal — do not fall
-      // through to global agent files which might override the intent.
+      // The first existing agent file is authoritative. Both `model: inherit`
+      // and a missing `model` field mean "inherit natively" — return null and
+      // do NOT fall through to global agent files, which would override the
+      // project-local intent (OpenCode omits `model` to inherit natively).
       if (model === INHERIT_SENTINEL) return null
-      if (model) return model
+      return model
     } catch {
       // Ignore unreadable agent files and keep searching fallback locations.
     }

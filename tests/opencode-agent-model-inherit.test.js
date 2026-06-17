@@ -24,7 +24,7 @@ test("no .opencode/agents/*.md contains model: inherit in frontmatter", () => {
     if (!frontmatter) continue
 
     for (const line of frontmatter.split("\n")) {
-      if (/^model:\s*inherit\s*$/.test(line)) {
+      if (/^\s*model\s*:\s*["']?inherit["']?\s*(?:#.*)?$/i.test(line)) {
         violators.push(file)
         break
       }
@@ -49,7 +49,7 @@ test("no .opencode/agents/*.md frontmatter documents inherit as a valid option",
     if (!frontmatter) continue
 
     for (const line of frontmatter.split("\n")) {
-      if (/^#.*inherit/i.test(line)) {
+      if (/^\s*#.*\binherit\b/i.test(line)) {
         violators.push(file)
         break
       }
