@@ -514,13 +514,19 @@ Use the shared installer to provision the new TypeScript Kimi Code CLI support:
 ./scripts/install.sh --kimi-code
 ```
 
+Or use the TypeScript installer non-interactively:
+
+```bash
+bun scripts/install.ts --yes --hosts kimi-code
+```
+
 Or install all detected hosts at once:
 
 ```bash
 ./scripts/install.sh --all
 ```
 
-This copies skills into `~/.kimi-code/skills/`, registers plugin metadata, and installs guard hooks into `~/.kimi-code/config.toml`. After installation, restart Kimi Code or run `kimi /reload`.
+This copies skills into `~/.kimi-code/skills/`, installs guard hooks into `~/.kimi-code/config.toml`, and tries to register plugin metadata with `kimi plugin install`. If your `kimi` binary does not yet expose a `plugin` subcommand, the skills and hooks still work; register the plugin later via the Kimi Code TUI (`/plugins install`) or the manual steps in `.kimi-code/INSTALL.md`. After installation, restart Kimi Code or run `kimi /reload`.
 
 For Kimi Code-specific manual install and troubleshooting, see `.kimi-code/INSTALL.md`.
 
