@@ -1,7 +1,6 @@
 ---
 
 name: review-testing
-model: inherit
 description: Testing reviewer - evaluates test coverage, test quality, and testing gaps. Returns PASS or ISSUES_FOUND.
 tools:
   Read: true

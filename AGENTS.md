@@ -257,7 +257,7 @@ test("description", () => {
 
 - Use YAML frontmatter with `name`, `description`, and `model`
 - Description should include usage examples in `<example>` tags
-- Set `model: inherit` to use parent's model (recommended)
+- Omit `model` to inherit natively (OpenCode); use `model: inherit` only in Claude Code agent files
 
 ### Hooks
 

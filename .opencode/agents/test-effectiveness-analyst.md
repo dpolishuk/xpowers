@@ -1,7 +1,6 @@
 ---
 
 name: test-effectiveness-analyst
-model: inherit
 description: >
   Use this agent to analyze test effectiveness with Google Fellow SRE-level scrutiny. Identifies tautological tests, coverage gaming, weak assertions, and missing corner cases. Returns actionable plan to remove bad tests, strengthen weak ones, and add missing coverage. Examples: <example>Context: User wants to review test quality in their codebase. user: "Analyze the tests in src/auth/ for effectiveness" assistant: "I'll use the test-effectiveness-analyst agent to analyze your auth tests with expert scrutiny" <commentary>The agent will identify meaningless tests, weak assertions, and missing corner cases, returning a prioritized improvement plan.</commentary></example> <example>Context: User suspects tests are gaming coverage. user: "Our coverage is 90% but we keep finding bugs in production" assistant: "This suggests coverage gaming. Let me use the test-effectiveness-analyst agent to audit test quality" <commentary>High coverage with production bugs indicates tautological or weak tests that the agent will identify.</commentary></example>
 

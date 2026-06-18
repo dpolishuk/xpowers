@@ -1,7 +1,6 @@
 ---
 
 name: devops
-model: inherit
 description: DevOps reviewer - analyzes CI/CD pipelines, pre-commit hooks, build configurations, and diagnoses pipeline failures. Returns PASS or ISSUES_FOUND.
 tools:
   Read: true

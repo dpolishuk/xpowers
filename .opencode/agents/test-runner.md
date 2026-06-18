@@ -3,13 +3,6 @@
 name: test-runner
 description: >
   Use this agent to run tests, pre-commit hooks, or commits without polluting your context with verbose output. Agent runs commands, captures all output in its own context, and returns only summary + failures. Examples: <example>Context: Implementing a feature and need to verify tests pass. user: "Run the test suite to verify everything still works" assistant: "Let me use the test-runner agent to run tests and report only failures" <commentary>Running tests through agent keeps successful test output out of your context.</commentary></example> <example>Context: Before committing, need to run pre-commit hooks. user: "Run pre-commit hooks to verify code quality" assistant: "I'll use the test-runner agent to run pre-commit hooks and report only issues" <commentary>Pre-commit hooks often generate verbose formatting output that pollutes context.</commentary></example> <example>Context: Ready to commit, want to verify hooks pass. user: "Commit these changes and verify hooks pass" assistant: "I'll use the test-runner agent to run git commit and report hook results" <commentary>Commit triggers pre-commit hooks with lots of output.</commentary></example>
-# Model Configuration:
-# - inherit: Use the parent's/current model (default)
-# - providerID/modelID: Explicit model selection (e.g., anthropic/claude-haiku-4-5)
-# 
-# Recommended: Fast model (haiku, glm-4.5) for high-volume, low-complexity tasks
-# See docs/model-configuration.md for details
-model: inherit
 
 ---
 

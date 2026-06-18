@@ -369,7 +369,7 @@ Standards are enforced at multiple levels:
 **Agent Standards:**
 - YAML frontmatter with `name`, `description`, `model`
 - Description includes `<example>` tags
-- `model: inherit` recommended
+- Omit `model` to inherit natively (OpenCode); use `model: inherit` only in Claude Code agent files
 
 **Validation:**
 - `scripts/sync-codex-skills.js --check` verifies description quality
