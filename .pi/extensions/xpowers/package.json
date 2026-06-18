@@ -1,6 +1,6 @@
 {
   "name": "xpowers-pi-extension",
-  "version": "2.13.0",
+  "version": "2.14.2",
   "type": "module",
   "description": "XPowers skills, subagents, and workflows for Pi coding agent",
   "main": "dist/index.js",

@@ -4,6 +4,17 @@ All notable changes to XPowers are documented in this file.
 
 ## [Unreleased]
 
+## [2.14.2] - 2026-06-18
+
+### Added
+- **Kimi Code CLI support** (`kimi.plugin.json`, `.kimi-code/skills/`, `.kimi-code/AGENTS.md`, `.kimi-code/INSTALL.md`) with 22 adapted skills, guard hooks, and installer integration.
+
+### Fixed
+- Removed invalid `model: inherit` from all OpenCode agent files; OpenCode now omits the `model` field to inherit natively.
+- Updated `readAgentFrontmatterModel` so the first existing project-local agent file is authoritative and no longer falls through to global `~/.config/opencode/agents` files when `model` is missing.
+- Updated OpenCode-facing documentation to stop recommending `model: inherit` and warn that it causes `ProviderModelNotFoundError`.
+- Kimi Code installer: bash 3.2 compatibility, user-skill preservation, and legacy XDG/uninstall path handling.
+
 ## [2.13.1] - 2026-05-05
 
 ### Added
