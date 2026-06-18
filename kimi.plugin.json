@@ -1,6 +1,6 @@
 {
   "name": "xpowers",
-  "version": "2.14.1",
+  "version": "2.14.2",
   "description": "Structured engineering workflows for Kimi Code CLI: brainstorming, TDD, planning, autonomous execution, and multi-agent reviews.",
   "skills": "./.kimi-code/skills/",
   "sessionStart": {

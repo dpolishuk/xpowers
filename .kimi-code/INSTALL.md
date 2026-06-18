@@ -74,7 +74,7 @@ cp kimi.plugin.json ~/.kimi-code/plugins/xpowers/kimi.plugin.json
 ./scripts/install.sh --status
 
 # Expected output includes a line like:
-# ✓ Kimi Code CLI  v2.14.1  (22 skills)
+# ✓ Kimi Code CLI  v2.14.2  (22 skills)
 ```
 
 After installation, restart Kimi Code or run `kimi /reload` so the new skills and hooks are picked up.
