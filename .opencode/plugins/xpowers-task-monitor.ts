@@ -100,16 +100,31 @@ const parseTasks = (output: string): ParsedTask[] => {
     if (trimmed.startsWith("Status:")) continue
     if (trimmed.includes("no active blockers")) continue
 
-    // Match: [indicator] [id] [status] P[priority] [title]
+    // Try agent-style format first: [indicator] [id] [status] P[priority] [title]
     // ○ hyper-5ct ● P1 [epic] Project: Rename repository to xpowers
-    const match = trimmed.match(
-      /^[○◐●✓❄]\s+([a-z]+-[a-z0-9]+)\s+.*?P(\d)\s+(.+)/,
+    const agentMatch = trimmed.match(
+      /^[○◐●✓❄]\s+([a-z]+-[a-z0-9]+)\s+.*?P(\d+)\s+(.+)/,
     )
-    if (match) {
+    if (agentMatch) {
       tasks.push({
-        id: match[1],
-        priority: parseInt(match[2], 10),
-        title: match[3].trim(),
+        id: agentMatch[1],
+        priority: parseInt(agentMatch[2], 10),
+        title: agentMatch[3].trim(),
+      })
+      continue
+    }
+
+    // Fallback: simple format without priority — [indicator] [ID] [title]
+    // ○ ENG_CORE-123 Some Task
+    // ○ ENG-456 In Progress Task
+    const simpleMatch = trimmed.match(
+      /^[○◐●✓❄]\s+([A-Z_]+-\d+)\s+(.+)/,
+    )
+    if (simpleMatch) {
+      tasks.push({
+        id: simpleMatch[1],
+        priority: 2, // default medium priority when not specified
+        title: simpleMatch[2].trim(),
       })
     }
   }
@@ -187,9 +202,13 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
   let lastTaskCount = 0
   let pollTimer: ReturnType<typeof setInterval> | null = null
   let isPolling = false
+  let isShuttingDown = false
 
   const notifyNewTasks = async (tasks: ParsedTask[]) => {
-    const newTasks = tasks.filter((t) => !seenTasks.has(t.id))
+    // When trackSeenTasks is disabled, treat all tasks as new
+    const newTasks = config.trackSeenTasks
+      ? tasks.filter((t) => !seenTasks.has(t.id))
+      : tasks
 
     if (newTasks.length === 0) return
 
@@ -215,12 +234,13 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
       )
     }
 
-    // Record newly seen tasks
-    for (const task of newTasks) {
-      seenTasks.set(task.id, { ...task, firstSeenAt: Date.now() })
+    // Record newly seen tasks (only when tracking is enabled)
+    if (config.trackSeenTasks) {
+      for (const task of newTasks) {
+        seenTasks.set(task.id, { ...task, firstSeenAt: Date.now() })
+      }
+      await saveSeenTasks(cachePath, seenTasks)
     }
-
-    await saveSeenTasks(cachePath, seenTasks)
   }
 
   const notifyTaskCount = async (count: number, changed: boolean) => {
@@ -242,7 +262,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
   }
 
   const doPoll = async () => {
-    if (isPolling) return
+    if (isPolling || isShuttingDown) return
     isPolling = true
 
     try {
@@ -262,6 +282,14 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
       }
     } finally {
       isPolling = false
+    }
+  }
+
+  const stopPolling = () => {
+    isShuttingDown = true
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
     }
   }
 
@@ -322,11 +350,10 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
         return
       }
 
-      // Cleanup timer when session ends
-      if (event.type === "session.deleted" && pollTimer) {
-        clearInterval(pollTimer)
-        pollTimer = null
-      }
+      // Note: pollTimer is per-plugin, not per-session.
+      // In long-lived OpenCode processes, new sessions after deletion
+      // should still receive task notifications, so we do NOT stop polling here.
+      // The timer is only cleaned up when the plugin itself is destroyed.
     },
 
     // Custom tool: AI can query task status

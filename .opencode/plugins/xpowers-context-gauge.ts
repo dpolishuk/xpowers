@@ -83,7 +83,14 @@ const loadConfig = async (directory: string): Promise<Required<ContextGaugeConfi
   try {
     const raw = await readFile(configPath, "utf8")
     const parsed = JSON.parse(raw) as ContextGaugeConfig
-    return { ...DEFAULT_CONFIG, ...parsed }
+    return {
+      ...DEFAULT_CONFIG,
+      ...parsed,
+      modelLimits: {
+        ...DEFAULT_MODEL_LIMITS,
+        ...(parsed.modelLimits ?? {}),
+      },
+    }
   } catch {
     return { ...DEFAULT_CONFIG }
   }
@@ -142,23 +149,41 @@ const resolveModelLimit = (
 ): number => {
   if (!modelId) return defaultLimit
 
-  const normalized = modelId.toLowerCase().replace(/[^a-z0-9.-]/g, "")
+  // Strip provider prefix (e.g., "openai/gpt-4o" → "gpt-4o")
+  const withoutProvider = modelId.includes("/")
+    ? modelId.split("/").pop() ?? modelId
+    : modelId
+
+  const normalized = withoutProvider.toLowerCase().replace(/[^a-z0-9.-]/g, "")
 
   // Try exact match first
+  if (limits[withoutProvider]) return limits[withoutProvider]
   if (limits[modelId]) return limits[modelId]
 
-  // Try normalized match
+  // Try normalized exact match
   if (limits[normalized]) return limits[normalized]
 
-  // Try partial match on model family
+  // Try partial match: prefer longest/specific match first to avoid
+  // "gpt-4" matching before "gpt-4o" or "gpt-4.1"
+  const candidates: { key: string; limit: number; len: number }[] = []
   for (const [key, limit] of Object.entries(limits)) {
     const normalizedKey = key.toLowerCase().replace(/[^a-z0-9.-]/g, "")
+    if (!normalizedKey || normalizedKey === "default") continue
+
+    // Key must be a prefix of the model ID, followed by a separator or end
     if (
-      normalized.includes(normalizedKey) ||
-      normalizedKey.includes(normalized)
+      normalized === normalizedKey ||
+      normalized.startsWith(normalizedKey + "-") ||
+      normalized.startsWith(normalizedKey + ".")
     ) {
-      return limit
+      candidates.push({ key, limit, len: normalizedKey.length })
     }
+  }
+
+  // Prefer longest match (most specific)
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.len - a.len)
+    return candidates[0].limit
   }
 
   return defaultLimit
@@ -173,6 +198,8 @@ type GaugeState = {
   modelId: string | null
   contextLimit: number
   compactSuggested: boolean
+  createdAt: number
+  messageContents: Map<string, string>  // messageId -> previous content for delta counting
 }
 
 const sessions = new Map<string, GaugeState>()
@@ -187,10 +214,21 @@ const getState = (sessionId: string): GaugeState => {
       modelId: null,
       contextLimit: DEFAULT_CONFIG.defaultLimit,
       compactSuggested: false,
+      createdAt: Date.now(),
+      messageContents: new Map(),
     }
     sessions.set(sessionId, state)
   }
   return state
+}
+
+const cleanupOldGaugeSessions = (ttlMs: number = 86400000) => {
+  const cutoff = Date.now() - ttlMs
+  for (const [id, s] of sessions) {
+    if (s.createdAt < cutoff) {
+      sessions.delete(id)
+    }
+  }
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
@@ -218,6 +256,8 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
           modelId: null,
           contextLimit: config.defaultLimit,
           compactSuggested: false,
+          createdAt: Date.now(),
+          messageContents: new Map(),
         })
         return
       }
@@ -241,6 +281,8 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
 
       if (event.type === "session.deleted" && sessionId) {
         sessions.delete(sessionId)
+        // Cleanup orphaned sessions older than 24 hours
+        cleanupOldGaugeSessions()
         return
       }
 
@@ -277,9 +319,20 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
             .join(" ")
         }
 
-        const addedTokens = estimateTokens(content)
-        state.estimatedTokens += addedTokens
-        state.messageCount += 1
+        // Incremental token counting: only count the delta on streaming updates
+        const messageId = message.id ?? (event as any).properties?.messageId ?? ""
+        const prevContent = messageId ? state.messageContents.get(String(messageId)) : undefined
+        const prevTokens = prevContent !== undefined ? estimateTokens(prevContent) : 0
+        const newTokens = estimateTokens(content)
+        const deltaTokens = Math.max(0, newTokens - prevTokens)
+
+        state.estimatedTokens += deltaTokens
+        if (prevContent === undefined) {
+          state.messageCount += 1 // only count new messages, not streaming updates
+        }
+        if (messageId) {
+          state.messageContents.set(String(messageId), content)
+        }
 
         // Try to detect model from message metadata
         const detectedModel =
@@ -331,7 +384,7 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
               8000,
             )
 
-            if (!state.compactSuggested && config.suggestCompactAt <= config.dangerThreshold) {
+            if (!state.compactSuggested && usage >= config.suggestCompactAt) {
               state.compactSuggested = true
 
               // Inject suggestion into session

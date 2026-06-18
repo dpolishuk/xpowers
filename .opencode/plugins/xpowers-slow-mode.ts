@@ -87,16 +87,20 @@ const showToast = async (
 
 // ── Path Matching ───────────────────────────────────────────────────────────
 
+const escapeRegex = (text: string): string =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
 const matchGlob = (pattern: string, path: string): boolean => {
   const normalizedPath = path.replace(/\\/g, "/")
   const normalizedPattern = pattern.replace(/\\/g, "/")
 
   // Simple glob matching: ** (any depth), * (any chars within segment)
-  const regexPattern = normalizedPattern
-    .replace(/\*\*/g, "\u0000")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\u0000/g, ".*")
-    .replace(/\?/g, ".")
+  // Escape regex special chars in the pattern first, then restore glob wildcards
+  const regexPattern = escapeRegex(normalizedPattern)
+    .replace(/\\\*\\\*/g, "\u0000")   // restore **
+    .replace(/\\\*/g, "[^/]*")         // restore *
+    .replace(/\u0000/g, ".*")           // ** = any depth
+    .replace(/\\\?/g, ".")             // restore ?
 
   const regex = new RegExp(`^(.*/)?${regexPattern}$`, "i")
   return regex.test(normalizedPath)
@@ -114,35 +118,80 @@ const isProtectedPath = (filePath: string, patterns: string[]): boolean => {
 
 // ── Diff Computation ────────────────────────────────────────────────────────
 
+/**
+ * Compute LCS (Longest Common Subsequence) between two arrays.
+ * Returns a Set of indices into `a` that are part of the LCS.
+ */
+const computeLcsIndices = (a: string[], b: string[]): Set<number> => {
+  const m = a.length
+  const n = b.length
+  // Use two rows for space efficiency
+  let prev = new Array(n + 1).fill(0)
+  let curr = new Array(n + 1).fill(0)
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        curr[j] = prev[j - 1] + 1
+      } else {
+        curr[j] = Math.max(prev[j], curr[j - 1])
+      }
+    }
+    ;[prev, curr] = [curr, prev]
+  }
+
+  // Backtrack to find which indices of `a` are in the LCS
+  const lcsIndices = new Set<number>()
+  let i = m
+  let j = n
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      lcsIndices.add(i - 1)
+      i--
+      j--
+    } else if (prev[j] > curr[j - 1]) {
+      i--
+    } else {
+      j--
+    }
+  }
+  return lcsIndices
+}
+
 const computeLineDiff = (original: string, updated: string): { added: number; removed: number; diffLines: string[] } => {
   const origLines = original.split("\n")
   const newLines = updated.split("\n")
 
-  // Simple LCS-based diff would be ideal; using a simplified approach:
-  // Track which lines appear in both, then report additions/removals
-  const origSet = new Set(origLines)
-  const newSet = new Set(newLines)
+  const lcsIndices = computeLcsIndices(origLines, newLines)
 
   let added = 0
   let removed = 0
   const diffLines: string[] = []
 
-  // Find removed lines (in original but not in new)
-  for (const line of origLines) {
-    if (!newSet.has(line) && line.trim().length > 0) {
+  // Lines in original but not in LCS = removed
+  for (let i = 0; i < origLines.length; i++) {
+    if (!lcsIndices.has(i) && origLines[i].trim().length > 0) {
       removed++
       if (diffLines.length < 20) {
-        diffLines.push(`- ${line.slice(0, 80)}`)
+        diffLines.push(`- ${origLines[i].slice(0, 80)}`)
       }
     }
   }
 
-  // Find added lines (in new but not in original)
-  for (const line of newLines) {
-    if (!origSet.has(line) && line.trim().length > 0) {
+  // Build a set of LCS lines for quick lookup on the new side
+  const lcsLines = new Set<string>()
+  for (let i = 0; i < origLines.length; i++) {
+    if (lcsIndices.has(i)) lcsLines.add(origLines[i])
+  }
+
+  // Lines in new but not in LCS = added
+  // We use a separate pass to handle duplicates correctly
+  const newLcsIndices = computeLcsIndices(newLines, origLines)
+  for (let i = 0; i < newLines.length; i++) {
+    if (!newLcsIndices.has(i) && newLines[i].trim().length > 0) {
       added++
       if (diffLines.length < 20) {
-        diffLines.push(`+ ${line.slice(0, 80)}`)
+        diffLines.push(`+ ${newLines[i].slice(0, 80)}`)
       }
     }
   }
@@ -230,18 +279,31 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
   }
 
   // Per-session state tracking
-  const sessions = new Map<string, {
+  type SlowModeSession = {
     changes: FileChange[]
     pendingOriginals: Map<string, string | null>  // filePath -> original content
-  }>()
+    createdAt: number
+    summaryLogged: boolean  // prevent duplicate session summaries in review.log
+  }
 
-  const getSessionState = (sessionId: string) => {
+  const sessions = new Map<string, SlowModeSession>()
+
+  const getSessionState = (sessionId: string): SlowModeSession => {
     let state = sessions.get(sessionId)
     if (!state) {
-      state = { changes: [], pendingOriginals: new Map() }
+      state = { changes: [], pendingOriginals: new Map(), createdAt: Date.now(), summaryLogged: false }
       sessions.set(sessionId, state)
     }
     return state
+  }
+
+  const cleanupOldSessions = (ttlMs: number = 86400000) => {
+    const cutoff = Date.now() - ttlMs
+    for (const [id, s] of sessions) {
+      if (s.createdAt < cutoff) {
+        sessions.delete(id)
+      }
+    }
   }
 
   const logDir = join(ctx.directory, config.logDir)
@@ -374,16 +436,21 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
 
       if (event.type === "session.deleted" && sessionId) {
         const state = sessions.get(sessionId)
-        if (state) {
+        if (state && !state.summaryLogged) {
           await logSessionSummary(logDir, sessionId, state.changes)
+          state.summaryLogged = true
+        }
+        if (state) {
           sessions.delete(sessionId)
         }
+        // Cleanup orphaned sessions older than 24 hours
+        cleanupOldSessions()
         return
       }
 
       if (event.type === "session.idle") {
         const state = sessions.get(sessionId)
-        if (state && state.changes.length > 0) {
+        if (state && state.changes.length > 0 && !state.summaryLogged) {
           const files = [...new Set(state.changes.map((c) => c.filePath))]
           const totalAdded = state.changes.reduce((sum, c) => sum + c.linesAdded, 0)
           const totalRemoved = state.changes.reduce((sum, c) => sum + c.linesRemoved, 0)
@@ -396,8 +463,9 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
             6000,
           )
 
-          // Write summary to log
+          // Write summary to log (only once per session)
           await logSessionSummary(logDir, sessionId, state.changes)
+          state.summaryLogged = true
         }
       }
     },

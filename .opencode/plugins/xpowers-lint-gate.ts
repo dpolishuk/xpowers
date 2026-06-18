@@ -218,10 +218,15 @@ const createShellCheckParser = (): LinterConfig["parseOutput"] => {
     for (const line of lines) {
       const match = line.match(/^(.+?):(\d+):(\d+):\s*(\w+):\s*(\w+):\s*(.+)/)
       if (match) {
+        const rawSeverity = match[4].toLowerCase()
+        // ShellCheck emits: error, warning, info, style
+        const severity: LintIssue["severity"] =
+          rawSeverity === "error" ? "error" :
+          rawSeverity === "warning" ? "warning" : "style"
         issues.push({
           line: parseInt(match[2], 10),
           column: parseInt(match[3], 10),
-          severity: match[4] as "error" | "warning",
+          severity,
           rule: match[5],
           message: match[6].trim(),
         })
@@ -237,42 +242,42 @@ const LINTER_REGISTRY: FileLinterMap = {
   ".ts": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
   ".tsx": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
   ".js": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
   ".jsx": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
   ".mjs": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
   ".cjs": {
     name: "eslint",
     command: "eslint",
-    args: ["--format", "compact"],
+    args: [],
     fixArgs: ["--fix"],
     parseOutput: createESLintParser("eslint"),
   },
@@ -423,13 +428,19 @@ const runLinter = async (
   autoFix: boolean,
 ): Promise<LintResult> => {
   try {
+    // When auto-fixing, use fix-mode args instead of check-mode args.
+    // Some linters (black, rustfmt) use check-only base args (--check)
+    // that prevent fixes when combined with fix args.
     const args = autoFix && linter.fixArgs
-      ? [...linter.args, ...linter.fixArgs, filePath]
+      ? [...linter.fixArgs, filePath]
       : [...linter.args, filePath]
 
-    const result = await $`${linter.command} ${args}`.quiet().nothrow()
+    // Build command as array for Bun shell to safely pass each arg
+    const cmdParts = [linter.command, ...args]
+    const result = await $`${cmdParts}`.quiet().nothrow()
     const stdout = await result.text()
-    const stderr = ""
+    // Bun shell returns stderr as a property on the result object
+    const stderr = typeof result.stderr === "string" ? result.stderr : ""
 
     const issues = linter.parseOutput(stdout, stderr)
 
@@ -524,6 +535,9 @@ const xpowersLintGatePlugin: Plugin = async (ctx) => {
     return {}
   }
 
+  // Cache linter detection results per extension to avoid repeated `which` calls
+  const linterCache = new Map<string, LinterConfig | null>()
+
   // Track recent toasts to avoid spam
   const lastToastTime = new Map<string, number>()
 
@@ -570,8 +584,14 @@ const xpowersLintGatePlugin: Plugin = async (ctx) => {
           },
         }
       } else {
-        // Auto-detect project linter
-        linter = await detectProjectLinter(ctx.$, ctx.directory, filePath)
+        // Auto-detect project linter (cached per extension)
+        const ext = extname(filePath).toLowerCase()
+        if (linterCache.has(ext)) {
+          linter = linterCache.get(ext) ?? null
+        } else {
+          linter = await detectProjectLinter(ctx.$, ctx.directory, filePath)
+          linterCache.set(ext, linter)
+        }
       }
 
       if (!linter) {

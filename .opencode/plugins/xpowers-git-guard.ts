@@ -41,6 +41,8 @@ type SessionState = {
   filesCommitted: Set<string>
   commitMade: boolean
   warnedOnIdle: boolean
+  createdAt: number
+  pendingCommitStagedFiles: string[]  // staged files captured before git commit
 }
 
 const DEFAULT_CONFIG: Required<GitGuardConfig> = {
@@ -126,8 +128,19 @@ const getGitStatus = async ($: any, cwd: string): Promise<GitStatus> => {
     }
 
     // Status line: XY filename or XY "filename with spaces"
+    // Renames: XY "old" -> "new"  (R status in index or worktree)
     const statusCode = line.slice(0, 2)
-    const filePath = line.slice(3).replace(/^"(.*)"$/, "$1")
+    let filePath = line.slice(3)
+
+    // Handle rename entries: R  "old/path" -> "new/path"
+    if (statusCode[0] === "R" || statusCode[1] === "R") {
+      const renameMatch = line.match(/^\S{2}\s+(.+?)\s+->\s+(.+)$/)
+      if (renameMatch) {
+        filePath = renameMatch[2].replace(/^"(.*)"$/, "$1")
+      }
+    } else {
+      filePath = filePath.replace(/^"(.*)"$/, "$1")
+    }
 
     if (!filePath) continue
 
@@ -150,6 +163,12 @@ const getGitStatus = async ($: any, cwd: string): Promise<GitStatus> => {
     if (worktreeStatus === "?") {
       status.untrackedFiles.push(filePath)
     }
+    // Renames count as modified
+    if (indexStatus === "R" || worktreeStatus === "R") {
+      if (!status.modifiedFiles.includes(filePath)) {
+        status.modifiedFiles.push(filePath)
+      }
+    }
   }
 
   return status
@@ -163,12 +182,15 @@ const getGitDiffStat = async ($: any, cwd: string): Promise<{ files: number; ins
   const lastLine = output.split("\n").filter((l) => l.trim()).pop() ?? ""
 
   // Parse: " 5 files changed, 23 insertions(+), 10 deletions(-)"
-  const match = lastLine.match(/(\d+)\s+files?\s+changed.*?(\d+)\s+insertions?.*?(\d+)\s+deletions?/)
-  if (match) {
+  // Note: insertions or deletions may be absent in partial output
+  const filesMatch = lastLine.match(/(\d+)\s+files?\s+changed/)
+  if (filesMatch) {
+    const insertionsMatch = lastLine.match(/(\d+)\s+insertions?/)
+    const deletionsMatch = lastLine.match(/(\d+)\s+deletions?/)
     return {
-      files: parseInt(match[1], 10),
-      insertions: parseInt(match[2], 10),
-      deletions: parseInt(match[3], 10),
+      files: parseInt(filesMatch[1], 10),
+      insertions: insertionsMatch ? parseInt(insertionsMatch[1], 10) : 0,
+      deletions: deletionsMatch ? parseInt(deletionsMatch[1], 10) : 0,
     }
   }
 
@@ -180,9 +202,19 @@ const hasUncommittedChanges = async ($: any, cwd: string): Promise<boolean> => {
   return status.hasChanges
 }
 
-const autoCommit = async ($: any, cwd: string, message: string): Promise<{ ok: boolean; error?: string }> => {
+const autoCommit = async (
+  $: any,
+  cwd: string,
+  message: string,
+  filesToCommit: string[],
+): Promise<{ ok: boolean; error?: string }> => {
+  if (filesToCommit.length === 0) {
+    return { ok: true }
+  }
+
   try {
-    const addResult = await $`git -C ${cwd} add -A`.quiet().nothrow()
+    // Only stage files that were modified during this session, not everything
+    const addResult = await $`git -C ${cwd} add ${filesToCommit}`.quiet().nothrow()
     if (addResult.exitCode !== 0) {
       return { ok: false, error: "git add failed" }
     }
@@ -232,10 +264,19 @@ const sessions = new Map<string, SessionState>()
 const getSessionState = (sessionId: string): SessionState => {
   let state = sessions.get(sessionId)
   if (!state) {
-    state = { filesModified: new Set(), filesCommitted: new Set(), commitMade: false, warnedOnIdle: false }
+    state = { filesModified: new Set(), filesCommitted: new Set(), commitMade: false, warnedOnIdle: false, createdAt: Date.now(), pendingCommitStagedFiles: [] }
     sessions.set(sessionId, state)
   }
   return state
+}
+
+const cleanupOldGitGuardSessions = (ttlMs: number = 86400000) => {
+  const cutoff = Date.now() - ttlMs
+  for (const [id, s] of sessions) {
+    if (s.createdAt < cutoff) {
+      sessions.delete(id)
+    }
+  }
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
@@ -248,6 +289,20 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
   }
 
   return {
+    // ── Pre-commit: capture staged files before git commit runs ───────────
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return
+      const command = String((output.args as any)?.command ?? "")
+      if (!/git\s+commit/.test(command)) return
+
+      const sessionId = (input as any).sessionID ?? "unknown"
+      const state = getSessionState(sessionId)
+
+      // Capture staged files BEFORE the commit executes
+      const status = await getGitStatus(ctx.$, ctx.directory)
+      state.pendingCommitStagedFiles = [...status.stagedFiles]
+    },
+
     // ── Track file modifications and git commits ──────────────────────────
     "tool.execute.after": async (input, output) => {
       const sessionId = (input as any).sessionID ?? "unknown"
@@ -280,12 +335,12 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
         if (/git\s+commit/.test(command)) {
           state.commitMade = true
 
-          // Try to extract committed files from the command or check git status
-          const status = await getGitStatus(ctx.$, ctx.directory)
-          for (const file of status.stagedFiles) {
+          // Use staged files captured BEFORE the commit (post-commit staged list is empty)
+          for (const file of state.pendingCommitStagedFiles) {
             state.filesCommitted.add(file)
             state.filesModified.delete(file)
           }
+          state.pendingCommitStagedFiles = []
 
           await showToast(
             ctx.client,
@@ -310,6 +365,8 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
           filesCommitted: new Set(),
           commitMade: false,
           warnedOnIdle: false,
+          createdAt: Date.now(),
+          pendingCommitStagedFiles: [],
         })
         return
       }
@@ -317,8 +374,9 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
       if (event.type === "session.deleted" && sessionId) {
         const state = sessions.get(sessionId)
         if (state && config.autoCommitOnSessionEnd && state.filesModified.size > 0 && !state.commitMade) {
-          // Auto-commit on session end
-          const result = await autoCommit(ctx.$, ctx.directory, config.autoCommitMessage)
+          // Auto-commit on session end — only commit files modified during this session
+          const filesToCommit = Array.from(state.filesModified)
+          const result = await autoCommit(ctx.$, ctx.directory, config.autoCommitMessage, filesToCommit)
           if (result.ok) {
             await showToast(
               ctx.client,
@@ -338,6 +396,8 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
           }
         }
         sessions.delete(sessionId)
+        // Cleanup orphaned sessions older than 24 hours
+        cleanupOldGitGuardSessions()
         return
       }
 
