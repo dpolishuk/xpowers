@@ -2373,3 +2373,123 @@ test("install.sh --kimi-code installs skills, hooks, and version marker", { time
   assert.match(config, /event = "PreToolUse"/)
   assert.match(config, /event = "PostToolUse"/)
 })
+
+test("install.sh --zcode installs skills and commands with version marker", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-zcode-test-"))
+  const zcodeHome = path.join(home, ".zcode")
+  fs.mkdirSync(zcodeHome, { recursive: true })
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--zcode", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+
+  // Skills copied to ~/.zcode/skills (common-patterns is a reference dir, not a skill)
+  const skillsDir = path.join(zcodeHome, "skills")
+  assert.equal(fs.existsSync(skillsDir), true)
+  const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
+  assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
+  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+
+  // Slash commands copied to ~/.zcode/commands
+  const commandsDir = path.join(zcodeHome, "commands")
+  assert.equal(fs.existsSync(commandsDir), true)
+  const commands = fs.readdirSync(commandsDir).filter((n) => n.endsWith(".md"))
+  assert.ok(commands.length >= 10, `expected 10+ commands, found ${commands.length}`)
+  assert.equal(fs.existsSync(path.join(commandsDir, "brainstorm.md")), true)
+  assert.equal(fs.existsSync(path.join(commandsDir, "write-plan.md")), true)
+
+  // ZCode loads agents and hooks from plugins only, so neither is installed
+  assert.equal(fs.existsSync(path.join(zcodeHome, "agents")), false, "agents should not be installed for ZCode")
+  assert.equal(fs.existsSync(path.join(zcodeHome, "hooks")), false, "hooks should not be installed for ZCode")
+
+  // Version marker matches the plugin manifest
+  const versionPath = path.join(zcodeHome, ".xpowers-version")
+  assert.equal(fs.existsSync(versionPath), true)
+  assert.equal(
+    fs.readFileSync(versionPath, "utf8").trim(),
+    JSON.parse(fs.readFileSync(path.join(repoRoot, ".claude-plugin", "plugin.json"), "utf8")).version,
+  )
+  assert.equal(fs.existsSync(path.join(zcodeHome, ".xpowers-manifest")), true)
+
+  // --status reports the ZCode install
+  const status = spawnSync("bash", ["scripts/install.sh", "--status"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 60000,
+  })
+  const statusOutput = combinedOutput(status)
+  assert.equal(status.status, 0, statusOutput)
+  assert.match(statusOutput, /ZCode/)
+})
+
+test("install.sh --hosts zcode --uninstall removes managed files and preserves user skills", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-zcode-uninstall-test-"))
+  const zcodeHome = path.join(home, ".zcode")
+  fs.mkdirSync(zcodeHome, { recursive: true })
+
+  const install = spawnSync("bash", ["scripts/install.sh", "--hosts", "zcode", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+  assert.equal(install.status, 0, combinedOutput(install))
+
+  // User-created skill must survive uninstall (manifest-driven removal)
+  const userSkill = path.join(zcodeHome, "skills", "my-own-skill", "SKILL.md")
+  fs.mkdirSync(path.dirname(userSkill), { recursive: true })
+  fs.writeFileSync(userSkill, "---\nname: my-own-skill\ndescription: mine\n---\n", "utf8")
+
+  const uninstall = spawnSync("bash", ["scripts/install.sh", "--hosts", "zcode", "--uninstall", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(uninstall)
+  assert.equal(uninstall.status, 0, output)
+  assert.equal(fs.existsSync(path.join(zcodeHome, "skills", "test-driven-development")), false, "managed skills should be removed")
+  assert.equal(fs.existsSync(userSkill), true, "user skills must be preserved")
+  assert.equal(fs.existsSync(path.join(zcodeHome, "commands", "brainstorm.md")), false, "managed commands should be removed")
+  assert.equal(fs.existsSync(path.join(zcodeHome, ".xpowers-version")), false)
+  assert.equal(fs.existsSync(path.join(zcodeHome, ".xpowers-manifest")), false)
+})
+
+test("bun installer --hosts zcode installs skills and commands", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-ts-zcode-test-"))
+  const zcodeHome = path.join(home, ".zcode")
+  fs.mkdirSync(zcodeHome, { recursive: true })
+  const bunPath = spawnSync("bash", ["-lc", "command -v bun"], { encoding: "utf8" }).stdout.trim()
+
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "zcode", "--yes", "--json"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+  const payload = JSON.parse(result.stdout.trim())
+  assert.equal(payload.ok, true)
+  assert.ok(payload.hosts.includes("zcode"), `expected zcode in hosts: ${JSON.stringify(payload.hosts)}`)
+
+  const skillsDir = path.join(zcodeHome, "skills")
+  assert.equal(fs.existsSync(path.join(skillsDir, "test-driven-development", "SKILL.md")), true)
+  const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
+  assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
+  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+  assert.equal(fs.existsSync(path.join(zcodeHome, "commands", "brainstorm.md")), true)
+  assert.equal(fs.existsSync(path.join(zcodeHome, "hooks")), false, "hooks should not be installed for ZCode")
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
+  assert.ok(manifest.hosts.zcode.targetDir.includes(".zcode"), `expected zcode targetDir: ${JSON.stringify(manifest.hosts.zcode)}`)
+})
