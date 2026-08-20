@@ -5,7 +5,7 @@
 <h1 align="center">XPowers</h1>
 
 <p align="center">
-  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi.</strong>
+  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode.</strong>
 </p>
 
 <p align="center">
@@ -251,7 +251,7 @@ bun scripts/install.ts --yes --json
 bun scripts/install.ts --uninstall
 ```
 
-Available hosts: `claude`, `opencode`, `kimi`, `gemini`, `pi`
+Available hosts: `claude`, `opencode`, `kimi`, `gemini`, `pi`, `zcode`
 Available features: `memsearch`, `br`, `bv`, `graphify`, `claude-mem`, `supermemory`, `statusline`, `routing-wizard`, `tm-cli`
 
 `--yes` includes third-party tool installers. `br` and `bv` bootstrap from pinned upstream installer refs; maintainers can override them with `XPOWERS_BEADS_RUST_INSTALL_REF` and `XPOWERS_BEADS_VIEWER_INSTALL_REF` when intentionally updating. `graphify` runs its upstream platform setup only for supported selected hosts (Claude Code, Codex via `install.sh`, OpenCode, Gemini CLI, and Pi). Set `XPOWERS_SKIP_THIRD_PARTY_FEATURES=1` when you need a host-only install without external downloads.
@@ -556,6 +556,25 @@ $codex-skill-executing-plans Continue from current tm ready task.
 ```
 
 You can also use `/skills` in Codex UI to discover and select the same wrappers.
+
+</details>
+
+<details>
+<summary><strong>ZCode</strong></summary>
+
+Use the unified installer to install skills and slash commands to `~/.zcode/skills` and `~/.zcode/commands`:
+
+```bash
+./scripts/install.sh --zcode
+```
+
+Or install to all detected agents at once:
+
+```bash
+./scripts/install.sh --all
+```
+
+ZCode discovers the skills and `/commands` at session start, so restart any open sessions after installing. ZCode loads agents and hooks from plugins only, so those XPowers surfaces are not part of this host install.
 
 </details>
 

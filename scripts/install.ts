@@ -543,6 +543,19 @@ const HOSTS: HostConfig[] = [
       }
     },
   },
+  {
+    id: "zcode",
+    name: "ZCode",
+    detect: () => existsSync(join(homedir(), ".zcode")),
+    targetDir: () => join(homedir(), ".zcode"),
+    // ZCode loads agents and hooks from plugins only, so this host installs
+    // just the user-scope skills and slash commands surfaces.
+    sources: {
+      skills: { from: "skills", exclude: ["common-patterns"] },
+      commands: { from: "commands" },
+    },
+    availableFeatures: [],
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -1156,7 +1169,7 @@ Options:
   --yes, -y          Auto-install all detected hosts and features
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove all installed files and features
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,pi (kimi-code is also accepted)
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,pi,zcode (kimi-code is also accepted)
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help

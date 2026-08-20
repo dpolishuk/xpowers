@@ -3,7 +3,7 @@ set -euo pipefail
 
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
-# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Pi Agent
+# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Pi Agent, ZCode
 
 # ---------------------------------------------------------------------------
 # Common infrastructure
@@ -334,7 +334,7 @@ remove_legacy() {
 # Agent detection
 # ---------------------------------------------------------------------------
 
-AGENT_ORDER=(claude opencode kimi_code kimi codex gemini pi)
+AGENT_ORDER=(claude opencode kimi_code kimi codex gemini pi zcode)
 
 agent_label() {
   case "$1" in
@@ -345,6 +345,7 @@ agent_label() {
     codex)     echo "Codex CLI" ;;
     gemini)    echo "Gemini CLI" ;;
     pi)        echo "Pi Agent" ;;
+    zcode)     echo "ZCode" ;;
     *)         echo "$1" ;;
   esac
 }
@@ -392,6 +393,7 @@ detect_pi()      {
     AGENT_PATHS_pi="${HOME}/.pi/agent"
   fi
 }
+detect_zcode()   { [[ -d "${HOME}/.zcode" ]] && AGENT_PATHS_zcode="${HOME}/.zcode" || true; }
 
 detect_all() {
   detect_claude
@@ -401,6 +403,7 @@ detect_all() {
   detect_codex
   detect_gemini
   detect_pi
+  detect_zcode
 }
 
 show_detection() {
@@ -1219,6 +1222,39 @@ install_gemini() {
   fi
 }
 
+# ZCode discovers user-scope skills in ~/.zcode/skills/ and slash commands in
+# ~/.zcode/commands/. Agents and hooks are plugin-managed by ZCode, so this
+# host installs only the skills and commands subsets.
+install_zcode() {
+  local home; home="$(agent_path "zcode")"
+  home="${home:-${HOME}/.zcode}"
+  MANIFEST_ENTRIES=()
+  ensure_dir "${home}/skills"
+  ensure_dir "${home}/commands"
+  maybe_backup "$home" "${home}/.xpowers-backups"
+
+  # Skills (recursive copy of each skill dir)
+  for d in "${REPO_ROOT}"/skills/*/; do
+    [[ -d "$d" ]] || continue
+    local name; name="$(basename "$d")"
+    [[ "$name" == "common-patterns" ]] && continue
+    copy_item "$d" "${home}/skills/${name}"
+    manifest_add "skills/${name}/"
+  done
+
+  # Slash commands
+  for f in "${REPO_ROOT}"/commands/*.md; do
+    [[ -f "$f" ]] || continue
+    local name; name="$(basename "$f")"
+    copy_item "$f" "${home}/commands/${name}"
+    manifest_add "commands/${name}"
+  done
+
+  manifest_add ".xpowers-version"
+  echo "${VERSION}" > "${home}/.xpowers-version"
+  write_manifest "$home"
+}
+
 # ---------------------------------------------------------------------------
 # Validation functions
 # ---------------------------------------------------------------------------
@@ -1322,6 +1358,19 @@ validate_gemini() {
     }
   fi
   return 0
+}
+
+validate_zcode() {
+  local home; home="$(agent_path "zcode")"
+  home="${home:-${HOME}/.zcode}"
+  local ok=true
+  local sk; sk=$(count_items "${home}/skills/*/")
+  [[ "$sk" -ge 15 ]] || { warn "ZCode: only ${sk} skills (expected 15+)"; ok=false; }
+  local cm; cm=$(count_items "${home}/commands/*.md")
+  [[ "$cm" -ge 5 ]] || { warn "ZCode: only ${cm} commands (expected 5+)"; ok=false; }
+  local vf="${home}/.xpowers-version"
+  [[ -f "$vf" ]] && [[ "$(cat "$vf")" == "$VERSION" ]] || { warn "ZCode: version mismatch"; ok=false; }
+  $ok
 }
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1540,12 @@ uninstall_pi() {
   done
 }
 
+uninstall_zcode() {
+  local home; home="$(agent_path "zcode")"
+  home="${home:-${HOME}/.zcode}"
+  uninstall_from_manifest "$home"
+}
+
 # ---------------------------------------------------------------------------
 # Status functions
 # ---------------------------------------------------------------------------
@@ -1584,6 +1639,20 @@ status_pi() {
     echo -e "  ${GREEN}✓${RESET} Pi Agent       ${BOLD}v${iv}${RESET}"
   else
     echo -e "  ${DIM}✗ Pi Agent       not installed${RESET}"
+  fi
+}
+
+status_zcode() {
+  local home; home="$(agent_path "zcode")"
+  home="${home:-${HOME}/.zcode}"
+  local vf="${home}/.xpowers-version"
+  if [[ -f "$vf" ]]; then
+    local iv; iv=$(cat "$vf")
+    local sk; sk=$(count_items "${home}/skills/*/")
+    local cm; cm=$(count_items "${home}/commands/*.md")
+    echo -e "  ${GREEN}✓${RESET} ZCode          ${BOLD}v${iv}${RESET}  (${sk} skills, ${cm} commands)"
+  else
+    echo -e "  ${DIM}✗ ZCode          not installed${RESET}"
   fi
 }
 
@@ -2114,7 +2183,8 @@ AGENTS:
     --kimi              Install to Kimi CLI (legacy, ~/.config/agents)
     --codex             Install to Codex CLI (~/.codex)
     --gemini            Install to Gemini CLI (native extension)
-    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,pi,all
+    --zcode             Install to ZCode (~/.zcode, skills + commands only)
+    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,pi,zcode,all
     --all               Install to all detected agents
 
 MODES:
@@ -2185,6 +2255,7 @@ main() {
       --kimi)       SELECTED_AGENTS+=(kimi);      INTERACTIVE=false; shift ;;
       --codex)      SELECTED_AGENTS+=(codex);     INTERACTIVE=false; shift ;;
       --gemini)     SELECTED_AGENTS+=(gemini);    INTERACTIVE=false; shift ;;
+      --zcode)      SELECTED_AGENTS+=(zcode);     INTERACTIVE=false; shift ;;
       --hosts)
         shift
         if [[ $# -eq 0 ]]; then
@@ -2202,6 +2273,7 @@ main() {
             codex)     SELECTED_AGENTS+=(codex);     INTERACTIVE=false ;;
             gemini)    SELECTED_AGENTS+=(gemini);    INTERACTIVE=false ;;
             pi)        SELECTED_AGENTS+=(pi);        INTERACTIVE=false ;;
+            zcode)     SELECTED_AGENTS+=(zcode);     INTERACTIVE=false ;;
             all)       SELECT_ALL=true; INTERACTIVE=false ;;
             *)         error "Unknown host: $h"; usage >&2; exit 1 ;;
           esac
@@ -2296,6 +2368,7 @@ main() {
     status_codex
     status_gemini
     status_pi
+    status_zcode
     echo
     exit 0
   fi
