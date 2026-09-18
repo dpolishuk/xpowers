@@ -31,8 +31,10 @@ type: flow
 ## Arguments
 
 - `--reviewer-model`: Model for autonomous-reviewer (optional)
-  - `opus` (default): Highest capability, thorough review
+  - `opus`: Highest capability, thorough review
   - `sonnet`: Faster, balanced quality
+
+  Forwarded as the `model` parameter on `autonomous-reviewer` dispatches. Without the flag, the agent's pinned `inherit` tier applies (parent session model).
 
 ## What This Does
 
@@ -122,5 +124,5 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 
 ---
 
-Use the `execute-ralph-cc` skill exactly as written. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified. On Claude Code the autonomous-reviewer agent pins `model: inherit` in its frontmatter (follows the parent session model); pass `--reviewer-model=opus|sonnet` to override per dispatch.
+Use the `execute-ralph-cc` skill exactly as written. Parse any `--reviewer-model` argument and forward it as the `model` parameter of every `autonomous-reviewer` Agent dispatch (e.g. `model: opus` or `model: sonnet`). If not specified, dispatch `autonomous-reviewer` WITHOUT a `model` parameter — its frontmatter pins `model: inherit` (follows the parent session model).
 ````
