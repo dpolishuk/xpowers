@@ -60,17 +60,17 @@ Example configuration files for **OpenCode** and **Claude Code** with different 
 Anthropic Claude models with optimized agent assignments:
 
 - **Main model:** Sonnet 4.5 (balanced speed/capability)
-- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): Haiku 4.5
-- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): Sonnet 4.5
-- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): follow the main model, no per-agent pin needed
+- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): pinned to Haiku 4.5
+- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): pinned to Sonnet 4.5
+- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): unpinned — native session inheritance (they follow the top-level `model`)
 
 #### `opencode.example.glm.json`
 GLM models with optimized agent assignments:
 
 - **Main model:** GLM-4.7 (capable)
-- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): GLM-4.5
-- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): GLM-4.7
-- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): follow the main model, no per-agent pin needed
+- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): pinned to GLM-4.5
+- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): pinned to GLM-4.7
+- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): unpinned — native session inheritance (they follow the top-level `model`)
 
 #### `opencode.example.multi-provider.json`
 **Advanced:** Multiple providers with same model names. Shows how to:

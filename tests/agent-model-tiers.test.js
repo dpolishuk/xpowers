@@ -92,7 +92,7 @@ test("agents/ directory contains exactly the 16 agents in the canonical map", ()
 })
 
 test("agents/*.md frontmatter uses only canonical tier aliases (no versioned IDs)", () => {
-  const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"))
+  const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md") && f !== "CLAUDE.md")
   assert.ok(files.length > 0, "expected agent .md files in agents/")
 
   const violators = []
@@ -100,7 +100,7 @@ test("agents/*.md frontmatter uses only canonical tier aliases (no versioned IDs
     const fullPath = path.join(agentsDir, file)
     const text = fs.readFileSync(fullPath, "utf8")
     const frontmatter = parseFrontmatter(text)
-    if (!frontmatter) continue
+    assert.ok(frontmatter, `${file}: unparseable frontmatter (CRLF or missing --- delimiters)`)
 
     const modelLines = frontmatter.match(/^model:.*$/gm) ?? []
     if (modelLines.length > 1) {
@@ -121,5 +121,36 @@ test("agents/*.md frontmatter uses only canonical tier aliases (no versioned IDs
     violators,
     [],
     `These agent files use non-canonical model values in frontmatter (only tier aliases sonnet/haiku/inherit are allowed): ${violators.join(", ")}`,
+  )
+})
+
+test("kimi agent system prompt copies match canonical tiers", () => {
+  const kimiAgentsDir = path.join(repoRoot, ".kimi", "agents")
+  const mismatches = []
+
+  for (const [name, expectedTier] of Object.entries(AGENT_MODEL_TIERS)) {
+    const fullPath = path.join(kimiAgentsDir, `${name}-system.md`)
+    assert.ok(fs.existsSync(fullPath), `expected .kimi/agents/${name}-system.md to exist`)
+
+    const text = fs.readFileSync(fullPath, "utf8")
+    const frontmatter = parseFrontmatter(text)
+    assert.ok(frontmatter, `.kimi/agents/${name}-system.md is missing frontmatter delimiters`)
+
+    const match = frontmatter.match(/^model:\s*(sonnet|haiku|inherit)\s*$/m)
+    if (!match) {
+      mismatches.push(`${name}: no model: line matching /^(model:\\s*(sonnet|haiku|inherit)\\s*)$/ in .kimi/agents/${name}-system.md frontmatter`)
+      continue
+    }
+
+    const actualTier = match[1]
+    if (actualTier !== expectedTier) {
+      mismatches.push(`${name}: expected model: ${expectedTier}, found model: ${actualTier} in .kimi/agents/${name}-system.md`)
+    }
+  }
+
+  assert.deepEqual(
+    mismatches,
+    [],
+    `Kimi agent system prompt tier violations (fix .kimi/agents/*-system.md frontmatter to match the canonical map in this test): ${mismatches.join("; ")}`,
   )
 })

@@ -143,5 +143,5 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 
 ---
 
-Use the `execute-ralph` skill exactly as written. If Platform Routing directed you to `execute-ralph-cc`, load that skill instead. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
+Use the `execute-ralph` skill exactly as written. If Platform Routing directed you to `execute-ralph-cc`, load that skill instead. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified. On Claude Code the autonomous-reviewer agent pins `model: inherit` in its frontmatter (follows the parent session model); pass `--reviewer-model=opus|sonnet` to override per dispatch.
 ````

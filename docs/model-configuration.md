@@ -122,10 +122,10 @@ Today, the practical plugin/options surface is `/routing-settings`, a plugin-own
 |-------|--------|-------------|
 | orchestrator | ralph | Primary executor |
 | planners | planner | Deep architectural reasoning |
-| workers | test-runner, codebase-investigator, internet-researcher | High-volume, low-complexity |
+| workers | test-runner, codebase-investigator, internet-researcher, review-documentation | High-volume, low-complexity |
 | researchers | knowledge-aggregator | Synthesis across sources (sonnet recommended) |
 | guards | security-scanner, devops | Security and CI/CD analysis (sonnet) |
-| reviewers | autonomous-reviewer, code-reviewer, review-*, test-effectiveness-analyst | Require reasoning |
+| reviewers | autonomous-reviewer, code-reviewer, review-quality, review-implementation, review-testing, review-simplification, test-effectiveness-analyst | Require reasoning |
 
 > The OpenCode routing wizard plugin (`.opencode/plugins/routing-wizard-core.ts`) supports all 6 groups and 16 agents.
 

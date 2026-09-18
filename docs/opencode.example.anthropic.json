@@ -46,13 +46,41 @@
       "model": "anthropic/claude-haiku-4-5-20250514",
       "comment": "Fast model for API lookups and summarization"
     },
+    "review-documentation": {
+      "model": "anthropic/claude-haiku-4-5-20250514",
+      "comment": "Fast model for doc-coverage checks"
+    },
     "code-reviewer": {
       "model": "anthropic/claude-sonnet-4-5-20250514",
       "comment": "Capable model for reasoning and analysis"
     },
-    "test-effectiveness-analyst": {
+    "security-scanner": {
       "model": "anthropic/claude-sonnet-4-5-20250514",
-      "comment": "Capable model for complex test analysis"
+      "comment": "Capable model for security analysis"
+    },
+    "devops": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for CI/CD analysis"
+    },
+    "knowledge-aggregator": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for synthesis across sources"
+    },
+    "review-quality": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for quality review"
+    },
+    "review-implementation": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for spec-alignment review"
+    },
+    "review-testing": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for test review"
+    },
+    "review-simplification": {
+      "model": "anthropic/claude-sonnet-4-5-20250514",
+      "comment": "Capable model for complexity review"
     }
   }
 }
