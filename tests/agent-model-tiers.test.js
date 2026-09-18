@@ -67,6 +67,12 @@ test("every agents/*.md has the expected canonical model tier in frontmatter", (
 })
 
 test("agents/ directory contains exactly the 16 agents in the canonical map", () => {
+  const subdirs = fs
+    .readdirSync(agentsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+  assert.deepEqual(subdirs, [], `unexpected subdirectory in agents/ (escapes the tier guard): ${subdirs.join(", ")}`)
+
   const files = fs
     .readdirSync(agentsDir)
     .filter((f) => f.endsWith(".md") && f !== "CLAUDE.md")
@@ -85,7 +91,7 @@ test("agents/ directory contains exactly the 16 agents in the canonical map", ()
   )
 })
 
-test("no agents/*.md frontmatter uses versioned model IDs (aliases only)", () => {
+test("agents/*.md frontmatter uses only canonical tier aliases (no versioned IDs)", () => {
   const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"))
   assert.ok(files.length > 0, "expected agent .md files in agents/")
 
@@ -96,11 +102,17 @@ test("no agents/*.md frontmatter uses versioned model IDs (aliases only)", () =>
     const frontmatter = parseFrontmatter(text)
     if (!frontmatter) continue
 
+    const modelLines = frontmatter.match(/^model:.*$/gm) ?? []
+    if (modelLines.length > 1) {
+      violators.push(`${file}: ${modelLines.length} model: lines (YAML last-wins would bypass the guard)`)
+      continue
+    }
+
     const match = frontmatter.match(/^model:\s*(\S+)\s*$/m)
     if (!match) continue
 
     const value = match[1]
-    if (/anthropic\/|claude-|glm-/.test(value)) {
+    if (!/^(sonnet|haiku|inherit)$/.test(value)) {
       violators.push(`${file}: ${value}`)
     }
   }
@@ -108,6 +120,6 @@ test("no agents/*.md frontmatter uses versioned model IDs (aliases only)", () =>
   assert.deepEqual(
     violators,
     [],
-    `These agent files pin versioned model IDs in frontmatter (use tier aliases sonnet/haiku/inherit instead): ${violators.join(", ")}`,
+    `These agent files use non-canonical model values in frontmatter (only tier aliases sonnet/haiku/inherit are allowed): ${violators.join(", ")}`,
   )
 })
