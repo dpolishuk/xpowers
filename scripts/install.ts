@@ -1290,7 +1290,7 @@ Options:
       manifest ??= { version: VERSION, installedAt: "shell install", hosts: {}, features: {} }
       manifest.hosts.zcode = zcode
     }
-    if (args.hosts.length === 1 && args.hosts[0] === "zcode") {
+    if (args.hosts.length > 0 && args.hosts.every(hostId => hostId === "zcode")) {
       // Explicit ZCode cleanup is host-scoped. Its uninstall path already
       // retires only its own JSON records and preserves all shared features.
       if (manifest?.hosts.zcode) await uninstallHost("zcode", manifest)
