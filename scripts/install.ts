@@ -2,6 +2,7 @@
 
 import * as p from "@clack/prompts"
 import { existsSync, readFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { cp, mkdir, readFile, readdir, rm, writeFile, symlink, unlink, stat, lstat, rename, chmod } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -76,6 +77,17 @@ const throwOnSpawnFailure = (result: { exitCode: number, stdout: Uint8Array, std
   throw new Error(`${label}${stderr || stdout ? `: ${stderr || stdout}` : ""}`)
 }
 
+const runAntigravity = (args: string[], defaultTimeout: number) => {
+  const result = spawnSync(process.execPath, [
+    join(REPO_ROOT, "scripts", "run-with-timeout.js"),
+    process.env.XPOWERS_AGY_TIMEOUT_MS || String(defaultTimeout), "agy", ...args,
+  ], { encoding: "utf8" })
+  if (result.status !== 0) {
+    throw new Error(`agy ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error?.message || result.status}`)
+  }
+  return result.stdout
+}
+
 const THIRD_PARTY_SKIP_ENV = "XPOWERS_SKIP_THIRD_PARTY_FEATURES"
 const THIRD_PARTY_FEATURES = new Set(["br", "bv", "graphify", "claude-mem"])
 const HOST_INDEPENDENT_FEATURES = new Set(["tm-cli", "br", "bv"])
@@ -89,12 +101,13 @@ const skipThirdPartyFeatures = () => {
 
 const thirdPartySkipMessage = () => `skipped (${THIRD_PARTY_SKIP_ENV}=1)`
 
-const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent"
+const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, Antigravity CLI, or Pi Agent"
 const GRAPHIFY_TARGETS = [
   { hostId: "claude", label: "Claude Code", args: ["graphify", "install"] },
   { hostId: "codex", label: "Codex", args: ["graphify", "install", "--platform", "codex"] },
   { hostId: "opencode", label: "OpenCode", args: ["graphify", "install", "--platform", "opencode"] },
   { hostId: "gemini", label: "Gemini CLI", args: ["graphify", "install", "--platform", "gemini"] },
+  { hostId: "antigravity", label: "Antigravity CLI", args: ["graphify", "antigravity", "install"] },
   { hostId: "pi", label: "Pi Agent", args: ["graphify", "install", "--platform", "pi"] },
 ]
 
@@ -459,6 +472,31 @@ const HOSTS: HostConfig[] = [
     },
   },
   {
+    id: "antigravity",
+    name: "Antigravity CLI",
+    detect: () => {
+      if (!commandExists("agy")) return false
+      try {
+        runAntigravity(["--version"], 2000)
+        return true
+      } catch {
+        return false
+      }
+    },
+    targetDir: () => join(homedir(), ".xpowers", "hosts", "antigravity"),
+    sources: {},
+    availableFeatures: ["graphify"],
+    postInstall: async (targetDir) => {
+      if (!commandExists("agy")) throw new Error("agy (Antigravity CLI) not found — cannot install plugin")
+      await mkdir(targetDir, { recursive: true })
+      runAntigravity(["plugin", "import", join(REPO_ROOT, ".gemini-extension")], 10000)
+    },
+    postUninstall: async () => {
+      if (!commandExists("agy")) throw new Error("agy (Antigravity CLI) not found — cannot uninstall plugin")
+      runAntigravity(["plugin", "uninstall", "xpowers"], 5000)
+    },
+  },
+  {
     id: "pi",
     name: "Pi Agent",
     detect: () => commandExists("pi"),
@@ -668,7 +706,7 @@ const FEATURES: FeatureConfig[] = [
       }
       const result = Bun.spawnSync([
         "bash",
-        "-lc",
+        "-c",
         `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
@@ -692,7 +730,7 @@ const FEATURES: FeatureConfig[] = [
       }
       const result = Bun.spawnSync([
         "bash",
-        "-lc",
+        "-c",
         `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash`,
       ], { stdout: "pipe", stderr: "pipe" })
       return result.exitCode === 0
@@ -728,7 +766,7 @@ const FEATURES: FeatureConfig[] = [
       for (const target of targets) {
         const result = Bun.spawnSync([
           "bash",
-          "-lc",
+          "-c",
           `PATH="$HOME/.local/bin:$PATH" ${target.args.map(shellQuote).join(" ")}`,
         ], { stdout: "pipe", stderr: "pipe" })
         if (result.exitCode !== 0) {
@@ -1195,6 +1233,8 @@ type CliArgs = {
   hosts: string[]
   features: string[]
   help: boolean
+  dryRun: boolean
+  status: boolean
   allowConflicts: boolean
 }
 
@@ -1205,7 +1245,7 @@ const HOST_ID_ALIASES: Record<string, string> = {
 const normalizeHostId = (id: string) => HOST_ID_ALIASES[id] || id
 
 const parseArgs = (): CliArgs => {
-  const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, allowConflicts: false }
+  const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, dryRun: false, status: false, allowConflicts: false }
   const argv = process.argv.slice(2)
 
   for (let i = 0; i < argv.length; i++) {
@@ -1213,6 +1253,15 @@ const parseArgs = (): CliArgs => {
       case "--yes":
       case "-y":
         args.yes = true
+        break
+      case "--all":
+        args.yes = true
+        break
+      case "--dry-run":
+        args.dryRun = true
+        break
+      case "--status":
+        args.status = true
         break
       case "--uninstall":
       case "--remove":
@@ -1269,14 +1318,40 @@ Usage:
   bun scripts/install.ts --yes --json    # Agent-friendly JSON output
 
 Options:
-  --yes, -y          Auto-install all detected hosts and features
+  --yes, -y, --all   Auto-install all detected hosts and features
+  --dry-run          Preview without installing or removing anything
+  --status           Show installation status (including native Antigravity plugins)
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove everything; with --hosts zcode, remove only ZCode
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,pi,zcode (kimi-code is also accepted)
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,antigravity,pi,zcode (kimi-code is also accepted)
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help
 `)
+    return
+  }
+
+  if (args.status) {
+    const manifest = await readManifest()
+    const hosts: Record<string, boolean> = Object.fromEntries(Object.keys(manifest?.hosts ?? {}).map((id) => [id, true]))
+    if (commandExists("agy")) {
+      try {
+        hosts.antigravity = /\bxpowers\b/.test(runAntigravity(["plugin", "list"], 5000))
+      } catch (error) {
+        console.error(String(error))
+        process.exitCode = 1
+        return
+      }
+    } else hosts.antigravity = false
+    console.log(JSON.stringify({ ok: true, hosts }))
+    return
+  }
+
+  if (args.dryRun) {
+    const hosts = args.hosts.length ? args.hosts : args.uninstall
+      ? Object.keys((await readManifest())?.hosts ?? {})
+      : HOSTS.filter((host) => host.detect()).map((host) => host.id)
+    console.log(JSON.stringify({ ok: true, dryRun: true, action: args.uninstall ? "uninstall" : "install", hosts }))
     return
   }
 
@@ -1353,7 +1428,7 @@ Options:
 
   // Phase 1: Detect hosts
   const detected = HOSTS.filter((h) => h.detect())
-  const notDetected = HOSTS.filter((h) => !h.detect())
+  const notDetected = HOSTS.filter((h) => !detected.includes(h))
 
   for (const h of detected) p.log.success(`${h.name} detected`)
   for (const h of notDetected) p.log.warn(`${h.name} not found`)

@@ -5,7 +5,7 @@
 <h1 align="center">XPowers</h1>
 
 <p align="center">
-  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode.</strong>
+  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode.</strong>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
 
 ---
 
-XPowers turns Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, and Codex CLI into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
+XPowers turns Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
 
 ## Quick Start
 
@@ -251,10 +251,10 @@ bun scripts/install.ts --yes --json
 bun scripts/install.ts --uninstall
 ```
 
-Available hosts: `claude`, `opencode`, `kimi`, `gemini`, `pi`, `zcode`
+Available hosts: `claude`, `opencode`, `kimi`, `kimi_code`, `gemini`, `antigravity`, `pi`, `zcode`
 Available features: `memsearch`, `br`, `bv`, `graphify`, `claude-mem`, `supermemory`, `statusline`, `routing-wizard`, `tm-cli`
 
-`--yes` includes third-party tool installers. `br` and `bv` bootstrap from pinned upstream installer refs; maintainers can override them with `XPOWERS_BEADS_RUST_INSTALL_REF` and `XPOWERS_BEADS_VIEWER_INSTALL_REF` when intentionally updating. `graphify` runs its upstream platform setup only for supported selected hosts (Claude Code, Codex via `install.sh`, OpenCode, Gemini CLI, and Pi). Set `XPOWERS_SKIP_THIRD_PARTY_FEATURES=1` when you need a host-only install without external downloads.
+`--yes` includes third-party tool installers. `br` and `bv` bootstrap from pinned upstream installer refs; maintainers can override them with `XPOWERS_BEADS_RUST_INSTALL_REF` and `XPOWERS_BEADS_VIEWER_INSTALL_REF` when intentionally updating. `graphify` runs its upstream platform setup only for supported selected hosts (Claude Code, Codex via `install.sh`, OpenCode, Gemini CLI, Antigravity CLI, and Pi). Set `XPOWERS_SKIP_THIRD_PARTY_FEATURES=1` when you need a host-only install without external downloads.
 
 ### For Humans (interactive TUI)
 
@@ -447,6 +447,24 @@ bun /path/to/xpowers/scripts/opencode-routing-wizard.ts --yes
 This npm path adds the OpenCode plugin package only. For this branch's installer-first `tm` + Linear workflow, use `./scripts/install.sh --opencode` so the shared tm runtime is provisioned as well.
 
 **Verify:** `/xpowers-version`
+
+</details>
+
+<details>
+<summary><strong>Antigravity CLI</strong></summary>
+
+Install [Antigravity CLI](https://antigravity.google/docs/cli/overview) first so `agy` is on `PATH`. The Bash installer also requires Node.js or Bun to bound native CLI calls on macOS and Linux; GNU `timeout` is not required.
+
+```bash
+./scripts/install.sh --antigravity --yes
+# Or use the Bun installer:
+bun scripts/install.ts --hosts antigravity --yes
+
+./scripts/install.sh --status
+./scripts/install.sh --antigravity --uninstall --yes
+```
+
+Both installers import the local `.gemini-extension` through `agy plugin import`. `--all` detects a working `agy` executable; `--dry-run` previews changes without importing or removing plugins. Bun also supports `--status`. Startup checks allow 2 seconds, imports 10 seconds, and status/removal 5 seconds; `XPOWERS_AGY_TIMEOUT_MS` overrides these limits with a positive millisecond value. Failed or timed-out plugin operations return an error so they can be retried. Claude-Mem setup is not offered for Antigravity; its Gemini configuration is a different host.
 
 </details>
 

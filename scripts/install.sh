@@ -3,7 +3,7 @@ set -euo pipefail
 
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
-# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Pi Agent, ZCode
+# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Antigravity CLI, Pi Agent, ZCode
 
 # ---------------------------------------------------------------------------
 # Common infrastructure
@@ -334,7 +334,7 @@ remove_legacy() {
 # Agent detection
 # ---------------------------------------------------------------------------
 
-AGENT_ORDER=(claude opencode kimi_code kimi codex gemini pi zcode)
+AGENT_ORDER=(claude opencode kimi_code kimi codex gemini antigravity pi zcode)
 
 agent_label() {
   case "$1" in
@@ -344,6 +344,7 @@ agent_label() {
     kimi)      echo "Kimi CLI (legacy)" ;;
     codex)     echo "Codex CLI" ;;
     gemini)    echo "Gemini CLI" ;;
+    antigravity) echo "Antigravity CLI" ;;
     pi)        echo "Pi Agent" ;;
     zcode)     echo "ZCode" ;;
     *)         echo "$1" ;;
@@ -393,6 +394,31 @@ detect_pi()      {
     AGENT_PATHS_pi="${HOME}/.pi/agent"
   fi
 }
+# agy can hang during startup or native plugin operations. Never run it unbounded.
+run_antigravity() {
+  local default_timeout="$1"
+  shift
+  local runtime=""
+  if command -v node >/dev/null 2>&1; then
+    runtime=node
+  elif command -v bun >/dev/null 2>&1; then
+    runtime=bun
+  else
+    error "Node.js or Bun is required to run agy with a timeout"
+    return 1
+  fi
+  "$runtime" "${REPO_ROOT}/scripts/run-with-timeout.js" "${XPOWERS_AGY_TIMEOUT_MS:-$default_timeout}" agy "$@"
+}
+
+detect_antigravity() {
+  if command -v agy &>/dev/null; then
+    # Verify it runs successfully
+    if run_antigravity 2000 --version &>/dev/null; then
+      AGENT_PATHS_antigravity="$(command -v agy)"
+    fi
+  fi
+}
+
 detect_zcode()   { [[ -d "${HOME}/.zcode" ]] && AGENT_PATHS_zcode="${HOME}/.zcode" || true; }
 
 detect_all() {
@@ -402,6 +428,7 @@ detect_all() {
   detect_kimi
   detect_codex
   detect_gemini
+  detect_antigravity
   detect_pi
   detect_zcode
 }
@@ -1240,6 +1267,25 @@ install_gemini() {
   fi
 }
 
+install_antigravity() {
+  if ! command -v agy &>/dev/null; then
+    error "agy (Antigravity CLI) not found in PATH"
+    return 1
+  fi
+
+  local ext_dir="${REPO_ROOT}/.gemini-extension"
+  if [[ ! -d "$ext_dir" ]]; then
+    error "Antigravity extension directory not found: ${ext_dir}"
+    return 1
+  fi
+
+  local agy_output
+  agy_output=$(run_antigravity 10000 plugin import "$ext_dir" 2>&1) || {
+    error "agy plugin import failed: ${agy_output}"
+    return 1
+  }
+}
+
 # ZCode discovers user-scope skills and commands. Agent prompts are exposed as
 # wrapper skills; ordinary skills retain their relative common-patterns refs.
 install_zcode() (
@@ -1444,8 +1490,18 @@ validate_codex() {
 
 validate_gemini() {
   if command -v gemini &>/dev/null; then
-    gemini extensions list 2>/dev/null | grep -q xpowers || {
+    timeout 5s gemini extensions list 2>/dev/null | grep -q xpowers || {
       warn "Gemini: extension not found in 'gemini extensions list'"
+      return 1
+    }
+  fi
+  return 0
+}
+
+validate_antigravity() {
+  if command -v agy &>/dev/null; then
+    run_antigravity 5000 plugin list 2>/dev/null | grep -q xpowers || {
+      warn "Antigravity: extension not found in 'agy plugin list'"
       return 1
     }
   fi
@@ -1576,9 +1632,25 @@ uninstall_gemini() {
     if [[ "$DRY_RUN" == true ]]; then
       info "Would run: gemini extensions uninstall xpowers"
     else
-      gemini extensions uninstall xpowers 2>/dev/null || true
+      timeout 5s gemini extensions uninstall xpowers 2>/dev/null || true
     fi
   fi
+}
+
+uninstall_antigravity() {
+  if ! command -v agy >/dev/null 2>&1; then
+    error "agy (Antigravity CLI) not found — cannot uninstall plugin"
+    return 1
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    info "Would run: agy plugin uninstall xpowers"
+    return 0
+  fi
+  local agy_output
+  agy_output=$(run_antigravity 5000 plugin uninstall xpowers 2>&1) || {
+    error "agy plugin uninstall failed: ${agy_output}"
+    return 1
+  }
 }
 
 uninstall_pi() {
@@ -1769,12 +1841,28 @@ status_codex() {
     echo -e "  ${DIM}✗ Codex CLI      not installed${RESET}"
   fi
 }
-
 status_gemini() {
-  if command -v gemini &>/dev/null && gemini extensions list 2>/dev/null | grep -q xpowers; then
+  if command -v gemini &>/dev/null && timeout 5s gemini extensions list 2>/dev/null | grep -q xpowers; then
     echo -e "  ${GREEN}✓${RESET} Gemini CLI     ${BOLD}installed${RESET}"
   else
     echo -e "  ${DIM}✗ Gemini CLI     not installed${RESET}"
+  fi
+}
+
+status_antigravity() {
+  if ! command -v agy >/dev/null 2>&1; then
+    echo "  Antigravity CLI not installed (agy not found)"
+    return 0
+  fi
+  local agy_output
+  agy_output=$(run_antigravity 5000 plugin list 2>&1) || {
+    error "Antigravity status failed: ${agy_output}"
+    return 1
+  }
+  if printf '%s\n' "$agy_output" | grep -q xpowers; then
+    echo "  Antigravity CLI: xpowers installed"
+  else
+    echo "  Antigravity CLI: xpowers not installed"
   fi
 }
 
@@ -1995,7 +2083,7 @@ selected_agents_cover_detected_agents() {
     [[ -n "$(agent_path "$detected_agent")" ]] || continue
     detected_count=$((detected_count + 1))
     local selected=false
-    for selected_agent in "${SELECTED_AGENTS[@]}"; do
+    for selected_agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       if [[ "$selected_agent" == "$detected_agent" ]]; then
         selected=true
         break
@@ -2073,7 +2161,7 @@ install_graphify_for_agents() {
       continue
     fi
     case "$agent" in
-      claude|codex|opencode|gemini|pi) targets+=("$agent") ;;
+      claude|codex|opencode|gemini|antigravity|pi) targets+=("$agent") ;;
     esac
   done
 
@@ -2081,7 +2169,7 @@ install_graphify_for_agents() {
     if [[ "$skipped_delegated_pi" == true ]]; then
       info "Skipping Pi graphify; Pi delegation already handled it"
     else
-      warn "graphify skipped — Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent not selected"
+      warn "graphify skipped — Claude Code, Codex, OpenCode, Gemini CLI, Antigravity CLI, or Pi Agent not selected"
     fi
     return 0
   fi
@@ -2121,6 +2209,11 @@ install_graphify_for_agents() {
         label="Gemini CLI"
         try_command="graphify install --platform gemini"
         graphify_args=(install --platform gemini)
+        ;;
+      antigravity)
+        label="Antigravity CLI"
+        try_command="graphify antigravity install"
+        graphify_args=(antigravity install)
         ;;
       pi)
         label="Pi Agent"
@@ -2331,8 +2424,9 @@ AGENTS:
     --kimi              Install to Kimi CLI (legacy, ~/.config/agents)
     --codex             Install to Codex CLI (~/.codex)
     --gemini            Install to Gemini CLI (native extension)
+    --antigravity       Install to Antigravity CLI (native plugin)
     --zcode             Install to ZCode (~/.zcode, skills + commands only)
-    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,pi,zcode,all
+    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,antigravity,pi,zcode,all
     --all               Install to all detected agents
 
 MODES:
@@ -2403,6 +2497,7 @@ main() {
       --kimi)       SELECTED_AGENTS+=(kimi);      INTERACTIVE=false; shift ;;
       --codex)      SELECTED_AGENTS+=(codex);     INTERACTIVE=false; shift ;;
       --gemini)     SELECTED_AGENTS+=(gemini);    INTERACTIVE=false; shift ;;
+      --antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false; shift ;;
       --zcode)      SELECTED_AGENTS+=(zcode);     INTERACTIVE=false; shift ;;
       --hosts)
         shift
@@ -2420,6 +2515,7 @@ main() {
             kimi)      SELECTED_AGENTS+=(kimi);      INTERACTIVE=false ;;
             codex)     SELECTED_AGENTS+=(codex);     INTERACTIVE=false ;;
             gemini)    SELECTED_AGENTS+=(gemini);    INTERACTIVE=false ;;
+            antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false ;;
             pi)        SELECTED_AGENTS+=(pi);        INTERACTIVE=false ;;
             zcode)     SELECTED_AGENTS+=(zcode);     INTERACTIVE=false ;;
             all)       SELECT_ALL=true; INTERACTIVE=false ;;
@@ -2515,6 +2611,7 @@ main() {
     status_kimi
     status_codex
     status_gemini
+    status_antigravity
     status_pi
     status_zcode
     echo
@@ -2531,7 +2628,7 @@ main() {
       fi
     done
     # Merge explicitly-selected agents (e.g. --hosts all,pi) without duplicates
-    for agent in "${SELECTED_AGENTS[@]}"; do
+    for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       local already_in=false
       if (( ${#resolved_agents[@]} > 0 )); then
         for r in "${resolved_agents[@]}"; do
@@ -2540,13 +2637,13 @@ main() {
       fi
       [[ "$already_in" != true ]] && resolved_agents+=("$agent")
     done
-    SELECTED_AGENTS=("${resolved_agents[@]}")
+    SELECTED_AGENTS=(${resolved_agents[@]+"${resolved_agents[@]}"})
   fi
 
   # Deduplicate SELECTED_AGENTS to prevent double execution
   if [[ ${#SELECTED_AGENTS[@]} -gt 0 ]]; then
     local -a deduped=()
-    for agent in "${SELECTED_AGENTS[@]}"; do
+    for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       local already=false
       if (( ${#deduped[@]} > 0 )); then
         for d in "${deduped[@]}"; do
@@ -2566,7 +2663,7 @@ main() {
   local has_pi=false
   local pi_delegated=false
   local pi_host_independent_features_succeeded=false
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     [[ "$agent" == "pi" ]] && has_pi=true
   done
 
@@ -2640,7 +2737,7 @@ main() {
 
   # Build display list
   local agent_list=""
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     [[ -n "$agent_list" ]] && agent_list+=", "
     agent_list+="$(agent_label "$agent")"
   done
@@ -2713,7 +2810,7 @@ main() {
   # --- Execute ---
   # FAILED_AGENTS declared earlier during Pi delegation
 
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     # Pi install is handled by TypeScript delegation above (only if it was actually delegated)
     if [[ "$agent" == "pi" && "$MODE" == "install" && "$pi_delegated" == true ]]; then
       continue
@@ -2732,7 +2829,7 @@ main() {
       SUCCESSFUL_AGENTS+=("$agent")
     else
       printf "  Installing to ${BOLD}%-16s${RESET} " "$label..."
-      if "install_${agent}" 2>/dev/null; then
+      if "install_${agent}"; then
         SUCCESSFUL_AGENTS+=("$agent")
         if "validate_${agent}" 2>/dev/null; then
           echo -e "${GREEN}✓${RESET}"
