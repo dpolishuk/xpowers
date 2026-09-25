@@ -11,8 +11,9 @@ description: Execute entire epic autonomously with continuous review. No user ch
 ## Arguments
 
 - `--reviewer-model`: Model for autonomous-reviewer (optional)
-  - `opus` (default): Highest capability, thorough review
+  - `opus`: Explicit Opus reviewer override
   - `sonnet`: Faster, balanced quality
+  - If omitted, use the host default: Claude Code inherits the parent session model; OpenCode uses its configured reviewer route or session model.
 
 ## What This Does
 
@@ -111,10 +112,10 @@ In guarded environments, direct .git/hooks/pre-commit execution may be blocked b
 |---|---|---|
 | Stops | After each task | Only on critical failure |
 | Review | Final only | End-of-epic review + final gate |
-| Model | Inherited | Configurable (opus default) |
+| Model | Inherited | Host default, with optional reviewer override |
 | Research | None | Final autonomous review may use web research |
 | Task creation | Manual next-step planning | Auto-creates next task when criteria remain unmet |
 
 ---
 
-Use the `xpowers-execute-ralph` skill exactly as written. Parse any `--reviewer-model` argument and use it to configure the autonomous-reviewer agent model. Default to opus if not specified.
+Use the `xpowers-execute-ralph` skill exactly as written. Parse any `--reviewer-model` argument and forward it as the `model` parameter of every `autonomous-reviewer` dispatch. If not specified, leave `model` unset so OpenCode uses the `agent.autonomous-reviewer.model` routing config or session model.
