@@ -65,7 +65,7 @@ python3 -m pip --version >/dev/null 2>&1 || true  # Optional: ensure CLI deps ar
 ```
 .
 ├── agents/                 # 16 specialized subagent prompts
-│   ├── planner.md          # Architecture decomposition + task graphs (opus)
+│   ├── planner.md          # Architecture decomposition + task graphs (inherit)
 │   ├── security-scanner.md # OWASP, secrets, CVE scanning (read-only)
 │   ├── devops.md           # CI/CD pipeline analysis and diagnosis
 │   ├── knowledge-aggregator.md  # MCP-aware context aggregation
@@ -167,7 +167,7 @@ These skills are **mandatory** when applicable:
 
 | Agent | Category | Purpose | Recommended Model |
 |-------|----------|---------|-------------------|
-| `planner` | Plan | Architecture decomposition + task graphs | Most capable (opus) |
+| `planner` | Plan | Architecture decomposition + task graphs | Inherit |
 | `codebase-investigator` | Research | Understand codebase state | Fast (haiku) |
 | `internet-researcher` | Research | Research APIs/libraries | Fast (haiku) |
 | `knowledge-aggregator` | Research | Aggregate docs, issues, team comms via MCP | Capable (sonnet) |
@@ -175,14 +175,14 @@ These skills are **mandatory** when applicable:
 | `security-scanner` | Guard | OWASP, secrets, CVE scanning (read-only) | Capable (sonnet) |
 | `devops` | Guard | CI/CD pipeline analysis and diagnosis | Capable (sonnet) |
 | `code-reviewer` | Review | Human-facing reviews with detailed explanations | Capable (sonnet) |
-| `autonomous-reviewer` | Review | Machine-facing verdict-only reviews | Most capable (opus) |
+| `autonomous-reviewer` | Review | Machine-facing verdict-only reviews | Inherit |
 | `review-implementation` | Review | Spec-focused requirements alignment | Capable (sonnet) |
 | `review-quality` | Review | Bugs, race conditions, error handling | Capable (sonnet) |
 | `review-testing` | Review | Test coverage and quality | Capable (sonnet) |
 | `review-simplification` | Review | Over-engineering detection | Capable (sonnet) |
-| `review-documentation` | Review | Documentation completeness | Capable (sonnet) |
+| `review-documentation` | Review | Documentation completeness | Fast (haiku) |
 | `test-runner` | Worker | Run tests without context pollution | Fast (haiku) |
-| `test-effectiveness-analyst` | Worker | Audit test quality with SRE scrutiny | Capable (sonnet) |
+| `test-effectiveness-analyst` | Worker | Audit test quality with SRE scrutiny | Inherit |
 
 ## Hooks System
 

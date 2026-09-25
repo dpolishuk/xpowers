@@ -7,26 +7,28 @@ XPowers agents support per-agent model configuration using the `providerID/model
 - Configure multiple API providers simultaneously
 - Optimize costs by matching task complexity to model capability
 
-**Recommended model choices by agent:**
+**Recommended model choices by agent** (canonical tier mapping, mirrored by `tests/agent-model-tiers.test.js`):
 
 | Agent | Recommended Model | Reason |
 |-------|------------------|--------|
-| planner | Most capable (opus) | Deep architectural reasoning and task decomposition |
-| autonomous-reviewer | Most capable (opus) | Final validation and comprehensive review |
-| code-reviewer | Capable (sonnet, glm-4.7) | Requires reasoning and analysis |
-| security-scanner | Capable (sonnet) | Vulnerability pattern matching and CVE analysis |
-| devops | Capable (sonnet) | CI/CD pipeline analysis and diagnosis |
-| knowledge-aggregator | Capable (sonnet) | Synthesis across multiple knowledge sources |
-| review-quality | Capable (sonnet) | Bug detection and error handling analysis |
-| review-implementation | Capable (sonnet) | Requirements alignment verification |
-| review-testing | Capable (sonnet) | Test coverage and quality evaluation |
-| review-simplification | Capable (sonnet) | Complexity detection |
-| review-documentation | Capable (sonnet) | Documentation completeness |
-| test-effectiveness-analyst | Capable (sonnet, glm-4.7) | Complex analysis of test quality |
-| test-runner | Fast (haiku, glm-4.5) | High-volume, low-complexity tasks |
-| codebase-investigator | Fast (haiku) | Scanning and searching operations |
-| internet-researcher | Fast (haiku) | External API lookups and summarization |
-| ralph | Inherit | Orchestrates other agents, uses parent model |
+| planner | inherit | Complex work follows the parent session model (no ceiling, fable-class parents included) |
+| autonomous-reviewer | inherit | Complex work follows the parent session model (no ceiling, fable-class parents included) |
+| code-reviewer | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| security-scanner | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| devops | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| knowledge-aggregator | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| review-quality | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| review-implementation | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| review-testing | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| review-simplification | sonnet | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
+| review-documentation | haiku | Doc-presence checking is mechanical |
+| test-effectiveness-analyst | inherit | Complex work follows the parent session model (no ceiling, fable-class parents included) |
+| test-runner | haiku | Mechanical execution/scanning tasks |
+| codebase-investigator | haiku | Mechanical execution/scanning tasks |
+| internet-researcher | haiku | Mechanical execution/scanning tasks |
+| ralph | inherit | Orchestrator follows the parent session model |
+
+**Tier philosophy:** Claude Code model aliases are `haiku`, `sonnet`, `opus`, `fable`, and `inherit`. The philosophy: complex work inherits the parent session model (never capped, so fable-class parents keep full capability), mid-complexity analysis uses `sonnet`, and mechanical execution/scanning uses `haiku`. The Claude Code defaults in this table are pinned in `agents/*.md` frontmatter (enforced by `tests/agent-model-tiers.test.js`); OpenCode hosts route per-agent models via `opencode.json` instead (see the routing sections below).
 
 ---
 
@@ -119,11 +121,11 @@ Today, the practical plugin/options surface is `/routing-settings`, a plugin-own
 | Group | Agents | Typical Role |
 |-------|--------|-------------|
 | orchestrator | ralph | Primary executor |
-| planners | planner | Deep architectural reasoning (opus recommended) |
-| workers | test-runner, codebase-investigator, internet-researcher | High-volume, low-complexity |
+| planners | planner | Deep architectural reasoning |
+| workers | test-runner, codebase-investigator, internet-researcher, review-documentation | High-volume, low-complexity |
 | researchers | knowledge-aggregator | Synthesis across sources (sonnet recommended) |
 | guards | security-scanner, devops | Security and CI/CD analysis (sonnet) |
-| reviewers | autonomous-reviewer, code-reviewer, review-*, test-effectiveness-analyst | Require reasoning |
+| reviewers | autonomous-reviewer, code-reviewer, review-quality, review-implementation, review-testing, review-simplification, test-effectiveness-analyst | Require reasoning |
 
 > The OpenCode routing wizard plugin (`.opencode/plugins/routing-wizard-core.ts`) supports all 6 groups and 16 agents.
 
@@ -192,10 +194,10 @@ model: anthropic/claude-sonnet-4-5
 ```
 
 ```yaml
-# agents/autonomous-reviewer.md - Use most capable model
+# agents/autonomous-reviewer.md - Inherit the parent session model (complex work, no ceiling)
 ---
 name: autonomous-reviewer
-model: anthropic/claude-opus-4-5
+model: inherit
 ---
 ```
 
@@ -232,7 +234,7 @@ In OpenCode, you can override agent models in your `opencode.json` file without 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "comment": "Optimize costs: fast models for simple tasks, capable for complex",
+  "comment": "Optimize costs: haiku for mechanical agents; complex agents inherit the top-level model",
   "model": "anthropic/claude-sonnet-4-5",
   "agent": {
     "test-runner": {
@@ -241,8 +243,8 @@ In OpenCode, you can override agent models in your `opencode.json` file without 
     "codebase-investigator": {
       "model": "anthropic/claude-haiku-4-5"
     },
-    "autonomous-reviewer": {
-      "model": "anthropic/claude-opus-4-5"
+    "review-documentation": {
+      "model": "anthropic/claude-haiku-4-5"
     }
   }
 }
@@ -308,7 +310,7 @@ When using multiple providers (e.g., multiple API proxies or aggregation service
       "model": "proxy2/claude-haiku-4-5"
     },
     "code-reviewer": {
-      "model": "anthropic/claude-opus-4-5"
+      "model": "anthropic/claude-sonnet-4-5"
     }
   },
 
@@ -390,8 +392,8 @@ All agents without an explicit `model` in frontmatter (or in `opencode.json` →
     "test-runner": { "model": "anthropic/claude-haiku-4-5" },
     "codebase-investigator": { "model": "anthropic/claude-haiku-4-5" },
     "internet-researcher": { "model": "anthropic/claude-haiku-4-5" },
-    "code-reviewer": { "model": "anthropic/claude-sonnet-4-5" },
-    "autonomous-reviewer": { "model": "anthropic/claude-opus-4-5" }
+    "review-documentation": { "model": "anthropic/claude-haiku-4-5" },
+    "code-reviewer": { "model": "anthropic/claude-sonnet-4-5" }
   }
 }
 ```
@@ -400,8 +402,9 @@ All agents without an explicit `model` in frontmatter (or in `opencode.json` →
 |-------|-------|----------------|
 | test-runner | Haiku | $ |
 | codebase-investigator | Haiku | $ |
+| review-documentation | Haiku | $ |
 | code-reviewer | Sonnet | $$ |
-| autonomous-reviewer | Opus | $$$ |
+| autonomous-reviewer | Sonnet (inherited, no override) | $$ |
 
 ---
 

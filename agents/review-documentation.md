@@ -1,6 +1,8 @@
 ---
 name: review-documentation
 description: Documentation reviewer - checks if docs need updates for API changes, new features, config changes. Returns PASS or ISSUES_FOUND.
+# Tier: haiku - mechanical scanning/execution tasks; fastest cheapest tier
+model: haiku
 tools:
   Read: true
   Grep: true
