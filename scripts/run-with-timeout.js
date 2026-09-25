@@ -12,9 +12,15 @@ if (!command || !Number.isSafeInteger(milliseconds) || milliseconds <= 0) {
 
 const child = spawn(command, args, {
   detached: process.platform !== "win32",
-  stdio: ["ignore", "inherit", "inherit"],
+  stdio: ["ignore", "pipe", "pipe"],
 })
+// Own the pipes: "close" must wait for descendants that inherited either stream,
+// even when the direct CLI process already exited. Detached daemons that close
+// their output streams can keep running; only a deadline kills the process group.
+child.stdout.pipe(process.stdout)
+child.stderr.pipe(process.stderr)
 let timedOut = false
+let spawnFailed = false
 const kill = () => {
   if (!child.pid) return
   try {
@@ -27,15 +33,20 @@ const timer = setTimeout(() => {
   timedOut = true
   console.error(`${command} ${args.join(" ")} timed out after ${milliseconds}ms`)
   kill()
+  // A detached descendant may have escaped the original process group. Closing
+  // our pipe ends still releases the installer at the deadline in that case.
+  child.stdout.destroy()
+  child.stderr.destroy()
 }, milliseconds)
 child.on("error", (error) => {
+  spawnFailed = true
   clearTimeout(timer)
   console.error(error.message)
   process.exitCode = 127
 })
 child.on("close", (code) => {
   clearTimeout(timer)
-  process.exitCode = timedOut ? 124 : (code ?? 1)
+  if (!spawnFailed) process.exitCode = timedOut ? 124 : (code ?? 1)
 })
 for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
   process.once(signal, () => {

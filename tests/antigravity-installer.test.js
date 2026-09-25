@@ -25,6 +25,12 @@ const args = process.argv.slice(2)
 const operation = args[0] === '--version' ? 'version' : args[1]
 const state = path.join(process.env.HOME, 'agy-installed')
 fs.appendFileSync(path.join(process.env.HOME, 'agy-calls.jsonl'), JSON.stringify(args) + '\\n')
+if (process.env.AGY_BACKGROUND === operation) {
+  const { spawn } = require('node:child_process')
+  const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 100)'], { stdio: 'inherit', detached: process.env.AGY_DETACHED === '1' })
+  fs.writeFileSync(path.join(process.env.HOME, 'agy-descendant-pid'), String(child.pid))
+  child.unref()
+}
 if (process.env.AGY_HANG === operation) {
   process.on('SIGTERM', () => {})
   setInterval(() => {}, 100)
@@ -49,12 +55,18 @@ else if (operation === 'uninstall') {
     KIMI_CODE_HOME: path.join(home, ".kimi-code"),
     PATH: `${bin}:/usr/bin:/bin`,
     XPOWERS_SKIP_THIRD_PARTY_FEATURES: "1",
-    XPOWERS_AGY_TIMEOUT_MS: "500",
+    XPOWERS_AGY_TIMEOUT_MS: "1000",
     NO_COLOR: "1",
     TERM: "dumb",
     CI: "true",
   }
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  t.after(() => {
+    const pidFile = path.join(home, "agy-descendant-pid")
+    if (fs.existsSync(pidFile)) {
+      try { process.kill(Number(fs.readFileSync(pidFile, "utf8")), "SIGKILL") } catch { /* already stopped */ }
+    }
+    fs.rmSync(home, { recursive: true, force: true })
+  })
   return { home, env, calls: () => {
     const file = path.join(home, "agy-calls.jsonl")
     return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse) : []
@@ -76,7 +88,11 @@ function run(kind, f, args = [], extraEnv = {}) {
     const timer = setTimeout(() => {
       timedOut = true
       try { process.kill(-child.pid, "SIGKILL") } catch { /* already exited */ }
-    }, 3000)
+      const pidFile = path.join(f.home, "agy-descendant-pid")
+      if (fs.existsSync(pidFile)) {
+        try { process.kill(Number(fs.readFileSync(pidFile, "utf8")), "SIGKILL") } catch { /* already exited */ }
+      }
+    }, 8000)
     child.on("close", (code) => {
       clearTimeout(timer)
       resolve({ code, output, timedOut })
@@ -169,3 +185,33 @@ for (const kind of ["shell", "bun"]) {
     assert.equal(fs.existsSync(path.join(f.home, "npx-calls")), false, "Antigravity must not write Gemini-specific memory configuration")
   })
 }
+
+for (const kind of ["shell", "bun"]) {
+  test(`${kind}: Antigravity descendants cannot hold installer output open past the deadline`, async (t) => {
+    const f = fixture(t)
+    const result = await run(kind, f, ["--hosts", "antigravity"], { AGY_BACKGROUND: "import" })
+    assert.equal(fs.existsSync(path.join(f.home, "agy-descendant-pid")), true, "agy spawned the inherited-output descendant")
+    assert.equal(result.timedOut, false, "the installer must enforce its own deadline after agy exits")
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /timed out/i)
+  })
+}
+
+for (const kind of ["shell", "bun"]) {
+  test(`${kind}: a detached Antigravity descendant still cannot extend the deadline`, async (t) => {
+    const f = fixture(t)
+    const result = await run(kind, f, ["--hosts", "antigravity"], { AGY_BACKGROUND: "import", AGY_DETACHED: "1" })
+    assert.equal(fs.existsSync(path.join(f.home, "agy-descendant-pid")), true)
+    assert.equal(result.timedOut, false, "escaped process groups must not hold the helper pipes open forever")
+    assert.equal(result.code, 1, result.output)
+    assert.match(result.output, /timed out/i)
+  })
+}
+
+test("timeout helper preserves command-not-found exit status", () => {
+  const result = spawnSync(process.execPath, ["scripts/run-with-timeout.js", "500", "/nonexistent/xpowers-test-command"], {
+    cwd: repoRoot, encoding: "utf8", timeout: 8000,
+  })
+  assert.equal(result.status, 127, result.stderr)
+  assert.match(result.stderr, /ENOENT/)
+})
