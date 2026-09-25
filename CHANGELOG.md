@@ -4,6 +4,9 @@ All notable changes to XPowers are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **ZCode host support** in both installers (`scripts/install.sh --zcode`, `bun scripts/install.ts --hosts zcode`): installs skills to `~/.zcode/skills` and slash commands to `~/.zcode/commands` with manifest-tracked uninstall. Agents and hooks are not installed (ZCode loads them from plugins only).
+
 ## [2.14.2] - 2026-06-18
 
 ### Added

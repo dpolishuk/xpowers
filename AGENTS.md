@@ -4,7 +4,7 @@ This document provides essential information for AI coding agents working with t
 
 ## Project Overview
 
-**XPowers** supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi), providing structured workflows, best practices, and specialized agents for software development. Think of it as a pair programming partner that ensures proven development patterns are followed.
+**XPowers** supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode), providing structured workflows, best practices, and specialized agents for software development. Think of it as a pair programming partner that ensures proven development patterns are followed.
 
 ### Key Components
 
