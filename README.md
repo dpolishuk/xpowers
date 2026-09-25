@@ -175,6 +175,12 @@ Reusable workflows that make AI coding sessions repeatable and reviewable.
 
 See [Model Configuration](docs/model-configuration.md) to route providers and models per agent.
 
+Claude Code also supports an optional [coordinator routing profile](docs/CLAUDE-ROUTING.md):
+Opus 5.5 workers, Sonnet 5 verification, fresh-context reviews, configurable
+presets and a hook that prevents the coordinator from editing project source.
+Install with `bash scripts/setup-claude-routing.sh --project /path/to/project --preset opus`,
+then start a new Claude session and run `/routing-on` and `/routing-smoke-test`.
+
 ### Pi Support
 
 XPowers includes first-class Pi support via `.pi/extensions/xpowers/`:

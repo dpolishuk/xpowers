@@ -51,3 +51,4 @@ bd.db
 # Beads Rust local runtime and recovery files
 .write.lock
 .br_recovery/
+.br_history/

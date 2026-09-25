@@ -68,15 +68,15 @@ test("README and QUICKSTART describe the same peer backend set and per-project b
   const quickstartBackendLines = quickstartModelSection.split("\n").filter(line => /^- `(?:tm|bd|br|tk|linear)`/.test(line.trim()))
   const expectedReadmeBackendLines = [
     "- `tm` = canonical user-facing task-management interface",
-    "- `bd` = current local tracker backend in this repo",
-    "- `br` = Beads Rust, a classic SQLite+JSONL beads-compatible backend / migration option",
+    "- `br` = Beads Rust, the current local tracker backend in this repo (SQLite+JSONL)",
+    "- `bd` = legacy Beads backend, retained in migration guides",
     "- `tk` = Ticket, a git-backed markdown ticket workflow alternative",
     "- `linear` = Linear-native backend preview (core commands only on this repo branch)",
   ]
   const expectedQuickstartBackendLines = [
     "- `tm` = canonical user-facing interface",
-    "- `bd` = current backend in this repo",
-    "- `br` = Beads Rust / classic beads-compatible alternative",
+    "- `br` = current backend in this repo (Beads Rust)",
+    "- `bd` = legacy Beads backend, retained in migration guides",
     "- `tk` = Ticket / git-backed markdown alternative",
     "- `linear` = Linear-native backend preview (core commands only on this repo branch)",
   ]
@@ -84,8 +84,8 @@ test("README and QUICKSTART describe the same peer backend set and per-project b
   assert.match(readmeModelSection, /one backend selected per project/)
   assert.match(quickstartModelSection, /one backend per project/)
   assert.match(readmeModelSection, /bd` \/ `br` \/ `tk` \/ `linear/)
-  assert.match(readmeModelSection, /`bd` remains the active backend/)
-  assert.match(quickstartModelSection, /`bd` is the active backend/)
+  assert.match(readmeModelSection, /`br` remains the active backend/)
+  assert.match(quickstartModelSection, /`br` is the active backend/)
   assert.match(readmeModelSection, /not interchangeable day-to-day commands/)
   assert.match(quickstartModelSection, /not interchangeable day-to-day commands/)
   assert.doesNotMatch(quickstartModelSection, /fully supported backend/)

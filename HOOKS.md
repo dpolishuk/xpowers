@@ -4,6 +4,13 @@
 
 XPowers uses Claude Code's hooks system to provide intelligent, context-aware assistance throughout your development workflow. Hooks automatically enhance your experience without requiring manual intervention.
 
+The optional [Claude coordinator routing profile](docs/CLAUDE-ROUTING.md) installs
+separate project `PreToolUse` and `SessionStart` hooks. `/routing-on` activates a
+session-scoped coordinator write guard; `/routing-off` disables it. The profile
+allows delegated implementers, external scratch writes and exact `git merge-base`
+and `git merge-tree` queries. It is installed explicitly with
+`scripts/setup-claude-routing.sh` and is not enabled by the plugin's default hooks.
+
 ## Hook Types
 
 ### UserPromptSubmit Hook
