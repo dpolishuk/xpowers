@@ -1,6 +1,8 @@
 ---
 name: review-testing
 description: Testing reviewer - evaluates test coverage, test quality, and testing gaps. Returns PASS or ISSUES_FOUND.
+# Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
+model: sonnet
 tools:
   Read: true
   Grep: true
