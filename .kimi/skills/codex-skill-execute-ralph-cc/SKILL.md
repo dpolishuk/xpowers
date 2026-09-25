@@ -387,7 +387,7 @@ If Phase 4 cap reached (phase4 >= 2): STOP and alert user. Do NOT call ScheduleW
 Then END TURN.
 
 **Final gate** -- dispatch in parallel:
-- **autonomous-reviewer**: return APPROVED or GAPS_FOUND
+- **autonomous-reviewer**: return APPROVED or GAPS_FOUND. If a `--reviewer-model=opus|sonnet` flag was parsed for this run, include `model: <value>` in the `autonomous-reviewer` Agent dispatch; otherwise omit the parameter so the agent's pinned frontmatter `inherit` (parent session model) applies.
 - **review-implementation**: return PASS or ISSUES_FOUND
 
 ### Verdict Normalization Matrix
