@@ -54,9 +54,11 @@ Normal work follows worker → fresh verifier → coordinator. Material security
 money, data-loss, migration, concurrency, complex-algorithm work, and tasks after
 two unsuccessful Terra iterations go to senior. Those paths then use fresh
 verification and independent reviewer input before the coordinator concludes. The
-role instructions prefer one writer and allow two only for disjoint owned paths;
-they cap child work at three roles. They are policy text, not a hard sandbox: file
-permissions still control what a running process can do.
+coordinator instructions prefer one writer and allow two only for disjoint owned
+paths. Those coordinator restrictions are policy text, not a hard sandbox: file
+permissions still control what a running process can do. The configured native
+limit is at most three concurrent child threads; it does not reduce the six roles
+available for explicit selection.
 
 The root starts at `medium`. Use an explicit root `high` override only for
 architectural complexity; it does not authorize the coordinator to make project
@@ -71,7 +73,8 @@ this setup.
 Fresh setup defaults to `modern`, the format for current Codex Desktop. It enables
 agents at the root, sets the root child limit to three, and sets the default child
 model and effort. Each child role disables `agents.enabled` and both
-`multi_agent_v2` and multi-agent feature flags.
+`multi_agent_v2` and multi-agent feature flags. An existing modern
+`[features.multi_agent_v2]` table keeps its unrelated custom properties.
 
 `legacy` is for older V1 Codex CLI clients, including 0.140, and must be selected
 explicitly:
@@ -83,12 +86,13 @@ bash scripts/setup-codex-routing.sh --repo /path/to/project --config-format lega
 Legacy uses `max_threads = 3` and `max_depth = 1`; child roles disable both feature
 flags. On a newer V2 client, legacy depth settings alone do not guarantee that a
 child cannot delegate, so use modern there. Do not infer Codex Desktop capability
-from the version of a separately installed Codex CLI.
+from the version of a separately installed Codex CLI. Converting to legacy refuses
+incompatible V2 tables instead of discarding their settings.
 
 The modern schema was strict-parsed against the Codex Desktop app-server in
-ChatGPT Desktop 0.155.0-alpha.16.3. A parse check and model catalog metadata only
-show configuration acceptance and advertised availability; neither proves actual
-runtime model inference.
+the Codex runtime 0.155.0-alpha.16.3 bundled with ChatGPT Desktop. A parse check
+and model catalog metadata only show configuration acceptance and advertised
+availability; neither proves actual runtime model inference.
 
 Managed reruns preserve the selected format, model IDs, efforts, and child limit
 when their flags are omitted. To make an intentional change, pass one or more of:
@@ -99,28 +103,34 @@ bash scripts/setup-codex-routing.sh --repo /path/to/project \
   --max-agents 3 --effort root=high --effort worker=medium
 ```
 
-`--effort ROLE=LEVEL` is repeatable and accepts `root`, `subagent`, or a named
-role. The installer checks effort syntax; it cannot prove a selected model accepts
-that effort. `--max-agents` accepts 1 through 3.
+`--effort ROLE=LEVEL` is repeatable. `root` and every named role work with either
+format; `subagent` controls the modern default child effort and is modern-only. The
+installer checks effort syntax; it cannot prove a selected model accepts that
+effort. `--max-agents` accepts 1 through 3.
 
 ## Preserving an existing project
 
-The script preserves unrelated TOML keys and comments, existing `AGENTS.md`, and
-text outside its managed blocks. If `AGENTS.override.md` exists and is nonempty, it
-is the preferred instruction source. The setup appends bounded managed instructions
+The script merges unrelated TOML keys and comments, existing `AGENTS.md`, and text
+outside its managed blocks. If `AGENTS.override.md` exists and is nonempty, it is
+the preferred instruction source. The setup appends bounded managed instructions
 and rejects over-budget content.
 
-It refuses symlinks, hard links, ambiguous role-name collisions, malformed managed
-blocks, and existing unowned role files. Do not bypass a rejection by overwriting
-those role files. If you have reviewed the conflict and intentionally want routing
-blocks merged into existing role files, use `--adopt-roles`:
+It intentionally rejects unmanaged root `[agents]` routing scalar keys and
+`[agents.<role>]` registrations, because broad root-routing adoption could change
+an existing policy. It also refuses symlinks, hard links, ambiguous role-name
+collisions, malformed managed blocks, and existing unowned role files. Do not
+bypass a rejection by overwriting those role files. If you have reviewed a
+canonical role-file conflict and intentionally want routing blocks merged into that
+role file, use `--adopt-roles`:
 
 ```bash
 bash scripts/setup-codex-routing.sh --repo /path/to/project --adopt-roles
 ```
 
-Adoption preserves unrelated TOML keys and existing developer instructions, but it
-cannot resolve arbitrary semantic conflicts between instruction systems. Review the
+`--adopt-roles` applies only to canonical `.codex/agents/<role>.toml` files; it
+does not adopt root `[agents]` registrations or scalar routing keys. Adoption
+preserves unrelated TOML keys and existing developer instructions, but it cannot
+resolve arbitrary semantic conflicts between instruction systems. Review the
 combined policy before activating it.
 
 ## Backups and restore
@@ -157,3 +167,21 @@ If configuration parsing fails, resolve the reported local configuration issue a
 rerun the dry-run. If model access or metadata is unavailable in the fresh session,
 leave the result unverified and check the applicable Codex runtime or account
 configuration; do not silently substitute another model.
+
+## Contributor test setup
+
+The installer test needs `tomlkit` in the isolated interpreter. Create a temporary
+virtual environment and install the same hash-pinned wheel that the installer uses:
+
+```bash
+routing_test_tmp=$(mktemp -d)
+python3 -m venv "$routing_test_tmp/venv"
+"$routing_test_tmp/venv/bin/python" -m pip install \
+  'tomlkit @ https://files.pythonhosted.org/packages/bd/75/8539d011f6be8e29f339c42e633aae3cb73bffa95dd0f9adec09b9c58e85/tomlkit-0.13.3-py3-none-any.whl#sha256=c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0'
+PYTHON_BIN="$routing_test_tmp/venv/bin/python" node --test tests/codex-routing-installer.test.js
+rm -rf "$routing_test_tmp"
+```
+
+This does not change system packages or the repository. CI creates its own parser
+environment automatically. When running the full suite locally, pass the same
+selected interpreter: `PYTHON_BIN="$routing_test_tmp/venv/bin/python" npm test`.
