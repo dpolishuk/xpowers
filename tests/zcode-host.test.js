@@ -19,7 +19,7 @@ function fixture(t) {
 }
 
 function run(home, installer, uninstall = false, extraEnv = {}, options = {}) {
-  const hostArgs = options.allHosts ? [] : ["--hosts", "zcode"]
+  const hostArgs = options.allHosts ? [] : ["--hosts", options.hosts ?? "zcode"]
   const args = installer === "bash"
     ? ["scripts/install.sh", ...hostArgs, "--yes"]
     : ["scripts/install.ts", ...hostArgs, "--yes", "--json", "--features", "__none__"]
@@ -318,16 +318,16 @@ function otherInstallation(home) {
   return { file, settings, global, record, feature }
 }
 
-for (const installer of ["bash", "bun"]) {
+for (const [installer, hosts] of [["bash", "zcode"], ["bun", "zcode"], ["bun", "zcode,zcode"]]) {
   for (const legacy of [false, true]) {
-    test(`${installer} explicit ZCode uninstall preserves unrelated hosts and features (${legacy ? "JSON-only" : "shared"})`, { timeout: 120000 }, (t) => {
+    test(`${installer} explicit ZCode uninstall preserves unrelated hosts and features (${hosts}, ${legacy ? "JSON-only" : "shared"})`, { timeout: 120000 }, (t) => {
       const home = fixture(t)
       success(run(home, "bun"))
       if (legacy) fs.unlinkSync(path.join(home, ".zcode/.xpowers-manifest"))
       const other = otherInstallation(home)
-      success(run(home, installer, true))
+      success(run(home, installer, true, {}, { hosts }))
       assertRemoved(home)
-      success(run(home, installer, true))
+      success(run(home, installer, true, {}, { hosts }))
       assert.equal(fs.readFileSync(other.file, "utf8"), "other host content\n")
       assert.equal(JSON.parse(fs.readFileSync(other.settings, "utf8")).statusline, "xpowers statusline")
       const remaining = JSON.parse(fs.readFileSync(other.global, "utf8"))
