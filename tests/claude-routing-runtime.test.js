@@ -76,14 +76,64 @@ test("session state cannot escape its directory and is scoped by project and ses
   assert.ok(paths.every((p) => !p.includes("..")))
 })
 
+test("generated commands work through the guard after Claude substitutes the session ID", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-commands-")))
+  const project = path.join(dir, "project with spaces")
+  const home = path.join(dir, "home")
+  fs.mkdirSync(project)
+  fs.mkdirSync(home)
+  const session = "501ac37b-9e0e-4990-b4a2-caf5d08728a2"
+  // Local command content is substituted by Claude before Bash/PreToolUse.
+  // A conflicting shell environment must never select the session instead.
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"), CLAUDE_SESSION_ID: "different-shell-session" }
+  const invoke = (file, args, input) => spawnSync(file, args, { env, cwd: project, input, encoding: "utf8", timeout: 10000 })
+  try {
+    const installed = invoke("python3", ["-B", path.join(runtime, "cli.py"), "install", "--project", project])
+    assert.equal(installed.status, 0, installed.stderr)
+    const cli = path.join(project, ".claude/xpowers-routing/cli.py")
+    const guard = (command) => {
+      const result = invoke("python3", ["-B", cli, "guard", "--project", project], JSON.stringify({
+        session_id: session, cwd: project, tool_name: "Bash", tool_input: { command },
+      }))
+      assert.equal(result.status, 0, result.stderr)
+      return JSON.parse(result.stdout)
+    }
+    const template = (name) => {
+      const markdown = fs.readFileSync(path.join(project, `.claude/commands/${name}.md`), "utf8")
+      const match = markdown.match(/```bash\n([^\n]+)\n```/)
+      assert.ok(match, `missing executable command in ${name}`)
+      assert.ok(match[1].includes("${CLAUDE_SESSION_ID}"))
+      return match[1]
+    }
+    for (const name of ["routing-on", "routing-smoke-test", "routing-off"]) {
+      const command = template(name).replaceAll("${CLAUDE_SESSION_ID}", session)
+      assert.deepEqual(guard(command), {}, name)
+      const result = invoke("bash", ["-c", command])
+      assert.equal(result.status, 0, `${name}: ${result.stderr}`)
+      if (name === "routing-smoke-test") assert.match(result.stdout, /PASS/)
+      if (name === "routing-on") {
+        for (const invalid of [template("routing-off"), template("routing-off").replaceAll("${CLAUDE_SESSION_ID}", "other-session")]) {
+          assert.equal(guard(invalid).hookSpecificOutput.permissionDecision, "deny")
+        }
+      }
+    }
+    const status = invoke("python3", ["-B", cli, "status", "--project", project, "--session", session])
+    assert.equal(status.status, 0, status.stderr)
+    assert.equal(status.stdout.trim(), "OFF")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test("on/off and session-start affect only one session without modifying project files", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-runtime-"))
   const project = path.join(dir, "project")
   const home = path.join(dir, "home")
+  const configDir = path.join(home, "custom-claude")
   fs.mkdirSync(project)
   fs.mkdirSync(home)
   const run = (args, input) => spawnSync("python3", ["-B", path.join(runtime, "cli.py"), ...args, "--project", project], {
-    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude") }, input: input ? JSON.stringify(input) : undefined,
+    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: configDir }, input: input ? JSON.stringify(input) : undefined,
     encoding: "utf8", timeout: 10000,
   })
   try {
@@ -115,6 +165,15 @@ test("on/off and session-start affect only one session without modifying project
     fs.writeFileSync(localSettingsPath, JSON.stringify({ disableAllHooks: true }))
     assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must catch locally disabled hooks")
     fs.unlinkSync(localSettingsPath)
+    fs.mkdirSync(configDir, { recursive: true })
+    const globalSettings = path.join(configDir, "settings.json")
+    fs.writeFileSync(globalSettings, JSON.stringify({ disableAllHooks: true }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must check the effective user settings directory")
+    fs.unlinkSync(globalSettings)
+    // Claude supports project-local settings.local.json, but no user-level
+    // settings.local.json scope. An unused file must not disable routing.
+    fs.writeFileSync(path.join(configDir, "settings.local.json"), JSON.stringify({ disableAllHooks: true }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 0)
     assert.equal(run(["off", "--session", "session-a"]).status, 0)
     assert.deepEqual(JSON.parse(run(["session-start"], { session_id: "session-a", cwd: project }).stdout), {})
     assert.equal(snapshot(), before)

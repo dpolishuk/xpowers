@@ -35,6 +35,12 @@ Activation is stored outside the repository and scoped to the current session.
 Resuming or compacting that session restores its routing instructions; a new
 session starts with routing off. `/routing-off` disables it for the current session.
 
+Invoke these commands through Claude Code. Claude substitutes
+`${CLAUDE_SESSION_ID}` in the local command content before calling Bash; this is
+not a shell environment variable. The guard checks the resulting session ID
+against the current hook event. Copying an unexpanded command template directly
+into Bash is unsupported.
+
 ## Roles and presets
 
 | Role | `opus` preset | Effort | Maximum turns |
@@ -161,8 +167,20 @@ canonical project path. Restore removes the profile's hooks and files and
 recovers files that existed before installation, retaining unrelated settings.
 If managed files were edited later, restore reports the conflict before changing
 project files. Preserve those edits and resolve the conflict before retrying.
-Restart Claude Code after restoring. Moving a project requires reinstalling so
-absolute hook paths and the external backup location match the new directory.
+Restart Claude Code after restoring. After moving or copying an installed
+project on the same machine, rerun the installer before starting Claude Code.
+The installer recovers the original ownership record, replaces its old absolute
+hook paths, and preserves pre-install backups for restore at the new location.
+A copied project's installation can then be restored independently of the source.
+Existing sessions are not activated at the new location.
+If you left a symlink at the old project path, remove that link before reinstalling;
+the installer rejects an origin that now resolves to another directory.
+
+Keep the external backup directory available: the project-local
+`xpowers-routing/install-origin.json` records ownership, not backup contents.
+If the original backup is missing or managed files have changed, reinstall stops
+before replacing project files. Recover the backup or restore the profile before
+transferring the project to a different machine.
 
 ## References
 

@@ -3,6 +3,8 @@ const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
+const crypto = require("node:crypto")
+const yaml = require("js-yaml")
 const { spawn, spawnSync } = require("node:child_process")
 
 const repoRoot = path.resolve(__dirname, "..")
@@ -45,6 +47,10 @@ function write(f, relative, content) {
 }
 function read(f, relative) { return fs.readFileSync(file(f, relative), "utf8") }
 function json(f, relative) { return JSON.parse(read(f, relative)) }
+function manifestPath(f) {
+  const hash = crypto.createHash("sha256").update(f.project).digest("hex").slice(0, 24)
+  return path.join(f.home, ".claude", "xpowers-routing", hash, "install-manifest.json")
+}
 
 test("routing install generates configured roles, native limits and independent verification", t => {
   const f = fixture(t)
@@ -292,4 +298,223 @@ test("routing installer rejects projects containing its external control directo
     assert.equal(fs.existsSync(file(f, "")), false)
     assert.equal(fs.existsSync(path.join(f.home, ".claude")), false)
   }
+})
+
+test("generated routing descriptions provide a distinct usage example for each role", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const descriptions = []
+  const scenarios = { explorer: /authentication/, worker: /acceptance tests/, verifier: /independently/, senior: /payment/, reviewer: /data migration/ }
+  for (const role of ["explorer", "worker", "verifier", "senior", "reviewer"]) {
+    const text = read(f, `agents/xpowers-routing-${role}.md`)
+    const frontmatter = yaml.load(text.match(/^---\n([\s\S]*?)\n---/)[1])
+    const example = frontmatter.description.match(/<example>(.*)<\/example>/)?.[1]
+    assert.ok(example, `${role} description needs a usage example`)
+    assert.match(example, new RegExp(`xpowers-routing-${role}`))
+    assert.match(example, scenarios[role])
+    descriptions.push(frontmatter.description)
+  }
+  assert.equal(new Set(descriptions).size, 5)
+})
+
+test("routing relocation replaces only owned absolute hooks and restores original files", t => {
+  const f = fixture(t)
+  const unrelated = { matcher: "Read", hooks: [{ type: "command", command: `echo '${f.project}/.claude/xpowers-routing/cli.py'` }] }
+  write(f, "commands/routing-on.md", "original user command\n")
+  write(f, "settings.json", JSON.stringify({ theme: "dark", hooks: { PreToolUse: [unrelated] } }))
+  success(invoke(f))
+  const oldManifest = manifestPath(f)
+  const oldBackup = fs.readFileSync(oldManifest, "utf8")
+  const moved = { ...f, project: path.join(path.dirname(f.project), "moved ' project") }
+  fs.renameSync(f.project, moved.project)
+  success(invoke(moved))
+  const hooks = json(moved, "settings.json").hooks
+  assert.equal(hooks.PreToolUse.length, 2)
+  assert.deepEqual(hooks.PreToolUse[0], unrelated)
+  assert.match(hooks.PreToolUse[1].hooks[0].command, /moved/)
+  assert.equal(hooks.SessionStart.length, 1)
+  assert.equal(fs.readFileSync(oldManifest, "utf8"), oldBackup)
+  success(invoke(moved, "restore"))
+  assert.equal(read(moved, "commands/routing-on.md"), "original user command\n")
+  assert.deepEqual(json(moved, "settings.json"), { theme: "dark", hooks: { PreToolUse: [unrelated] } })
+  assert.equal(fs.existsSync(file(moved, "routing.json")), false)
+  assert.equal(fs.existsSync(file(moved, "xpowers-routing/cli.py")), false)
+})
+
+test("copied routing installations keep independent ownership and restoration", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const oldManifest = fs.readFileSync(manifestPath(f), "utf8")
+  const copied = { ...f, project: path.join(path.dirname(f.project), "copied") }
+  fs.cpSync(f.project, copied.project, { recursive: true })
+  success(invoke(copied))
+  success(invoke(copied, "restore"))
+  assert.equal(fs.existsSync(file(copied, "settings.json")), false)
+  assert.equal(fs.readFileSync(manifestPath(f), "utf8"), oldManifest)
+  assert.equal(fs.existsSync(file(f, "settings.json")), true)
+  success(invoke(f, "restore"))
+  assert.equal(fs.existsSync(file(f, "settings.json")), false)
+})
+
+test("legacy routing relocation finds only the exact manifest named by registered hooks", t => {
+  const f = fixture(t)
+  write(f, "commands/routing-on.md", "original before legacy installation\n")
+  success(invoke(f))
+  const manifest = JSON.parse(fs.readFileSync(manifestPath(f), "utf8"))
+  delete manifest.installationId
+  delete manifest.files["xpowers-routing/install-origin.json"]
+  fs.writeFileSync(manifestPath(f), JSON.stringify(manifest))
+  fs.rmSync(file(f, "xpowers-routing/install-origin.json"), { force: true })
+  const moved = { ...f, project: path.join(path.dirname(f.project), "legacy-moved") }
+  fs.renameSync(f.project, moved.project)
+  success(invoke(moved))
+  assert.equal(json(moved, "settings.json").hooks.PreToolUse.length, 1)
+  success(invoke(moved, "restore"))
+  assert.equal(read(moved, "commands/routing-on.md"), "original before legacy installation\n")
+  assert.equal(fs.existsSync(file(moved, "xpowers-routing/cli.py")), false)
+})
+
+test("relocation without its ownership backup refuses before replacing project files", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  fs.unlinkSync(manifestPath(f))
+  const moved = { ...f, project: path.join(path.dirname(f.project), "missing-backup") }
+  fs.renameSync(f.project, moved.project)
+  const beforeSettings = read(moved, "settings.json")
+  const beforeCommand = read(moved, "commands/routing-on.md")
+  const result = invoke(moved)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /ownership|backup|manifest/i)
+  assert.equal(read(moved, "settings.json"), beforeSettings)
+  assert.equal(read(moved, "commands/routing-on.md"), beforeCommand)
+  assert.equal(fs.existsSync(manifestPath(moved)), false)
+})
+
+test("relocation rejects modified generated files and preserves original ownership data", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const oldManifest = manifestPath(f)
+  const oldBackup = fs.readFileSync(oldManifest, "utf8")
+  const moved = { ...f, project: path.join(path.dirname(f.project), "modified-copy") }
+  fs.cpSync(f.project, moved.project, { recursive: true })
+  write(moved, "agents/xpowers-routing-worker.md", "manual edit\n")
+  const beforeSettings = read(moved, "settings.json")
+  assert.notEqual(invoke(moved).status, 0)
+  assert.equal(read(moved, "settings.json"), beforeSettings)
+  assert.equal(fs.readFileSync(oldManifest, "utf8"), oldBackup)
+  assert.equal(fs.existsSync(manifestPath(moved)), false)
+})
+
+test("relocation rolls back regenerated files and hooks when the new ownership manifest cannot be written", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const oldManifest = manifestPath(f)
+  const original = fs.readFileSync(oldManifest, "utf8")
+  const moved = { ...f, project: path.join(path.dirname(f.project), "rollback-move") }
+  fs.renameSync(f.project, moved.project)
+  const beforeSettings = read(moved, "settings.json")
+  const beforeCommand = read(moved, "commands/routing-on.md")
+  const beforeOrigin = read(moved, "xpowers-routing/install-origin.json")
+  const script = `import sys
+from pathlib import Path
+import install
+original = install._atomic_write
+def fail_manifest(target, snapshot):
+    if target.name == 'install-manifest.json': raise OSError('simulated manifest failure')
+    original(target, snapshot)
+install._atomic_write = fail_manifest
+install.install(Path(sys.argv[1]))
+`
+  const result = spawnSync("python3", ["-c", script, moved.project], {
+    cwd: moved.runtime,
+    env: { ...process.env, HOME: moved.home, PYTHONDONTWRITEBYTECODE: "1" },
+    encoding: "utf8",
+    timeout: 10000,
+  })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /simulated manifest failure/)
+  assert.equal(read(moved, "settings.json"), beforeSettings)
+  assert.equal(read(moved, "commands/routing-on.md"), beforeCommand)
+  assert.equal(read(moved, "xpowers-routing/install-origin.json"), beforeOrigin)
+  assert.equal(fs.readFileSync(oldManifest, "utf8"), original)
+  assert.equal(fs.existsSync(manifestPath(moved)), false)
+  success(invoke(moved))
+})
+
+test("relocation refuses a symlinked former project path promptly without locking the same control twice", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const oldManifest = manifestPath(f)
+  const original = fs.readFileSync(oldManifest, "utf8")
+  const moved = { ...f, project: path.join(path.dirname(f.project), "symlink-move") }
+  fs.renameSync(f.project, moved.project)
+  fs.symlinkSync(moved.project, f.project)
+  const beforeSettings = read(moved, "settings.json")
+  const result = invoke(moved)
+  assert.notEqual(result.status, 0)
+  assert.equal(result.error, undefined, "installer must reject this without timing out")
+  assert.match(result.stderr, /origin.*symlink|symlink.*origin/i)
+  assert.equal(read(moved, "settings.json"), beforeSettings)
+  assert.equal(fs.readFileSync(oldManifest, "utf8"), original)
+  assert.equal(fs.existsSync(manifestPath(moved)), false)
+})
+
+test("a concurrent installer waits for a first install paused before its origin marker", async t => {
+  const f = fixture(t)
+  const paused = path.join(f.runtime, "first-paused")
+  const release = path.join(f.runtime, "release-first")
+  const observed = path.join(f.runtime, "second-observed")
+  const start = script => {
+    const child = spawn("python3", ["-c", script, f.project, paused, release, observed], {
+      cwd: f.runtime,
+      env: { ...process.env, HOME: f.home, PYTHONDONTWRITEBYTECODE: "1" },
+    })
+    t.after(() => child.kill())
+    return new Promise((resolve, reject) => {
+      let output = ""
+      child.stderr.on("data", chunk => { output += chunk })
+      child.on("error", reject)
+      child.on("close", status => resolve({ status, stderr: output }))
+    })
+  }
+  const waitFor = async target => {
+    const deadline = Date.now() + 5000
+    while (!fs.existsSync(target)) {
+      assert.ok(Date.now() < deadline, `timed out waiting for ${target}`)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const first = start(`import sys, time
+from pathlib import Path
+import install
+original = install._atomic_write
+def pause_after_generated(target, snapshot):
+    original(target, snapshot)
+    if target.name == 'generated-config.json':
+        Path(sys.argv[2]).touch()
+        deadline = time.monotonic() + 8
+        while not Path(sys.argv[3]).exists():
+            if time.monotonic() > deadline: raise RuntimeError('first installer was not released')
+            time.sleep(0.01)
+install._atomic_write = pause_after_generated
+install.install(Path(sys.argv[1]))
+`)
+  await waitFor(paused)
+  const second = start(`import sys
+from pathlib import Path
+import install
+original = install._origin_hint
+def observe_partial_origin(project):
+    try: return original(project)
+    finally: Path(sys.argv[4]).touch()
+install._origin_hint = observe_partial_origin
+install.install(Path(sys.argv[1]))
+`)
+  await waitFor(observed)
+  fs.writeFileSync(release, "release\n")
+  const results = await Promise.all([first, second])
+  results.forEach(success)
+  assert.equal(json(f, "settings.json").hooks.PreToolUse.length, 1)
+  success(invoke(f, "restore"))
+  assert.equal(fs.existsSync(file(f, "routing.json")), false)
 })

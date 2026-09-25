@@ -9,6 +9,7 @@ from pathlib import Path
 import shlex
 import stat
 import tempfile
+import uuid
 
 import common
 
@@ -21,6 +22,14 @@ ROLE_INSTRUCTIONS = {
     "senior": "Handle difficult work, money, concurrency, data migrations, and escalations after worker failures. Preserve task-card invariants and report evidence and remaining risks. Respect the configured attempt budget; when exhausted, stop and return the unresolved state for independent review rather than claiming success.",
     "reviewer": "Perform semantic review of risky changes using a fresh context. You must be a separate agent, never the author and never a continuation or resume of the author's thread. Sharing the author's model is allowed. Inspect invariants, money, concurrency, and data migrations; report actionable findings with file references. Never edit project files or implement fixes.",
 }
+ROLE_EXAMPLES = {
+    "explorer": "The coordinator needs to locate authentication checks before planning a change. Delegate to xpowers-routing-explorer to report entry points, callers, and existing tests.",
+    "worker": "A task card specifies a validation fix and acceptance tests. Delegate to xpowers-routing-worker to implement the change while preserving the listed invariants.",
+    "verifier": "Another agent has completed a diff. Start a fresh xpowers-routing-verifier to run its acceptance checks independently and report failures without fixing them.",
+    "senior": "Worker attempts are exhausted or a task changes concurrent payment processing. Delegate to xpowers-routing-senior with the invariants, evidence, and remaining attempt budget.",
+    "reviewer": "A data migration has passed execution checks. Start a fresh xpowers-routing-reviewer to inspect rollback safety and data invariants before acceptance.",
+}
+ORIGIN_FILE = "xpowers-routing/install-origin.json"
 
 
 def _json_bytes(value):
@@ -157,6 +166,101 @@ def _settings(path):
     return value
 
 
+def _origin_hint(project):
+    """Locate one ownership record, never search unrelated external state."""
+    claude = project / ".claude"
+    marker = claude / ORIGIN_FILE
+    _safe_target(marker, project)
+    origin = _read_json(marker)
+    if origin is not None:
+        source = origin.get("project")
+        identity = origin.get("installationId")
+        if (origin.get("version") != 1 or not isinstance(source, str)
+                or not Path(source).is_absolute() or not isinstance(identity, str)
+                or len(identity) != 32 or any(char not in "0123456789abcdef" for char in identity)):
+            raise ValueError("Invalid routing installation origin; recover its ownership backup before reinstalling")
+        return {"project": str(Path(source)), "installationId": identity}
+    generated = claude / "xpowers-routing/generated-config.json"
+    _safe_target(generated, project)
+    if not generated.exists():
+        return None
+    # Legacy versions have no origin marker. The exact registered command names
+    # its old project; the external manifest must still prove every owned byte.
+    settings_path = claude / "settings.json"
+    _safe_target(settings_path, project)
+    settings = _settings(settings_path)
+    candidates = set()
+    for event in ("PreToolUse", "SessionStart"):
+        for entry in settings.get("hooks", {}).get(event, []):
+            inner = entry.get("hooks", [])
+            if not isinstance(inner, list):
+                continue
+            for hook in inner:
+                command = hook.get("command") if isinstance(hook, dict) else None
+                if not isinstance(command, str):
+                    continue
+                try:
+                    argv = shlex.split(command)
+                except ValueError:
+                    continue
+                if (len(argv) != 5 or argv[0] != "python3" or argv[2] not in ("guard", "session-start")
+                        or argv[3] != "--project" or not Path(argv[4]).is_absolute()):
+                    continue
+                candidate = Path(argv[4])
+                expected = _hook_entries(candidate)
+                if all(value in settings.get("hooks", {}).get(key, []) for key, value in expected.items()):
+                    candidates.add(str(candidate))
+    if len(candidates) != 1:
+        raise ValueError("Cannot locate the legacy routing ownership backup. Recover the original project settings and external manifest before reinstalling")
+    return {"project": candidates.pop(), "installationId": None}
+
+
+@contextlib.contextmanager
+def _installation(project):
+    # A concurrent first install may have written generated-config.json without
+    # its origin/settings yet. Only reject malformed ownership after waiting
+    # for the current project's install lock and reading the complete state.
+    try:
+        hint = _origin_hint(project)
+    except ValueError:
+        hint = None
+    for _ in range(3):
+        projects = {project}
+        if hint is not None:
+            origin_project = Path(hint["project"])
+            if origin_project.resolve() != origin_project:
+                raise ValueError("Recorded routing origin now resolves through a symlink to another location. Remove the old-path symlink before reinstalling so the original ownership backup can be located safely")
+            projects.add(origin_project)
+        # Stable ordering permits concurrent installs/copies without inversion.
+        by_control = {common.control_dir(item).resolve(): item for item in projects}
+        if len(by_control) != len(projects):
+            raise ValueError("Routing origins resolve to the same control directory; restore their canonical paths before reinstalling")
+        with contextlib.ExitStack() as stack:
+            controls = {by_control[path]: stack.enter_context(_locked(by_control[path])) for path in sorted(by_control, key=str)}
+            current_hint = _origin_hint(project)
+            if current_hint is not None and Path(current_hint["project"]) not in controls:
+                # Release before acquiring a newly discovered origin so all
+                # participating installers retain the same lock order.
+                hint = current_hint
+                continue
+            control = controls[project]
+            manifest = _read_manifest(control, project)
+            source = project
+            if manifest is None and current_hint is not None:
+                source = Path(current_hint["project"])
+                manifest = _read_manifest(controls[source], source)
+                if manifest is None:
+                    raise ValueError("Routing ownership backup is missing. Recover the original external install-manifest.json before reinstalling; generated files will not be adopted as originals")
+            if manifest is not None and current_hint is not None:
+                identity = current_hint["installationId"]
+                if (current_hint["project"] != manifest["project"]
+                        or identity is not None and identity != manifest.get("installationId")):
+                    raise ValueError("Routing origin does not match its ownership manifest; refusing to overwrite the installation")
+            yield control, manifest, source
+            return
+    raise ValueError("Routing origin changed repeatedly during installation; retry when other installers finish")
+
+
 def _hook_entries(project):
     cli = project / ".claude" / "xpowers-routing" / "cli.py"
     invocation = f"python3 {shlex.quote(str(cli))}"
@@ -176,8 +280,9 @@ def _check_owned_hooks(settings, owned):
 
 def _agent(role, config):
     policy = config["roles"][role]
+    description = f"Use when the coordinator delegates the routing {role} role. <example>{ROLE_EXAMPLES[role]}</example>"
     frontmatter = ["---", f"name: xpowers-routing-{role}",
-                   f"description: Use when the coordinator delegates the routing {role} role.",
+                   f"description: {json.dumps(description)}",
                    f"model: {json.dumps(policy['model'])}"]
     # Haiku does not expose native effort controls; the config retains intent.
     if not policy["model"].startswith("claude-haiku-4-5"):
@@ -198,6 +303,8 @@ def _command(name, action, project):
         "smoke": "Use to check installed routing configuration and guard behavior.",
     }
     cli = project / ".claude" / "xpowers-routing" / "cli.py"
+    # Claude substitutes this placeholder in command content before Bash runs;
+    # it does not depend on an exported CLAUDE_SESSION_ID shell variable.
     invocation = (f"python3 {shlex.quote(str(cli))} {action} "
                   f'--project {shlex.quote(str(project))} --session "${{CLAUDE_SESSION_ID}}"')
     lines = ["---", f"description: {descriptions[action]}", "disable-model-invocation: true", "---", "",
@@ -207,9 +314,10 @@ def _command(name, action, project):
     return "\n".join(lines).encode("utf-8")
 
 
-def _managed_files(project, config, config_bytes):
+def _managed_files(project, config, config_bytes, installation_id):
     files = {"routing.json": config_bytes,
-             "xpowers-routing/generated-config.json": _json_bytes(config)}
+             "xpowers-routing/generated-config.json": _json_bytes(config),
+             ORIGIN_FILE: _json_bytes({"version": 1, "project": str(project), "installationId": installation_id})}
     for source in sorted(Path(__file__).parent.glob("*.py")):
         files[f"xpowers-routing/{source.name}"] = source.read_bytes()
     for role in ROLES:
@@ -225,7 +333,7 @@ def install(project: Path, preset=None):
         raise ValueError("Project must be an existing directory")
     claude = project / ".claude"
     _safe_target(claude, project)
-    with _locked(project) as control:
+    with _installation(project) as (control, manifest, source_project):
         config_path = claude / "routing.json"
         settings_path = claude / "settings.json"
         for target in (config_path, settings_path):
@@ -235,8 +343,10 @@ def install(project: Path, preset=None):
         config = common.validate_config(common.preset_config(preset) if preset else old_config or common.preset_config("opus"))
         config_bytes = config_path.read_bytes() if old_config is not None and preset is None else _json_bytes(config)
         settings = _settings(settings_path)
-        manifest = _read_manifest(control, project)
-        files = _managed_files(project, config, config_bytes)
+        relocated = source_project != project
+        installation_id = manifest.get("installationId") if manifest and not relocated else None
+        installation_id = installation_id or uuid.uuid4().hex
+        files = _managed_files(project, config, config_bytes, installation_id)
         previous_files = manifest["files"] if manifest else {}
         for name in set(files) | set(previous_files):
             target = claude / name
@@ -248,6 +358,12 @@ def install(project: Path, preset=None):
         _check_owned_hooks(settings, owned_hooks)
         before_settings = _snapshot(settings_path)
         hooks = settings.setdefault("hooks", {})
+        if relocated:
+            # Only exact entries recorded as ours may be removed. Other hooks,
+            # including commands mentioning the previous path, stay untouched.
+            for event, entry in owned_hooks.items():
+                hooks[event].remove(entry)
+            owned_hooks = {}
         for event, entry in _hook_entries(project).items():
             entries = hooks.setdefault(event, [])
             if entry not in entries:
@@ -264,7 +380,7 @@ def install(project: Path, preset=None):
             plan[target] = desired
         desired_settings = _content(_json_bytes(settings), before_settings["mode"] if before_settings else 0o644)
         plan[settings_path] = desired_settings
-        updated = {"version": 1, "project": str(project), "files": snapshots, "ownedHooks": owned_hooks,
+        updated = {"version": 1, "project": str(project), "installationId": installation_id, "files": snapshots, "ownedHooks": owned_hooks,
                    "settings": {"before": manifest["settings"]["before"] if manifest else before_settings,
                                 "installed": desired_settings}}
         plan[control / "install-manifest.json"] = _content(_json_bytes(updated), 0o600)
