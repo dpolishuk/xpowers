@@ -1,7 +1,6 @@
 ---
 
 name: review-simplification
-model: inherit
 description: Simplification reviewer - detects over-engineering, unnecessary complexity, premature abstractions. Returns PASS or ISSUES_FOUND.
 tools:
   Read: true

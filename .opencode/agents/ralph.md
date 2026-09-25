@@ -3,10 +3,6 @@
 name: ralph
 description: >
   YOLO mode autonomous executor. Uses bv robot-triage for smart task selection. Executes continuously without user confirmation. All permissions pre-approved. Only stops on critical failure or when all work is complete. Examples: <example>Context: User wants hands-off execution of an epic. user: "Execute epic bd-1 autonomously" assistant: "I'll use the ralph agent for autonomous YOLO mode execution with smart triage" <commentary>Ralph executes without checkpoints, using test-runner and autonomous-reviewer for quality gates.</commentary></example> <example>Context: User wants to clear all ready tasks without interaction. user: "Work through all ready tasks" assistant: "I'll dispatch ralph to autonomously claim and execute all actionable tasks" <commentary>Ralph uses bv robot-triage and robot-next for optimal task selection.</commentary></example>
-# Model Configuration:
-# - inherit: Use the parent's/current model (default)
-# Ralph should inherit the parent model since it orchestrates other agents
-model: inherit
 
 ---
 

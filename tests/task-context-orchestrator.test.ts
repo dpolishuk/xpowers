@@ -595,11 +595,15 @@ test("task_model_routing_normalizes_prefixed_subagent_type_names", async () => {
 })
 
 test("task_model_routing_preserves_native_inheritance_when_only_top_level_model_exists", async () => {
+  const previousXdg = process.env.XDG_CONFIG_HOME
   const withGlobal = await createTempRootWithConfig({
     opencodeConfig: {
       model: "global/model",
     },
   })
+  // Isolate XDG so the developer's real ~/.config/opencode/agents/*.md does not
+  // leak into native-inheritance assertions.
+  process.env.XDG_CONFIG_HOME = join(withGlobal.root, "xdg-empty")
 
   try {
     const plugin = await taskContextOrchestratorPlugin({
@@ -617,6 +621,11 @@ test("task_model_routing_preserves_native_inheritance_when_only_top_level_model_
 
     expect(output.args.model).toBeUndefined()
   } finally {
+    if (previousXdg === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdg
+    }
     await withGlobal.cleanup()
   }
 })
@@ -725,6 +734,57 @@ test("task_model_routing_local_inherit_stops_global_fallback", async () => {
     await plugin["tool.execute.before"]({ tool: "task" }, output)
 
     // model: inherit in local file should NOT fall through to global xdg/model
+    expect(output.args.model).toBeUndefined()
+  } finally {
+    if (previousXdg === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previousXdg
+    }
+    await cleanup()
+  }
+})
+
+test("task_model_routing_local_missing_model_stops_global_fallback", async () => {
+  const previousXdg = process.env.XDG_CONFIG_HOME
+  const { root, cleanup } = await createTempRoot()
+
+  // Create a global agent file with a concrete model
+  const xdgConfigHome = join(root, "xdg")
+  const globalAgentsDir = join(xdgConfigHome, "opencode", "agents")
+  await mkdir(globalAgentsDir, { recursive: true })
+  await writeFile(
+    join(globalAgentsDir, "review-documentation.md"),
+    `---\ndescription: reviewer\nmode: subagent\nmodel: global/should-not-win\n---\nPrompt`,
+    "utf8",
+  )
+  process.env.XDG_CONFIG_HOME = xdgConfigHome
+
+  // Create a local agent file with NO model field (OpenCode native inheritance)
+  const localAgentsDir = join(root, ".opencode", "agents")
+  await mkdir(localAgentsDir, { recursive: true })
+  await writeFile(
+    join(localAgentsDir, "review-documentation.md"),
+    `---\ndescription: reviewer\nmode: subagent\n---\nPrompt`,
+    "utf8",
+  )
+
+  try {
+    const plugin = await taskContextOrchestratorPlugin({
+      directory: root,
+      $: createShell({}).shell,
+    })
+    const output = {
+      args: {
+        prompt: "Review docs",
+        agent: "review-documentation",
+      },
+    }
+
+    await plugin["tool.execute.before"]({ tool: "task" }, output)
+
+    // A local file with no model field should NOT fall through to the global
+    // xdg/model; it is authoritative and inherits natively.
     expect(output.args.model).toBeUndefined()
   } finally {
     if (previousXdg === undefined) {

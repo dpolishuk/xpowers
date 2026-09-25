@@ -3,7 +3,6 @@
 name: codebase-investigator
 description: >
   Use this agent when planning or designing features and you need to understand current codebase state, find existing patterns, or verify assumptions about what exists. Examples: <example>Context: Starting brainstorming phase and need to understand current authentication implementation. user: "I want to add OAuth support to our app" assistant: "Let me use the xpowers:codebase-investigator agent to understand how authentication currently works before we design the OAuth integration" <commentary>Before designing new features, investigate existing patterns to ensure the design builds on what's already there.</commentary></example> <example>Context: Writing implementation plan and need to verify file locations and current structure. user: "Create a plan for adding user profiles" assistant: "I'll use the xpowers:codebase-investigator agent to verify the current user model structure and find where user-related code lives" <commentary>Investigation prevents hallucinating file paths or assuming structure that doesn't exist.</commentary></example>
-model: inherit
 
 ---
 

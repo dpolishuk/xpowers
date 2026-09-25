@@ -30,7 +30,7 @@ type HostConfig = {
   detect: () => boolean
   targetDir: () => string
   sources: Record<string, SourceMapping>
-  postInstall?: (targetDir: string) => Promise<void>
+  postInstall?: (targetDir: string, installedFiles: string[]) => Promise<void>
   postUninstall?: (targetDir: string) => Promise<void>
   availableFeatures: string[]
 }
@@ -74,6 +74,17 @@ const throwOnSpawnFailure = (result: { exitCode: number, stdout: Uint8Array, std
   const stderr = result.stderr.toString().trim()
   const stdout = result.stdout.toString().trim()
   throw new Error(`${label}${stderr || stdout ? `: ${stderr || stdout}` : ""}`)
+}
+
+const runAntigravity = (args: string[], defaultTimeout: number) => {
+  const result = spawnSync(process.execPath, [
+    join(REPO_ROOT, "scripts", "run-with-timeout.js"),
+    process.env.XPOWERS_AGY_TIMEOUT_MS || String(defaultTimeout), "agy", ...args,
+  ], { encoding: "utf8" })
+  if (result.status !== 0) {
+    throw new Error(`agy ${args.join(" ")} failed: ${result.stderr || result.stdout || result.error?.message || result.status}`)
+  }
+  return result.stdout
 }
 
 const THIRD_PARTY_SKIP_ENV = "XPOWERS_SKIP_THIRD_PARTY_FEATURES"
@@ -278,6 +289,167 @@ const HOSTS: HostConfig[] = [
     },
   },
   {
+    id: "kimi_code",
+    name: "Kimi Code CLI",
+    detect: () => existsSync(join(homedir(), ".kimi-code")) || existsSync(join(xdgConfig(), "kimi-code")) || commandExists("kimi"),
+    targetDir: () => process.env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"),
+    sources: {},
+    availableFeatures: [],
+    postInstall: async (target, installedFiles) => {
+      // Determine which fallback skills (if any) are already owned by a
+      // previous XPowers install, so we can refresh them safely or remove them
+      // when the plugin path takes over. We inspect both the TypeScript
+      // installer JSON manifest and the shell installer's per-home text
+      // manifest so users can switch between the two documented installers
+      // without losing upgrade/uninstall tracking.
+      const prevManifest = await readManifest()
+      const prevKimiHost = prevManifest?.hosts?.kimi_code
+      const ownedFromJson =
+        prevKimiHost?.targetDir === target
+          ? (prevKimiHost.files
+              ?.filter((f) => f.startsWith("skills/"))
+              ?.map((f) => f.split("/")[1]) ?? [])
+          : []
+      const shellManifestPath = join(target, ".xpowers-manifest")
+      const ownedFromShell = existsSync(shellManifestPath)
+        ? (await readFile(shellManifestPath, "utf8"))
+            .split(/\n/)
+            .map((l) => l.trim())
+            .filter((l) => l.startsWith("skills/"))
+            .map((l) => l.split("/")[1])
+        : []
+      const ownedSkills = new Set([...ownedFromJson, ...ownedFromShell])
+
+      // Register the plugin with Kimi Code so MCP servers and sessionStart load.
+      let pluginInstalled = false
+      if (commandExists("kimi")) {
+        const installResult = Bun.spawnSync(["kimi", "plugin", "install", REPO_ROOT], { stdout: "pipe", stderr: "pipe" })
+        pluginInstalled = installResult.exitCode === 0
+        if (!pluginInstalled) {
+          const stderr = installResult.stderr.toString().trim()
+          console.warn(`kimi plugin install failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+
+      if (pluginInstalled) {
+        // Managed plugin provides skills. If a previous fallback install left
+        // XPowers-owned skill copies on disk, remove them so they don't
+        // duplicate the plugin's skills or become untracked orphans. Validate
+        // names first to avoid path traversal from corrupt manifests.
+        const safeSkillName = /^[a-z0-9_-]+$/i
+        for (const dirname of ownedSkills) {
+          if (!safeSkillName.test(dirname)) {
+            p.log.warn(`Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}`)
+            continue
+          }
+          const skillPath = join(target, "skills", dirname)
+          if (existsSync(skillPath)) {
+            await rm(skillPath, { recursive: true, force: true })
+            p.log.info(`Removed managed fallback skill (plugin now provides it): ${dirname}`)
+          }
+        }
+
+        // Clear the stale per-home text manifest from a previous shell fallback
+        // install so a later fallback install doesn't treat user-recreated
+        // skills as XPowers-owned.
+        const shellManifest = join(target, ".xpowers-manifest")
+        if (existsSync(shellManifest)) {
+          await rm(shellManifest, { force: true })
+        }
+      }
+
+      if (!pluginInstalled) {
+        // Fallback: copy skills to the canonical user-level path. Kimi Code
+        // discovers skills under ~/.kimi-code/skills/ automatically, so this
+        // works when the `kimi` binary is unavailable or plugin registration
+        // failed. We only copy here to avoid clobbering/restoring backups when
+        // the managed plugin path succeeds.
+        const sourceSkills = join(REPO_ROOT, ".kimi-code", "skills")
+        const targetSkills = join(target, "skills")
+        if (existsSync(sourceSkills)) {
+          await mkdir(targetSkills, { recursive: true })
+          const items = await listItems(sourceSkills, undefined, ["common-patterns"])
+          for (const item of items) {
+            if (item.startsWith("codex-")) continue
+            const srcPath = join(sourceSkills, item)
+            const destPath = join(targetSkills, item)
+            if (existsSync(destPath) && !ownedSkills.has(item)) {
+              p.log.warn(`Skipping fallback skill ${item}: already exists at ${destPath}`)
+              continue
+            }
+            const s = await stat(srcPath)
+            if (s.isDirectory()) {
+              await copyDir(srcPath, destPath)
+              installedFiles.push(`skills/${item}/`)
+            } else {
+              await copyFile(srcPath, destPath)
+              installedFiles.push(`skills/${item}`)
+            }
+          }
+        }
+      }
+
+      // Install guard hooks into ~/.kimi-code/config.toml
+      const hookScript = join(REPO_ROOT, "scripts", "install-kimi-code-hooks.sh")
+      if (existsSync(hookScript)) {
+        const hookResult = Bun.spawnSync(["bash", hookScript], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, KIMI_CODE_HOME: target },
+        })
+        if (hookResult.exitCode !== 0) {
+          const stderr = hookResult.stderr.toString().trim()
+          console.warn(`Kimi Code hook installation failed${stderr ? `: ${stderr}` : ""}`)
+        } else {
+          // Track the guard hooks so uninstall can remove them cleanly.
+          const guardHooks = [
+            "hooks/pre-tool-use/block-beads-direct-read.py",
+            "hooks/pre-tool-use/01-block-pre-commit-edits.py",
+            "hooks/pre-tool-use/block-dangerous-bash.py",
+            "hooks/pre-tool-use/block-env-writes.py",
+            "hooks/post-tool-use/02-block-bd-truncation.py",
+            "hooks/post-tool-use/03-block-pre-commit-bash.py",
+            "hooks/post-tool-use/04-block-pre-existing-checks.py",
+          ]
+          for (const hook of guardHooks) {
+            installedFiles.push(hook)
+          }
+        }
+      }
+    },
+    postUninstall: async (target) => {
+      if (commandExists("kimi")) {
+        const removeResult = Bun.spawnSync(["kimi", "plugin", "remove", "xpowers"], { stdout: "pipe", stderr: "pipe" })
+        if (removeResult.exitCode !== 0) {
+          const stderr = removeResult.stderr.toString().trim()
+          console.warn(`kimi plugin remove failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+      // `kimi plugin remove` leaves the managed directory behind, so clean it
+      // up explicitly to match the user's expectation that uninstall removes
+      // the XPowers code.
+      const managedDir = join(target, "plugins", "managed", "xpowers")
+      if (existsSync(managedDir)) {
+        await rm(managedDir, { recursive: true, force: true })
+      }
+      // Remove XPowers hooks block from config.toml
+      const configFile = join(target, "config.toml")
+      if (existsSync(configFile)) {
+        let config = await readFile(configFile, "utf8")
+        config = config
+          .split(/\n/)
+          .filter((line, index, lines) => {
+            const startIdx = lines.findIndex((l) => l.includes("# BEGIN XPOWERS KIMI-CODE HOOKS"))
+            const endIdx = lines.findIndex((l) => l.includes("# END XPOWERS KIMI-CODE HOOKS"))
+            if (startIdx === -1 || endIdx === -1) return true
+            return index < startIdx || index > endIdx
+          })
+          .join("\n")
+        await writeFile(configFile, config, "utf8")
+      }
+    },
+  },
+  {
     id: "gemini",
     name: "Gemini CLI",
     detect: () => commandExists("gemini"),
@@ -304,30 +476,23 @@ const HOSTS: HostConfig[] = [
     detect: () => {
       if (!commandExists("agy")) return false
       try {
-        const verResult = spawnSync("agy", ["--version"], { timeout: 2000 })
-        if (verResult.status === 0) {
-          return true
-        }
+        runAntigravity(["--version"], 2000)
+        return true
       } catch {
         return false
       }
-      return false
     },
-    targetDir: () => join(REPO_ROOT, ".gemini-extension"),
+    targetDir: () => join(homedir(), ".xpowers", "hosts", "antigravity"),
     sources: {},
-    availableFeatures: ["graphify", "claude-mem"],
-    postInstall: async () => {
-      if (!commandExists("agy")) {
-        throw new Error("agy (Antigravity CLI) not found — cannot install plugin")
-      }
-      const installResult = Bun.spawnSync(["agy", "plugin", "import", join(REPO_ROOT, ".gemini-extension")], { stdout: "pipe", stderr: "pipe" })
-      throwOnSpawnFailure(installResult, "Antigravity plugin import failed")
+    availableFeatures: ["graphify"],
+    postInstall: async (targetDir) => {
+      if (!commandExists("agy")) throw new Error("agy (Antigravity CLI) not found — cannot install plugin")
+      await mkdir(targetDir, { recursive: true })
+      runAntigravity(["plugin", "import", join(REPO_ROOT, ".gemini-extension")], 10000)
     },
     postUninstall: async () => {
-      if (commandExists("agy")) {
-        const uninstallResult = Bun.spawnSync(["agy", "plugin", "uninstall", "xpowers"], { stdout: "pipe", stderr: "pipe" })
-        throwOnSpawnFailure(uninstallResult, "Antigravity plugin uninstall failed")
-      }
+      if (!commandExists("agy")) throw new Error("agy (Antigravity CLI) not found — cannot uninstall plugin")
+      runAntigravity(["plugin", "uninstall", "xpowers"], 5000)
     },
   },
   {
@@ -612,7 +777,7 @@ const FEATURES: FeatureConfig[] = [
   {
     id: "claude-mem",
     name: "Claude-Mem",
-    hint: "persistent memory plugin for Claude Code, OpenCode, Gemini CLI, and Antigravity CLI",
+    hint: "persistent memory plugin for Claude Code, OpenCode, and Gemini CLI",
     install: async (hosts) => {
       if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
 
@@ -620,9 +785,8 @@ const FEATURES: FeatureConfig[] = [
       if (hosts.includes("claude")) targets.push({ label: "Claude Code", args: ["npx", "--yes", "claude-mem", "install"] })
       if (hosts.includes("opencode")) targets.push({ label: "OpenCode", args: ["npx", "--yes", "claude-mem", "install", "--ide", "opencode"] })
       if (hosts.includes("gemini")) targets.push({ label: "Gemini CLI", args: ["npx", "--yes", "claude-mem", "install", "--ide", "gemini-cli"] })
-      if (hosts.includes("antigravity")) targets.push({ label: "Antigravity CLI", args: ["npx", "--yes", "claude-mem", "install", "--ide", "gemini-cli"] })
 
-      if (targets.length === 0) return "skipped (Claude Code, OpenCode, Gemini CLI, or Antigravity CLI not selected)"
+      if (targets.length === 0) return "skipped (Claude Code, OpenCode, or Gemini CLI not selected)"
       if (!commandExists("npx")) return "npx not found — install manually: npx --yes claude-mem install"
 
       const installed: string[] = []
@@ -847,7 +1011,7 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
 
     // Run post-install and track additional files (before writing version marker)
     if (host.postInstall) {
-      await host.postInstall(target)
+      await host.postInstall(target, installedFiles)
       // Re-scan for files that postInstall may have added
       if (host.id === "opencode") {
         for (const f of ["package.json", "task-context.json", "cass-memory.json"]) {
@@ -953,11 +1117,19 @@ type CliArgs = {
   hosts: string[]
   features: string[]
   help: boolean
+  dryRun: boolean
+  status: boolean
   allowConflicts: boolean
 }
 
+const HOST_ID_ALIASES: Record<string, string> = {
+  "kimi-code": "kimi_code",
+}
+
+const normalizeHostId = (id: string) => HOST_ID_ALIASES[id] || id
+
 const parseArgs = (): CliArgs => {
-  const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, allowConflicts: false }
+  const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, dryRun: false, status: false, allowConflicts: false }
   const argv = process.argv.slice(2)
 
   for (let i = 0; i < argv.length; i++) {
@@ -965,6 +1137,15 @@ const parseArgs = (): CliArgs => {
       case "--yes":
       case "-y":
         args.yes = true
+        break
+      case "--all":
+        args.yes = true
+        break
+      case "--dry-run":
+        args.dryRun = true
+        break
+      case "--status":
+        args.status = true
         break
       case "--uninstall":
       case "--remove":
@@ -976,7 +1157,7 @@ const parseArgs = (): CliArgs => {
         args.yes = true // JSON implies non-interactive
         break
       case "--hosts":
-        args.hosts = (argv[++i] || "").split(",").filter(Boolean)
+        args.hosts = (argv[++i] || "").split(",").filter(Boolean).map(normalizeHostId)
         break
       case "--features":
         args.features = (argv[++i] || "").split(",").filter(Boolean)
@@ -1021,14 +1202,40 @@ Usage:
   bun scripts/install.ts --yes --json    # Agent-friendly JSON output
 
 Options:
-  --yes, -y          Auto-install all detected hosts and features
+  --yes, -y, --all   Auto-install all detected hosts and features
+  --dry-run          Preview without installing or removing anything
+  --status           Show installation status (including native Antigravity plugins)
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove all installed files and features
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,gemini,antigravity,pi
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,antigravity,pi (kimi-code is also accepted)
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help
 `)
+    return
+  }
+
+  if (args.status) {
+    const manifest = await readManifest()
+    const hosts: Record<string, boolean> = Object.fromEntries(Object.keys(manifest?.hosts ?? {}).map((id) => [id, true]))
+    if (commandExists("agy")) {
+      try {
+        hosts.antigravity = /\bxpowers\b/.test(runAntigravity(["plugin", "list"], 5000))
+      } catch (error) {
+        console.error(String(error))
+        process.exitCode = 1
+        return
+      }
+    } else hosts.antigravity = false
+    console.log(JSON.stringify({ ok: true, hosts }))
+    return
+  }
+
+  if (args.dryRun) {
+    const hosts = args.hosts.length ? args.hosts : args.uninstall
+      ? Object.keys((await readManifest())?.hosts ?? {})
+      : HOSTS.filter((host) => host.detect()).map((host) => host.id)
+    console.log(JSON.stringify({ ok: true, dryRun: true, action: args.uninstall ? "uninstall" : "install", hosts }))
     return
   }
 
@@ -1093,7 +1300,7 @@ Options:
 
   // Phase 1: Detect hosts
   const detected = HOSTS.filter((h) => h.detect())
-  const notDetected = HOSTS.filter((h) => !h.detect())
+  const notDetected = HOSTS.filter((h) => !detected.includes(h))
 
   for (const h of detected) p.log.success(`${h.name} detected`)
   for (const h of notDetected) p.log.warn(`${h.name} not found`)

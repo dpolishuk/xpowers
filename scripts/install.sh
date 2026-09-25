@@ -1,22 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shim for 'timeout' command (missing by default on macOS)
-if ! command -v timeout &>/dev/null; then
-  timeout() {
-    if command -v gtimeout &>/dev/null; then
-      gtimeout "$@"
-    else
-      local duration="$1"
-      shift
-      "$@"
-    fi
-  }
-fi
-
 # XPowers Unified Multi-Agent Installer
 # Detects installed AI coding agents and installs xpowers to all of them.
-# Supports: Claude Code, OpenCode, Kimi CLI, Codex CLI, Gemini CLI, Pi Agent
+# Supports: Claude Code, OpenCode, Kimi Code CLI, Kimi CLI (legacy), Codex CLI, Gemini CLI, Antigravity CLI, Pi Agent
 
 # ---------------------------------------------------------------------------
 # Common infrastructure
@@ -101,6 +88,9 @@ bootstrap_from_checkout "$@"
 
 VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
   "$REPO_ROOT/.claude-plugin/plugin.json" | grep -o '"[^"]*"$' | tr -d '"')
+
+# Bash 3.2-compatible lowercase helper
+lowercase() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # Colors (respect NO_COLOR and non-tty)
 if [[ -n "${NO_COLOR:-}" ]] || ! [[ -t 1 ]]; then
@@ -271,7 +261,7 @@ remove_legacy_from_manifest() {
 
 remove_legacy() {
   local total_removed=0
-  declare -A processed_manifests
+  local processed_manifests=""
 
   for name in "${CONFLICT_NAMES[@]}"; do
     while IFS= read -r candidate; do
@@ -290,7 +280,7 @@ remove_legacy() {
       if [[ -n "$agent_home" ]]; then
         for legacy_name in hyperpowers myhyperpowers superpowers; do
           local legacy_manifest="${agent_home}/.${legacy_name}-manifest"
-          if [[ -f "$legacy_manifest" && -z "${processed_manifests[$legacy_manifest]:-}" ]]; then
+          if [[ -f "$legacy_manifest" && "$processed_manifests" != *"${legacy_manifest}"$'\n'* ]]; then
             if [[ "$DRY_RUN" != true ]] && [[ "$PURGE" != true ]]; then
               while IFS= read -r entry; do
                 [[ -z "$entry" ]] && continue
@@ -310,7 +300,7 @@ remove_legacy() {
             local count
             count=$(remove_legacy_from_manifest "$agent_home" "$legacy_manifest")
             total_removed=$((total_removed + count))
-            processed_manifests[$legacy_manifest]=1
+            processed_manifests="${processed_manifests}${legacy_manifest}"$'\n'
           fi
         done
       fi
@@ -344,49 +334,86 @@ remove_legacy() {
 # Agent detection
 # ---------------------------------------------------------------------------
 
-declare -A AGENT_PATHS=()
-declare -A AGENT_LABELS=(
-  [claude]="Claude Code"
-  [opencode]="OpenCode"
-  [kimi]="Kimi CLI"
-  [codex]="Codex CLI"
-  [gemini]="Gemini CLI"
-  [antigravity]="Antigravity CLI"
-  [pi]="Pi Agent"
-)
-AGENT_ORDER=(claude opencode kimi codex gemini antigravity pi)
+AGENT_ORDER=(claude opencode kimi_code kimi codex gemini antigravity pi)
 
-detect_claude()  { [[ -d "${HOME}/.claude" ]] && AGENT_PATHS[claude]="${HOME}/.claude" || true; }
-detect_opencode(){ [[ -d "${XDG_CFG}/opencode" ]] && AGENT_PATHS[opencode]="${XDG_CFG}/opencode" || true; }
+agent_label() {
+  case "$1" in
+    claude)    echo "Claude Code" ;;
+    opencode)  echo "OpenCode" ;;
+    kimi_code) echo "Kimi Code CLI" ;;
+    kimi)      echo "Kimi CLI (legacy)" ;;
+    codex)     echo "Codex CLI" ;;
+    gemini)    echo "Gemini CLI" ;;
+    antigravity) echo "Antigravity CLI" ;;
+    pi)        echo "Pi Agent" ;;
+    *)         echo "$1" ;;
+  esac
+}
+
+agent_path() {
+  local var="AGENT_PATHS_$1"
+  echo "${!var:-}"
+}
+
+detect_claude()  { [[ -d "${HOME}/.claude" ]] && AGENT_PATHS_claude="${HOME}/.claude" || true; }
+detect_opencode(){ [[ -d "${XDG_CFG}/opencode" ]] && AGENT_PATHS_opencode="${XDG_CFG}/opencode" || true; }
 detect_kimi()    {
   if [[ -d "${XDG_CFG}/agents" ]]; then
-    AGENT_PATHS[kimi]="${XDG_CFG}/agents"
+    AGENT_PATHS_kimi="${XDG_CFG}/agents"
   elif [[ -d "${HOME}/.kimi" ]]; then
-    AGENT_PATHS[kimi]="${HOME}/.kimi"
+    AGENT_PATHS_kimi="${HOME}/.kimi"
+  fi
+}
+detect_kimi_code() {
+  if [[ -d "${HOME}/.kimi-code" ]]; then
+    AGENT_PATHS_kimi_code="${HOME}/.kimi-code"
+  elif [[ -n "${KIMI_CODE_HOME:-}" && -d "${KIMI_CODE_HOME}" ]]; then
+    AGENT_PATHS_kimi_code="${KIMI_CODE_HOME}"
+  elif [[ -d "${XDG_CFG}/kimi-code" ]]; then
+    # Legacy XDG location used by earlier versions of this installer.
+    AGENT_PATHS_kimi_code="${XDG_CFG}/kimi-code"
+  elif command -v kimi &>/dev/null; then
+    AGENT_PATHS_kimi_code="${HOME}/.kimi-code"
   fi
 }
 detect_codex()   {
   if [[ -d "${HOME}/.codex" ]]; then
-    AGENT_PATHS[codex]="${HOME}/.codex"
+    AGENT_PATHS_codex="${HOME}/.codex"
   elif [[ -d "${HOME}/.agents" ]]; then
-    AGENT_PATHS[codex]="${HOME}/.agents"
+    AGENT_PATHS_codex="${HOME}/.agents"
   elif command -v codex &>/dev/null; then
-    AGENT_PATHS[codex]="${HOME}/.codex"
+    AGENT_PATHS_codex="${HOME}/.codex"
   fi
 }
-detect_gemini()  { command -v gemini &>/dev/null && AGENT_PATHS[gemini]="$(command -v gemini)" || true; }
+detect_gemini()  { command -v gemini &>/dev/null && AGENT_PATHS_gemini="$(command -v gemini)" || true; }
 detect_pi()      {
   if [[ -d "${HOME}/.pi" ]]; then
-    AGENT_PATHS[pi]="${HOME}/.pi/agent"
+    AGENT_PATHS_pi="${HOME}/.pi/agent"
   elif command -v pi &>/dev/null; then
-    AGENT_PATHS[pi]="${HOME}/.pi/agent"
+    AGENT_PATHS_pi="${HOME}/.pi/agent"
   fi
 }
+# agy can hang during startup or native plugin operations. Never run it unbounded.
+run_antigravity() {
+  local default_timeout="$1"
+  shift
+  local runtime=""
+  if command -v node >/dev/null 2>&1; then
+    runtime=node
+  elif command -v bun >/dev/null 2>&1; then
+    runtime=bun
+  else
+    error "Node.js or Bun is required to run agy with a timeout"
+    return 1
+  fi
+  "$runtime" "${REPO_ROOT}/scripts/run-with-timeout.js" "${XPOWERS_AGY_TIMEOUT_MS:-$default_timeout}" agy "$@"
+}
+
 detect_antigravity() {
   if command -v agy &>/dev/null; then
     # Verify it runs successfully
-    if timeout 2s agy --version &>/dev/null; then
-      AGENT_PATHS[antigravity]="$(command -v agy)"
+    if run_antigravity 2000 --version &>/dev/null; then
+      AGENT_PATHS_antigravity="$(command -v agy)"
     fi
   fi
 }
@@ -394,6 +421,7 @@ detect_antigravity() {
 detect_all() {
   detect_claude
   detect_opencode
+  detect_kimi_code
   detect_kimi
   detect_codex
   detect_gemini
@@ -405,9 +433,10 @@ show_detection() {
   echo -e "  ${BOLD}Detecting agents...${RESET}"
   echo
   for agent in "${AGENT_ORDER[@]}"; do
-    local label="${AGENT_LABELS[$agent]}"
-    if [[ -n "${AGENT_PATHS[$agent]:-}" ]]; then
-      printf "  ${GREEN}✓${RESET} %-16s %s\n" "$label" "${AGENT_PATHS[$agent]}"
+    local label; label="$(agent_label "$agent")"
+    local apath; apath="$(agent_path "$agent")"
+    if [[ -n "${apath}" ]]; then
+      printf "  ${GREEN}✓${RESET} %-16s %s\n" "$label" "$apath"
     else
       printf "  ${DIM}✗ %-16s not found${RESET}\n" "$label"
     fi
@@ -501,6 +530,121 @@ write_manifest() {
     echo "# Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '%s\n' "${MANIFEST_ENTRIES[@]}"
   } > "$manifest"
+}
+
+# Read the TypeScript installer's global JSON manifest for the kimi_code host.
+# Prints the recorded targetDir on the first line, then one file entry per line.
+# Returns empty output if the manifest or host entry is missing.
+# Falls back to node if python3 is not available so cleanup does not silently
+# skip TS-installed files.
+read_kimi_json_manifest() {
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  [[ -f "$json_manifest" ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    h = d.get('hosts', {}).get('kimi_code', {})
+    print(h.get('targetDir', ''))
+    for f in h.get('files', []):
+        print(f)
+except Exception:
+    pass
+" "$json_manifest" 2>/dev/null || true
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+const fs = require('fs');
+const p = process.argv[1];
+try {
+  const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+  const h = (d.hosts && d.hosts.kimi_code) || {};
+  console.log(h.targetDir || '');
+  (h.files || []).forEach(f => console.log(f));
+} catch (e) {}
+" "$json_manifest" 2>/dev/null || true
+  fi
+}
+
+# Remove the hosts.kimi_code entry from the TypeScript installer's global
+# manifest. Delete the manifest entirely when no hosts remain. Falls back to
+# node if python3 is not available.
+clear_kimi_code_json_manifest() {
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  [[ -f "$json_manifest" ]] || return 0
+  if [[ "$DRY_RUN" == true ]]; then
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json, sys, os
+path = sys.argv[1]
+with open(path) as fh:
+    d = json.load(fh)
+d.setdefault('hosts', {}).pop('kimi_code', None)
+if not d.get('hosts') and not d.get('features'):
+    os.remove(path)
+else:
+    with open(path, 'w') as fh:
+        json.dump(d, fh, indent=2)
+" "$json_manifest" 2>/dev/null || true
+  elif command -v node >/dev/null 2>&1; then
+    node -e "
+const fs = require('fs');
+const p = process.argv[1];
+try {
+  const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+  if (d.hosts) delete d.hosts.kimi_code;
+  const hasHosts = d.hosts && Object.keys(d.hosts).length > 0;
+  const hasFeatures = d.features && Object.keys(d.features).length > 0;
+  if (!hasHosts && !hasFeatures) {
+    fs.unlinkSync(p);
+  } else {
+    fs.writeFileSync(p, JSON.stringify(d, null, 2));
+  }
+} catch (e) {}
+" "$json_manifest" 2>/dev/null || true
+  else
+    warn "Cannot update ${json_manifest}: python3 or node required"
+  fi
+}
+
+# uninstall_from_json_manifest <agent_home>  — remove entries recorded by the
+# TypeScript installer in ~/.xpowers/manifest.json. This keeps shell and TS
+# uninstall paths consistent.
+uninstall_from_json_manifest() {
+  local home="$1"
+  local manifest_data
+  manifest_data=$(read_kimi_json_manifest)
+  [[ -n "$manifest_data" ]] || return 0
+
+  local target_dir
+  target_dir=$(printf '%s\n' "$manifest_data" | head -1)
+  [[ "$target_dir" == "$home" ]] || return 0
+
+  local files
+  files=$(printf '%s\n' "$manifest_data" | tail -n +2)
+  [[ -n "$files" ]] || return 0
+
+  local f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    # Only accept relative paths and reject traversal markers.
+    case "$f" in
+      ""|"."|".."|/*|*..*) continue ;;
+    esac
+    if [[ "$DRY_RUN" == true ]]; then
+      if [[ -e "${home}/${f}" ]]; then
+        info "Would remove (JSON manifest): ${home}/${f}"
+      fi
+    else
+      rm -rf "${home}/${f}" 2>/dev/null || true
+    fi
+  done <<< "$files"
+
+  # Remove the kimi_code host entry so stale ownership records do not affect
+  # later installs.
+  clear_kimi_code_json_manifest
 }
 
 uninstall_from_manifest() {
@@ -603,7 +747,8 @@ uninstall_from_manifest() {
 # ---------------------------------------------------------------------------
 
 install_claude() {
-  local home="${AGENT_PATHS[claude]:-${HOME}/.claude}"
+  local home; home="$(agent_path "claude")"
+  home="${home:-${HOME}/.claude}"
   MANIFEST_ENTRIES=()
   ensure_dir "${home}/skills"
   ensure_dir "${home}/agents"
@@ -704,7 +849,8 @@ with open('$tmp', 'w') as f:
     echo ""
     echo -n "  Install memsearch? [y/N] "
     read -r answer </dev/tty
-    if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+    local lc_answer; lc_answer="$(lowercase "$answer")"
+    if [[ "$lc_answer" == "y" || "$lc_answer" == "yes" ]]; then
       if command -v python3 >/dev/null 2>&1; then
         echo "  Installing memsearch[onnx]..."
         python3 -m pip install --user "memsearch[onnx]" --quiet && echo "  memsearch installed." || warn "memsearch install failed — try: python3 -m pip install --user memsearch[onnx]"
@@ -720,7 +866,8 @@ with open('$tmp', 'w') as f:
 }
 
 install_opencode() {
-  local home="${AGENT_PATHS[opencode]:-${XDG_CFG}/opencode}"
+  local home; home="$(agent_path "opencode")"
+  home="${home:-${XDG_CFG}/opencode}"
   MANIFEST_ENTRIES=()
   ensure_dir "${home}/skills"
   ensure_dir "${home}/agents"
@@ -796,7 +943,8 @@ install_opencode() {
     echo ""
     echo -n "  Run routing wizard? [y/N] "
     read -r answer </dev/tty
-    if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+    local lc_answer; lc_answer="$(lowercase "$answer")"
+    if [[ "$lc_answer" == "y" || "$lc_answer" == "yes" ]]; then
       bun "${REPO_ROOT}/scripts/opencode-routing-wizard.ts" || warn "Routing wizard failed"
     fi
   fi
@@ -810,7 +958,8 @@ install_opencode() {
     echo ""
     echo -n "  Install memsearch? [y/N] "
     read -r answer </dev/tty
-    if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
+    local lc_answer; lc_answer="$(lowercase "$answer")"
+    if [[ "$lc_answer" == "y" || "$lc_answer" == "yes" ]]; then
       if command -v python3 >/dev/null 2>&1; then
         echo "  Installing memsearch[onnx]..."
         python3 -m pip install --user "memsearch[onnx]" --quiet && echo "  memsearch installed." || warn "memsearch install failed"
@@ -826,7 +975,8 @@ install_opencode() {
 }
 
 install_kimi() {
-  local home="${AGENT_PATHS[kimi]:-${XDG_CFG}/agents}"
+  local home; home="$(agent_path "kimi")"
+  home="${home:-${XDG_CFG}/agents}"
   MANIFEST_ENTRIES=()
   ensure_dir "${home}/skills"
   maybe_backup "$home" "${home}/.xpowers-backups"
@@ -881,6 +1031,133 @@ install_kimi() {
   write_manifest "$home"
 }
 
+install_kimi_code() {
+  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  MANIFEST_ENTRIES=()
+
+  # Plugin registration: when the `kimi` binary is available, register the
+  # repository as a plugin. Kimi Code copies the plugin to its managed plugins
+  # directory and loads the manifest (skills, sessionStart, MCP servers) from
+  # there. This is the preferred install path.
+  local plugin_installed=false
+  if command -v kimi &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: kimi plugin install ${REPO_ROOT}"
+    else
+      local install_stderr
+      if install_stderr=$(kimi plugin install "$REPO_ROOT" 2>&1); then
+        plugin_installed=true
+      else
+        warn "kimi plugin install failed: ${install_stderr}"
+      fi
+    fi
+  fi
+
+  # If a previous fallback install left XPowers-owned skills on disk and the
+  # plugin path now succeeds, remove those managed copies so they don't
+  # duplicate the plugin's own skills or become untracked orphans.
+  if [[ "$plugin_installed" == true ]]; then
+    local -a prev_owned=()
+    if [[ -f "${home}/.xpowers-manifest" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && prev_owned+=("$line")
+      done < <(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 || true)
+    fi
+    local json_manifest_data
+    json_manifest_data=$(read_kimi_json_manifest)
+    if [[ -n "$json_manifest_data" ]]; then
+      local json_target_dir
+      json_target_dir=$(printf '%s\n' "$json_manifest_data" | head -1)
+      if [[ "$json_target_dir" == "$home" ]]; then
+        while IFS= read -r line; do
+          [[ -n "$line" ]] && prev_owned+=("$line")
+        done < <(printf '%s\n' "$json_manifest_data" | tail -n +2 | grep '^skills/' | cut -d/ -f2 || true)
+      fi
+    fi
+    if (( ${#prev_owned[@]} > 0 )); then
+      for dirname in "${prev_owned[@]}"; do
+        case "$dirname" in
+          ""|"."|".."|*/*|*..*)
+            warn "Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}"
+            continue
+            ;;
+        esac
+        local skill_path="${home}/skills/${dirname}"
+        if [[ -e "$skill_path" ]]; then
+          rm -rf "$skill_path"
+          info "Removed managed fallback skill (plugin now provides it): ${dirname}"
+        fi
+      done
+    fi
+
+    # Fallback skills are now provided by the managed plugin. Clear the stale
+    # per-home text manifest so a later fallback install does not mistake
+    # user-recreated skills for XPowers-owned ones.
+    rm -f "${home}/.xpowers-manifest" 2>/dev/null || true
+
+    # Only clear the global JSON manifest entry when it refers to this same
+    # home, preserving ownership records for other/custom Kimi Code homes.
+    local json_target_dir
+    json_target_dir=$(read_kimi_json_manifest | head -1)
+    if [[ "$json_target_dir" == "$home" ]]; then
+      clear_kimi_code_json_manifest
+    fi
+  fi
+
+  # Fallback: copy skills to the canonical user-level skill path. Kimi Code
+  # discovers skills under ~/.kimi-code/skills/ automatically, so this works
+  # when the `kimi` binary is unavailable or plugin registration failed.
+  if [[ "$plugin_installed" != true ]]; then
+    ensure_dir "${home}/skills"
+    local source_skills="${REPO_ROOT}/.kimi-code/skills"
+    # Skills already owned by a previous XPowers fallback install may be
+    # refreshed; everything else is treated as a user skill and skipped. We
+    # inspect both the shell installer's per-home text manifest and the
+    # TypeScript installer's global JSON manifest so users can switch between
+    # the two documented installers without losing upgrade/uninstall tracking.
+    local owned_skills=""
+    if [[ -f "${home}/.xpowers-manifest" ]]; then
+      owned_skills+=" $(grep '^skills/' "${home}/.xpowers-manifest" 2>/dev/null | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
+    fi
+    local json_manifest_data
+    json_manifest_data=$(read_kimi_json_manifest)
+    if [[ -n "$json_manifest_data" ]]; then
+      local json_target_dir
+      json_target_dir=$(printf '%s\n' "$json_manifest_data" | head -1)
+      if [[ "$json_target_dir" == "$home" ]]; then
+        owned_skills+=" $(printf '%s\n' "$json_manifest_data" | tail -n +2 | grep '^skills/' | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
+      fi
+    fi
+    for skill_dir in "${source_skills}"/*/; do
+      [[ -d "$skill_dir" ]] || continue
+      local dirname; dirname="$(basename "$skill_dir")"
+      [[ "$dirname" == codex-* ]] && continue
+      [[ "$dirname" == common-patterns ]] && continue
+      if [[ -e "${home}/skills/${dirname}" && " ${owned_skills} " != *" ${dirname} "* ]]; then
+        warn "Skipping fallback skill ${dirname}: already exists at ${home}/skills/${dirname}"
+        continue
+      fi
+      copy_item "$skill_dir" "${home}/skills/${dirname}"
+      manifest_add "skills/${dirname}/"
+    done
+  fi
+
+  # Install guard hooks into ~/.kimi-code/config.toml (independent of plugin
+  # registration; hooks are always managed via the user's config file).
+  local hook_script="${REPO_ROOT}/scripts/install-kimi-code-hooks.sh"
+  if [[ -x "$hook_script" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: ${hook_script}"
+    else
+      KIMI_CODE_HOME="$home" bash "$hook_script" || warn "Kimi Code hook installation failed"
+    fi
+  fi
+
+  manifest_add ".xpowers-version"
+  echo "${VERSION}" > "${home}/.xpowers-version"
+  write_manifest "$home"
+}
+
 install_codex() {
   MANIFEST_ENTRIES=()
 
@@ -899,7 +1176,8 @@ install_codex() {
   if [[ "$CODEX_SCOPE" == "local" ]]; then
     home=".codex"
   else
-    home="${AGENT_PATHS[codex]:-${HOME}/.codex}"
+    home="$(agent_path "codex")"
+    home="${home:-${HOME}/.codex}"
   fi
   ensure_dir "${home}/skills"
   maybe_backup "$home" "${home}/.xpowers-backups"
@@ -979,21 +1257,11 @@ install_antigravity() {
     return 1
   fi
 
-  # agy manages its own directory structure
-  local agy_stderr
-  if [[ "$USE_SYMLINKS" == true ]]; then
-    # agy doesn't have a direct 'link' for local plugins that works like 'extensions link'
-    # but we can import it.
-    agy_stderr=$(timeout 10s agy plugin import "$ext_dir" 2>&1) || {
-      error "agy plugin import failed: ${agy_stderr}"
-      return 1
-    }
-  else
-    agy_stderr=$(timeout 10s agy plugin import "$ext_dir" 2>&1) || {
-      error "agy plugin import failed: ${agy_stderr}"
-      return 1
-    }
-  fi
+  local agy_output
+  agy_output=$(run_antigravity 10000 plugin import "$ext_dir" 2>&1) || {
+    error "agy plugin import failed: ${agy_output}"
+    return 1
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1269,8 @@ install_antigravity() {
 # ---------------------------------------------------------------------------
 
 validate_claude() {
-  local home="${AGENT_PATHS[claude]:-${HOME}/.claude}"
+  local home; home="$(agent_path "claude")"
+  home="${home:-${HOME}/.claude}"
   local ok=true
   [[ -d "${home}/hooks/post-tool-use" ]] || { warn "Claude: hooks/post-tool-use/ missing (recursive copy failed?)"; ok=false; }
   [[ -d "${home}/hooks/pre-tool-use" ]] || { warn "Claude: hooks/pre-tool-use/ missing"; ok=false; }
@@ -1013,7 +1282,8 @@ validate_claude() {
 }
 
 validate_opencode() {
-  local home="${AGENT_PATHS[opencode]:-${XDG_CFG}/opencode}"
+  local home; home="$(agent_path "opencode")"
+  home="${home:-${XDG_CFG}/opencode}"
   local ok=true
   local sk; sk=$(count_items "${home}/skills/*/")
   [[ "$sk" -ge 15 ]] || { warn "OpenCode: only ${sk} skills (expected 15+)"; ok=false; }
@@ -1026,7 +1296,8 @@ validate_opencode() {
 }
 
 validate_kimi() {
-  local home="${AGENT_PATHS[kimi]:-${XDG_CFG}/agents}"
+  local home; home="$(agent_path "kimi")"
+  home="${home:-${XDG_CFG}/agents}"
   local ok=true
   local sk; sk=$(count_items "${home}/skills/*/")
   [[ "$sk" -ge 15 ]] || { warn "Kimi: only ${sk} skills (expected 15+)"; ok=false; }
@@ -1040,12 +1311,45 @@ validate_kimi() {
   $ok
 }
 
+validate_kimi_code() {
+  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  local ok=true
+  local plugin_installed=false
+
+  # If the plugin was registered via `kimi plugin install`, the managed copy
+  # contains the skills and manifest. Otherwise skills live in ~/.kimi-code/skills/.
+  if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers[[:space:]]'; then
+    plugin_installed=true
+  fi
+
+  if [[ "$plugin_installed" == true ]]; then
+    local managed_dir="${home}/plugins/managed/xpowers"
+    [[ -f "${managed_dir}/kimi.plugin.json" ]] \
+      || { warn "Kimi Code: plugin manifest missing in managed dir"; ok=false; }
+    if [[ -f "${managed_dir}/kimi.plugin.json" ]] && command -v python3 >/dev/null 2>&1; then
+      python3 -c "import json,sys; json.load(open(sys.argv[1]))" "${managed_dir}/kimi.plugin.json" >/dev/null 2>&1 \
+        || { warn "Kimi Code: plugin manifest is invalid JSON"; ok=false; }
+    fi
+  else
+    local sk; sk=$(count_items "${home}/skills/*/")
+    [[ "$sk" -ge 15 ]] || { warn "Kimi Code: only ${sk} skills (expected 15+)"; ok=false; }
+    # shellcheck disable=SC2012,SC2086
+    local codex_count; codex_count=$(ls -1d ${home}/skills/codex-*/ 2>/dev/null | wc -l)
+    [[ "$codex_count" -eq 0 ]] || { warn "Kimi Code: found ${codex_count} codex-* dirs (should be 0)"; ok=false; }
+  fi
+
+  local vf="${home}/.xpowers-version"
+  [[ -f "$vf" ]] && [[ "$(cat "$vf")" == "$VERSION" ]] || { warn "Kimi Code: version mismatch"; ok=false; }
+  $ok
+}
+
 validate_codex() {
   local home
   if [[ "$CODEX_SCOPE" == "local" ]]; then
     home=".codex"
   else
-    home="${AGENT_PATHS[codex]:-${HOME}/.codex}"
+    home="$(agent_path "codex")"
+    home="${home:-${HOME}/.codex}"
   fi
   local ok=true
   local sk; sk=$(count_items "${home}/skills/codex-*/")
@@ -1067,7 +1371,7 @@ validate_gemini() {
 
 validate_antigravity() {
   if command -v agy &>/dev/null; then
-    timeout 5s agy plugin list 2>/dev/null | grep -q xpowers || {
+    run_antigravity 5000 plugin list 2>/dev/null | grep -q xpowers || {
       warn "Antigravity: extension not found in 'agy plugin list'"
       return 1
     }
@@ -1080,11 +1384,13 @@ validate_antigravity() {
 # ---------------------------------------------------------------------------
 
 uninstall_claude() {
-  uninstall_from_manifest "${AGENT_PATHS[claude]:-${HOME}/.claude}"
+  local _claude_home; _claude_home="$(agent_path "claude")"; _claude_home="${_claude_home:-${HOME}/.claude}"
+  uninstall_from_manifest "${_claude_home}"
 }
 
 uninstall_opencode() {
-  local home="${AGENT_PATHS[opencode]:-${XDG_CFG}/opencode}"
+  local home; home="$(agent_path "opencode")"
+  home="${home:-${XDG_CFG}/opencode}"
   uninstall_from_manifest "$home"
   # Also clean bun artifacts (not in manifest but generated by bun install)
   if [[ "$DRY_RUN" != true ]]; then
@@ -1094,7 +1400,78 @@ uninstall_opencode() {
 }
 
 uninstall_kimi() {
-  uninstall_from_manifest "${AGENT_PATHS[kimi]:-${XDG_CFG}/agents}"
+  local _kimi_home; _kimi_home="$(agent_path "kimi")"; _kimi_home="${_kimi_home:-${XDG_CFG}/agents}"
+  uninstall_from_manifest "${_kimi_home}"
+}
+
+# Clean a single Kimi Code home (current or legacy) during uninstall.
+_clean_kimi_home() {
+  local home="$1"
+
+  # `kimi plugin remove` leaves the managed directory behind, so clean it up
+  # explicitly to match the user's expectation that uninstall removes the
+  # XPowers code.
+  local managed_dir="${home}/plugins/managed/xpowers"
+  if [[ "$DRY_RUN" == true ]]; then
+    if [[ -e "$managed_dir" ]]; then
+      info "Would remove managed plugin directory: ${managed_dir}"
+    fi
+  else
+    rm -rf "$managed_dir" 2>/dev/null || true
+  fi
+
+  # Remove fallback user-level skills and version marker tracked by manifest.
+  if [[ -f "${home}/.xpowers-manifest" ]]; then
+    uninstall_from_manifest "$home"
+  fi
+
+  # The TypeScript installer records files in ~/.xpowers/manifest.json; make
+  # sure the shell uninstaller cleans those up too.
+  uninstall_from_json_manifest "$home"
+
+  # Remove XPowers hooks block from config.toml
+  local config_file="${home}/config.toml"
+  if [[ -f "$config_file" ]]; then
+    if [[ "$DRY_RUN" == true ]]; then
+      echo "  Would remove XPowers hooks block from: ${config_file}"
+    else
+      local tmp; tmp="$(mktemp)"
+      awk '
+        /# BEGIN XPOWERS KIMI-CODE HOOKS/ { in_block = 1; next }
+        /# END XPOWERS KIMI-CODE HOOKS/   { in_block = 0; next }
+        !in_block { print }
+      ' "$config_file" > "$tmp"
+      mv "$tmp" "$config_file"
+    fi
+  fi
+
+  # Remove version marker if manifest removal missed it
+  if [[ "$DRY_RUN" != true ]]; then
+    rm -f "${home}/.xpowers-version"
+  fi
+}
+
+uninstall_kimi_code() {
+  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  local legacy_home="${XDG_CFG}/kimi-code"
+
+  # Remove the plugin registered via `kimi plugin install` (managed copy).
+  if command -v kimi &>/dev/null; then
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would run: kimi plugin remove xpowers"
+    else
+      kimi plugin remove xpowers 2>/dev/null || true
+    fi
+  fi
+
+  _clean_kimi_home "$home"
+
+  # Older versions of this installer used the XDG config home
+  # (~/.config/kimi-code). Clean that up too when it differs from the current
+  # canonical home so upgrades from the legacy path do not leave stale files.
+  if [[ "$home" != "$legacy_home" ]]; then
+    _clean_kimi_home "$legacy_home"
+  fi
 }
 
 uninstall_codex() {
@@ -1102,7 +1479,8 @@ uninstall_codex() {
   if [[ "$CODEX_SCOPE" == "local" ]]; then
     home=".codex"
   else
-    home="${AGENT_PATHS[codex]:-${HOME}/.codex}"
+    home="$(agent_path "codex")"
+    home="${home:-${HOME}/.codex}"
   fi
   uninstall_from_manifest "$home"
 }
@@ -1118,17 +1496,24 @@ uninstall_gemini() {
 }
 
 uninstall_antigravity() {
-  if command -v agy &>/dev/null; then
-    if [[ "$DRY_RUN" == true ]]; then
-      info "Would run: agy plugin uninstall xpowers"
-    else
-      timeout 5s agy plugin uninstall xpowers 2>/dev/null || true
-    fi
+  if ! command -v agy >/dev/null 2>&1; then
+    error "agy (Antigravity CLI) not found — cannot uninstall plugin"
+    return 1
   fi
+  if [[ "$DRY_RUN" == true ]]; then
+    info "Would run: agy plugin uninstall xpowers"
+    return 0
+  fi
+  local agy_output
+  agy_output=$(run_antigravity 5000 plugin uninstall xpowers 2>&1) || {
+    error "agy plugin uninstall failed: ${agy_output}"
+    return 1
+  }
 }
 
 uninstall_pi() {
-  local home="${AGENT_PATHS[pi]:-${HOME}/.pi/agent}"
+  local home; home="$(agent_path "pi")"
+  home="${home:-${HOME}/.pi/agent}"
   local ext_dir="${home}/extensions/xpowers"
 
   # Remove extension directory (includes skills, commands, node_modules, dist)
@@ -1208,7 +1593,8 @@ status_opencode() {
 }
 
 status_kimi() {
-  local home="${AGENT_PATHS[kimi]:-${XDG_CFG}/agents}"
+  local home; home="$(agent_path "kimi")"
+  home="${home:-${XDG_CFG}/agents}"
   local vf="${home}/.xpowers-version"
   if [[ -f "$vf" ]]; then
     local iv; iv=$(cat "$vf")
@@ -1219,8 +1605,29 @@ status_kimi() {
   fi
 }
 
+status_kimi_code() {
+  local home="${KIMI_CODE_HOME:-${HOME}/.kimi-code}"
+  local vf="${home}/.xpowers-version"
+  if [[ -f "$vf" ]]; then
+    local iv; iv=$(cat "$vf")
+    local plugin_installed=false
+    if command -v kimi &>/dev/null && kimi plugin list 2>/dev/null | grep -q '^xpowers[[:space:]]'; then
+      plugin_installed=true
+    fi
+    if [[ "$plugin_installed" == true ]]; then
+      echo -e "  ${GREEN}✓${RESET} Kimi Code CLI  ${BOLD}v${iv}${RESET}  (plugin installed)"
+    else
+      local sk; sk=$(count_items "${home}/skills/*/")
+      echo -e "  ${GREEN}✓${RESET} Kimi Code CLI  ${BOLD}v${iv}${RESET}  (${sk} skills, plugin fallback)"
+    fi
+  else
+    echo -e "  ${DIM}✗ Kimi Code CLI  not installed${RESET}"
+  fi
+}
+
 status_codex() {
-  local home="${AGENT_PATHS[codex]:-${HOME}/.codex}"
+  local home; home="$(agent_path "codex")"
+  home="${home:-${HOME}/.codex}"
   local vf="${home}/.xpowers-version"
   if [[ -f "$vf" ]]; then
     local iv; iv=$(cat "$vf")
@@ -1239,15 +1646,25 @@ status_gemini() {
 }
 
 status_antigravity() {
-  if command -v agy &>/dev/null && timeout 5s agy plugin list 2>/dev/null | grep -q xpowers; then
-    echo -e "  ${GREEN}✓${RESET} Antigravity CLI ${BOLD}installed${RESET}"
+  if ! command -v agy >/dev/null 2>&1; then
+    echo "  Antigravity CLI not installed (agy not found)"
+    return 0
+  fi
+  local agy_output
+  agy_output=$(run_antigravity 5000 plugin list 2>&1) || {
+    error "Antigravity status failed: ${agy_output}"
+    return 1
+  }
+  if printf '%s\n' "$agy_output" | grep -q xpowers; then
+    echo "  Antigravity CLI: xpowers installed"
   else
-    echo -e "  ${DIM}✗ Antigravity CLI not installed${RESET}"
+    echo "  Antigravity CLI: xpowers not installed"
   fi
 }
 
 status_pi() {
-  local home="${AGENT_PATHS[pi]:-${HOME}/.pi/agent}"
+  local home; home="$(agent_path "pi")"
+  home="${home:-${HOME}/.pi/agent}"
   local vf="${home}/.xpowers-version"
   if [[ -f "$vf" ]]; then
     local iv; iv=$(cat "$vf")
@@ -1445,10 +1862,10 @@ selected_agents_cover_detected_agents() {
   local selected_agent
 
   for detected_agent in "${AGENT_ORDER[@]}"; do
-    [[ -n "${AGENT_PATHS[$detected_agent]:-}" ]] || continue
+    [[ -n "$(agent_path "$detected_agent")" ]] || continue
     detected_count=$((detected_count + 1))
     local selected=false
-    for selected_agent in "${SELECTED_AGENTS[@]}"; do
+    for selected_agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       if [[ "$selected_agent" == "$detected_agent" ]]; then
         selected=true
         break
@@ -1496,8 +1913,8 @@ record_pi_host_independent_third_party_state() {
 }
 
 third_party_features_skipped() {
-  local value="${XPOWERS_SKIP_THIRD_PARTY_FEATURES:-}"
-  case "${value,,}" in
+  local value; value="$(lowercase "${XPOWERS_SKIP_THIRD_PARTY_FEATURES:-}")"
+  case "$value" in
     1|true|yes) return 0 ;;
     *) return 1 ;;
   esac
@@ -1688,14 +2105,6 @@ install_third_party_tools() {
           warn "claude-mem install failed for Gemini CLI — try: npx --yes claude-mem install --ide gemini-cli"
         fi
         ;;
-      antigravity)
-        if npx --yes claude-mem install --ide gemini-cli >/dev/null 2>&1; then
-          installed_cmem+=("Antigravity CLI")
-          third_party_mark_installed "claude-mem"
-        else
-          warn "claude-mem install failed for Antigravity CLI — try: npx --yes claude-mem install --ide gemini-cli"
-        fi
-        ;;
     esac
   done
 
@@ -1793,11 +2202,12 @@ Unified installer for XPowers across all AI coding agents.
 AGENTS:
     --claude            Install to Claude Code (~/.claude)
     --opencode          Install to OpenCode (~/.config/opencode)
-    --kimi              Install to Kimi CLI (~/.config/agents)
+    --kimi-code         Install to Kimi Code CLI (~/.kimi-code)
+    --kimi              Install to Kimi CLI (legacy, ~/.config/agents)
     --codex             Install to Codex CLI (~/.codex)
     --gemini            Install to Gemini CLI (native extension)
-    --antigravity       Install to Antigravity CLI (native extension)
-    --hosts <list>      Comma-separated agents: claude,opencode,kimi,codex,gemini,antigravity,pi,all
+    --antigravity       Install to Antigravity CLI (native plugin)
+    --hosts <list>      Comma-separated agents: claude,opencode,kimi-code,kimi,codex,gemini,antigravity,pi,all
     --all               Install to all detected agents
 
 MODES:
@@ -1823,7 +2233,8 @@ GENERAL:
 EXAMPLES:
     $(basename "$0")                    # Interactive: detect + confirm
     $(basename "$0") --all              # Install to all detected agents
-    $(basename "$0") --claude --kimi    # Install to specific agents
+    $(basename "$0") --claude --kimi-code  # Install to specific agents
+    $(basename "$0") --kimi           # Install to legacy Kimi CLI
     $(basename "$0") --status           # Show what's installed
     $(basename "$0") --uninstall --all  # Remove from all agents
     $(basename "$0") --uninstall --claude --dry-run  # Preview removal
@@ -1861,11 +2272,12 @@ main() {
     case "$1" in
       -h|--help)    usage; exit 0 ;;
       -v|--version) echo "xpowers $VERSION"; exit 0 ;;
-      --claude)     SELECTED_AGENTS+=(claude);   INTERACTIVE=false; shift ;;
-      --opencode)   SELECTED_AGENTS+=(opencode); INTERACTIVE=false; shift ;;
-      --kimi)       SELECTED_AGENTS+=(kimi);     INTERACTIVE=false; shift ;;
-      --codex)      SELECTED_AGENTS+=(codex);    INTERACTIVE=false; shift ;;
-      --gemini)     SELECTED_AGENTS+=(gemini);   INTERACTIVE=false; shift ;;
+      --claude)     SELECTED_AGENTS+=(claude);    INTERACTIVE=false; shift ;;
+      --opencode)   SELECTED_AGENTS+=(opencode);  INTERACTIVE=false; shift ;;
+      --kimi-code)  SELECTED_AGENTS+=(kimi_code); INTERACTIVE=false; shift ;;
+      --kimi)       SELECTED_AGENTS+=(kimi);      INTERACTIVE=false; shift ;;
+      --codex)      SELECTED_AGENTS+=(codex);     INTERACTIVE=false; shift ;;
+      --gemini)     SELECTED_AGENTS+=(gemini);    INTERACTIVE=false; shift ;;
       --antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false; shift ;;
       --hosts)
         shift
@@ -1877,15 +2289,16 @@ main() {
         IFS=',' read -ra HOST_LIST <<< "$1"
         for h in "${HOST_LIST[@]}"; do
           case "$h" in
-            claude)   SELECTED_AGENTS+=(claude);   INTERACTIVE=false ;;
-            opencode) SELECTED_AGENTS+=(opencode); INTERACTIVE=false ;;
-            kimi)     SELECTED_AGENTS+=(kimi);     INTERACTIVE=false ;;
-            codex)    SELECTED_AGENTS+=(codex);    INTERACTIVE=false ;;
-            gemini)   SELECTED_AGENTS+=(gemini);   INTERACTIVE=false ;;
+            claude)    SELECTED_AGENTS+=(claude);    INTERACTIVE=false ;;
+            opencode)  SELECTED_AGENTS+=(opencode);  INTERACTIVE=false ;;
+            kimi-code) SELECTED_AGENTS+=(kimi_code); INTERACTIVE=false ;;
+            kimi)      SELECTED_AGENTS+=(kimi);      INTERACTIVE=false ;;
+            codex)     SELECTED_AGENTS+=(codex);     INTERACTIVE=false ;;
+            gemini)    SELECTED_AGENTS+=(gemini);    INTERACTIVE=false ;;
             antigravity) SELECTED_AGENTS+=(antigravity); INTERACTIVE=false ;;
-            pi)       SELECTED_AGENTS+=(pi);       INTERACTIVE=false ;;
-            all)      SELECT_ALL=true; INTERACTIVE=false ;;
-            *)        error "Unknown host: $h"; usage >&2; exit 1 ;;
+            pi)        SELECTED_AGENTS+=(pi);        INTERACTIVE=false ;;
+            all)       SELECT_ALL=true; INTERACTIVE=false ;;
+            *)         error "Unknown host: $h"; usage >&2; exit 1 ;;
           esac
         done
         shift
@@ -1973,6 +2386,7 @@ main() {
     echo
     status_claude
     status_opencode
+    status_kimi_code
     status_kimi
     status_codex
     status_gemini
@@ -1987,29 +2401,33 @@ main() {
     # --all or interactive: select all detected
     local -a resolved_agents=()
     for agent in "${AGENT_ORDER[@]}"; do
-      if [[ -n "${AGENT_PATHS[$agent]:-}" ]]; then
+      if [[ -n "$(agent_path "$agent")" ]]; then
         resolved_agents+=("$agent")
       fi
     done
     # Merge explicitly-selected agents (e.g. --hosts all,pi) without duplicates
-    for agent in "${SELECTED_AGENTS[@]}"; do
+    for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       local already_in=false
-      for r in "${resolved_agents[@]}"; do
-        [[ "$r" == "$agent" ]] && already_in=true && break
-      done
+      if (( ${#resolved_agents[@]} > 0 )); then
+        for r in "${resolved_agents[@]}"; do
+          [[ "$r" == "$agent" ]] && already_in=true && break
+        done
+      fi
       [[ "$already_in" != true ]] && resolved_agents+=("$agent")
     done
-    SELECTED_AGENTS=("${resolved_agents[@]}")
+    SELECTED_AGENTS=(${resolved_agents[@]+"${resolved_agents[@]}"})
   fi
 
   # Deduplicate SELECTED_AGENTS to prevent double execution
   if [[ ${#SELECTED_AGENTS[@]} -gt 0 ]]; then
     local -a deduped=()
-    for agent in "${SELECTED_AGENTS[@]}"; do
+    for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
       local already=false
-      for d in "${deduped[@]}"; do
-        [[ "$d" == "$agent" ]] && already=true && break
-      done
+      if (( ${#deduped[@]} > 0 )); then
+        for d in "${deduped[@]}"; do
+          [[ "$d" == "$agent" ]] && already=true && break
+        done
+      fi
       [[ "$already" != true ]] && deduped+=("$agent")
     done
     SELECTED_AGENTS=("${deduped[@]}")
@@ -2023,7 +2441,7 @@ main() {
   local has_pi=false
   local pi_delegated=false
   local pi_host_independent_features_succeeded=false
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     [[ "$agent" == "pi" ]] && has_pi=true
   done
 
@@ -2097,9 +2515,9 @@ main() {
 
   # Build display list
   local agent_list=""
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     [[ -n "$agent_list" ]] && agent_list+=", "
-    agent_list+="${AGENT_LABELS[$agent]}"
+    agent_list+="$(agent_label "$agent")"
   done
 
   # --- Uninstall safety: require --force/--yes in non-tty (dry-run exempt) ---
@@ -2170,12 +2588,12 @@ main() {
   # --- Execute ---
   # FAILED_AGENTS declared earlier during Pi delegation
 
-  for agent in "${SELECTED_AGENTS[@]}"; do
+  for agent in ${SELECTED_AGENTS[@]+"${SELECTED_AGENTS[@]}"}; do
     # Pi install is handled by TypeScript delegation above (only if it was actually delegated)
     if [[ "$agent" == "pi" && "$MODE" == "install" && "$pi_delegated" == true ]]; then
       continue
     fi
-    local label="${AGENT_LABELS[$agent]}"
+    local label; label="$(agent_label "$agent")"
     if [[ "$MODE" == "uninstall" ]]; then
       printf "  Uninstalling from ${BOLD}%-16s${RESET} " "$label..."
       if "uninstall_${agent}"; then
@@ -2189,7 +2607,7 @@ main() {
       SUCCESSFUL_AGENTS+=("$agent")
     else
       printf "  Installing to ${BOLD}%-16s${RESET} " "$label..."
-      if "install_${agent}" 2>/dev/null; then
+      if "install_${agent}"; then
         SUCCESSFUL_AGENTS+=("$agent")
         if "validate_${agent}" 2>/dev/null; then
           echo -e "${GREEN}✓${RESET}"
@@ -2232,7 +2650,7 @@ main() {
     local failed_list=""
     for f in "${FAILED_AGENTS[@]}"; do
       [[ -n "$failed_list" ]] && failed_list+=", "
-      failed_list+="${AGENT_LABELS[$f]}"
+      failed_list+="$(agent_label "$f")"
     done
     warn "${action_past} to ${ok_count} agent(s). Failed: ${failed_list}"
     exit 1

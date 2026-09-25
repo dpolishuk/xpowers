@@ -37,7 +37,7 @@ function runGit(args, options = {}) {
 }
 
 function installEnv(home, extra = {}) {
-  const env = {
+  return {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),
@@ -45,43 +45,6 @@ function installEnv(home, extra = {}) {
     XPOWERS_SKIP_THIRD_PARTY_FEATURES: "1",
     ...extra,
   }
-  const shouldProvisionShims = typeof extra.PATH === "string" && extra.PATH.length > 0
-  if (shouldProvisionShims && env.PATH) {
-    const parts = env.PATH.split(path.delimiter)
-    const firstPart = parts[0]
-    const tmpPrefix = path.resolve(os.tmpdir()) + path.sep
-    const isTempDir = firstPart && path.resolve(firstPart).startsWith(tmpPrefix)
-    if (isTempDir && fs.existsSync(firstPart)) {
-      const bashSymlink = path.join(firstPart, "bash")
-      if (!fs.existsSync(bashSymlink)) {
-        try {
-          const bashPath = findExecutable("bash") || "/bin/bash"
-          fs.symlinkSync(bashPath, bashSymlink)
-        } catch (e) {
-          // Ignore errors
-        }
-      }
-      const npmMock = path.join(firstPart, "npm")
-      if (!fs.existsSync(npmMock)) {
-        try {
-          fs.writeFileSync(npmMock, "#!/usr/bin/env bash\nexit 0\n", "utf8")
-          fs.chmodSync(npmMock, 0o755)
-        } catch (e) {
-          // Ignore errors
-        }
-      }
-      const npxMock = path.join(firstPart, "npx")
-      if (!fs.existsSync(npxMock)) {
-        try {
-          fs.writeFileSync(npxMock, "#!/usr/bin/env bash\nexit 0\n", "utf8")
-          fs.chmodSync(npxMock, 0o755)
-        } catch (e) {
-          // Ignore errors
-        }
-      }
-    }
-  }
-  return env
 }
 
 function findExecutable(name) {
@@ -759,7 +722,7 @@ test("bun installer reports claude-mem skipped before requiring npx for unsuppor
   const output = combinedOutput(result)
   assert.equal(result.status, 0, output)
   const manifest = JSON.parse(fs.readFileSync(path.join(home, ".xpowers", "manifest.json"), "utf8"))
-  assert.equal(manifest.features["claude-mem"].metadata.lastResult, "skipped (Claude Code, OpenCode, Gemini CLI, or Antigravity CLI not selected)")
+  assert.equal(manifest.features["claude-mem"].metadata.lastResult, "skipped (Claude Code, OpenCode, or Gemini CLI not selected)")
 
   fs.rmSync(tmpBinDir, { recursive: true, force: true })
 })
@@ -2371,4 +2334,49 @@ test("setup-pi.sh shim rejects piped execution with helpful error", { timeout: 6
   assert.notEqual(result.status, 0, output)
   assert.match(output, /cannot determine script location when piped/i)
   assert.match(output, /universal installer instead/i)
+})
+
+test("install.sh --kimi-code installs skills, hooks, and version marker", { timeout: 120000 }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "install-sh-kimi-code-test-"))
+  const kimiHome = path.join(home, ".kimi-code")
+  const pathWithoutKimi = (process.env.PATH || "")
+    .split(path.delimiter)
+    .filter((dir) => !fs.existsSync(path.join(dir, "kimi")))
+    .join(path.delimiter)
+
+  const result = spawnSync("bash", ["scripts/install.sh", "--kimi-code", "--yes"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: installEnv(home, { PATH: pathWithoutKimi }),
+    timeout: 120000,
+  })
+
+  const output = combinedOutput(result)
+  assert.equal(result.status, 0, output)
+
+  // Fallback: skills copied to canonical user-level path when `kimi` binary is unavailable
+  const skillsDir = path.join(kimiHome, "skills")
+  assert.equal(fs.existsSync(skillsDir), true)
+  const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
+  assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
+  assert.equal(skills.some((n) => n.startsWith("codex-")), false, "codex-* skills should not be installed")
+  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+
+  // Version marker
+  const versionPath = path.join(kimiHome, ".xpowers-version")
+  assert.equal(fs.existsSync(versionPath), true)
+  assert.equal(fs.readFileSync(versionPath, "utf8").trim(), JSON.parse(fs.readFileSync(path.join(repoRoot, "kimi.plugin.json"), "utf8")).version)
+
+  // Guard hooks installed and config block present
+  const hooksDir = path.join(kimiHome, "hooks")
+  assert.equal(fs.existsSync(path.join(hooksDir, "pre-tool-use", "block-dangerous-bash.py")), true)
+  assert.equal(fs.existsSync(path.join(hooksDir, "post-tool-use", "02-block-bd-truncation.py")), true)
+
+  const configPath = path.join(kimiHome, "config.toml")
+  assert.equal(fs.existsSync(configPath), true)
+  const config = fs.readFileSync(configPath, "utf8")
+  assert.match(config, /# BEGIN XPOWERS KIMI-CODE HOOKS/)
+  assert.match(config, /# END XPOWERS KIMI-CODE HOOKS/)
+  assert.match(config, /event = "PreToolUse"/)
+  assert.match(config, /event = "PostToolUse"/)
 })

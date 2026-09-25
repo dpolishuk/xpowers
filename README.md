@@ -5,12 +5,12 @@
 <h1 align="center">XPowers</h1>
 
 <p align="center">
-  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Kimi CLI, Codex CLI, and Pi.</strong>
+  <strong>Structured engineering workflows for Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi.</strong>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg"></a>
-  <a href=".claude-plugin/plugin.json"><img alt="Version" src="https://img.shields.io/badge/version-2.14.1-green.svg"></a>
+  <a href=".claude-plugin/plugin.json"><img alt="Version" src="https://img.shields.io/badge/version-2.14.2-green.svg"></a>
   <a href="https://claude.ai/code"><img alt="Claude Code Plugin" src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg"></a>
   <a href="https://github.com/dpolishuk/xpowers/pulls"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
 </p>
@@ -26,7 +26,7 @@
 
 ---
 
-XPowers turns Claude Code, OpenCode, Gemini CLI, Kimi CLI, and Codex CLI into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
+XPowers turns Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, and Codex CLI into disciplined pair-programming partners. It adds reusable skills, specialized agents, safety hooks, and task-management workflows so your assistant plans before coding, verifies before claiming success, and keeps complex work moving without losing engineering rigor.
 
 ## Quick Start
 
@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/main/scripts/inst
 
 Install a specific release:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/v2.14.1/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/v2.14.2/scripts/install.sh | bash
 ```
 
 ### Local installer
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/main/scripts/inst
 curl -fsSL https://raw.githubusercontent.com/dpolishuk/xpowers/main/scripts/install.sh | bash -s -- --remove-legacy --yes
 ```
 
-Install docs for other hosts are in [Host-Specific Instructions](#host-specific-instructions), with standalone guides for [Kimi CLI](.kimi/INSTALL.md) and [Pi](docs/pi.md).
+Install docs for other hosts are in [Host-Specific Instructions](#host-specific-instructions), with standalone guides for [Kimi Code CLI](.kimi-code/INSTALL.md), [Kimi CLI](.kimi/INSTALL.md), and [Pi](docs/pi.md).
 
 ## Why XPowers
 
@@ -254,7 +254,7 @@ bun scripts/install.ts --uninstall
 Available hosts: `claude`, `opencode`, `kimi`, `gemini`, `pi`
 Available features: `memsearch`, `br`, `bv`, `graphify`, `claude-mem`, `supermemory`, `statusline`, `routing-wizard`, `tm-cli`
 
-`--yes` includes third-party tool installers. `br` and `bv` bootstrap from pinned upstream installer refs; maintainers can override them with `XPOWERS_BEADS_RUST_INSTALL_REF` and `XPOWERS_BEADS_VIEWER_INSTALL_REF` when intentionally updating. `graphify` runs its upstream platform setup only for supported selected hosts (Claude Code, Codex via `install.sh`, OpenCode, Gemini CLI, and Pi). Set `XPOWERS_SKIP_THIRD_PARTY_FEATURES=1` when you need a host-only install without external downloads.
+`--yes` includes third-party tool installers. `br` and `bv` bootstrap from pinned upstream installer refs; maintainers can override them with `XPOWERS_BEADS_RUST_INSTALL_REF` and `XPOWERS_BEADS_VIEWER_INSTALL_REF` when intentionally updating. `graphify` runs its upstream platform setup only for supported selected hosts (Claude Code, Codex via `install.sh`, OpenCode, Gemini CLI, Antigravity CLI, and Pi). Set `XPOWERS_SKIP_THIRD_PARTY_FEATURES=1` when you need a host-only install without external downloads.
 
 ### For Humans (interactive TUI)
 
@@ -451,6 +451,24 @@ This npm path adds the OpenCode plugin package only. For this branch's installer
 </details>
 
 <details>
+<summary><strong>Antigravity CLI</strong></summary>
+
+Install [Antigravity CLI](https://antigravity.google/docs/cli/overview) first so `agy` is on `PATH`. The Bash installer also requires Node.js or Bun to bound native CLI calls on macOS and Linux; GNU `timeout` is not required.
+
+```bash
+./scripts/install.sh --antigravity --yes
+# Or use the Bun installer:
+bun scripts/install.ts --hosts antigravity --yes
+
+./scripts/install.sh --status
+./scripts/install.sh --antigravity --uninstall --yes
+```
+
+Both installers import the local `.gemini-extension` through `agy plugin import`. `--all` detects a working `agy` executable; `--dry-run` previews changes without importing or removing plugins. Bun also supports `--status`. Startup checks allow 2 seconds, imports 10 seconds, and status/removal 5 seconds; `XPOWERS_AGY_TIMEOUT_MS` overrides these limits with a positive millisecond value. Failed or timed-out plugin operations return an error so they can be retried. Claude-Mem setup is not offered for Antigravity; its Gemini configuration is a different host.
+
+</details>
+
+<details>
 <summary><strong>Gemini CLI</strong></summary>
 
 Preferred path on this branch:
@@ -506,6 +524,33 @@ For Kimi-specific manual install, directory layout, and tm/Linear preview notes,
 </details>
 
 <details>
+<summary><strong>Kimi Code CLI</strong></summary>
+
+Use the shared installer to provision the new TypeScript Kimi Code CLI support:
+
+```bash
+./scripts/install.sh --kimi-code
+```
+
+Or use the TypeScript installer non-interactively:
+
+```bash
+bun scripts/install.ts --yes --hosts kimi-code
+```
+
+Or install all detected hosts at once:
+
+```bash
+./scripts/install.sh --all
+```
+
+This copies skills into `~/.kimi-code/skills/`, installs guard hooks into `~/.kimi-code/config.toml`, and tries to register plugin metadata with `kimi plugin install`. If your `kimi` binary does not yet expose a `plugin` subcommand, the skills and hooks still work; register the plugin later via the Kimi Code TUI (`/plugins install`) or the manual steps in `.kimi-code/INSTALL.md`. After installation, restart Kimi Code or run `kimi /reload`.
+
+For Kimi Code-specific manual install and troubleshooting, see `.kimi-code/INSTALL.md`.
+
+</details>
+
+<details>
 <summary><strong>Codex CLI</strong></summary>
 
 Use the unified installer to install wrappers to `~/.codex/skills` (auto-syncs if needed):
@@ -535,7 +580,7 @@ You can also use `/skills` in Codex UI to discover and select the same wrappers.
 <details>
 <summary><strong>After Installation: Configure Models</strong></summary>
 
-All agents use `model: inherit` by default, meaning they follow your current model selection.
+All agents inherit your top-level `model` by default, meaning they follow your current model selection.
 
 **Quick setup - copy an example config:**
 
