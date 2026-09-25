@@ -113,12 +113,12 @@ XPowers is **tm-first**. `tm` is the canonical user-facing task-management inter
 `tm` supports **one backend selected per project**. Backends are peers in the `tm` model, but `bd` / `br` / `tk` / `linear` are **not interchangeable day-to-day commands**:
 
 - `tm` = canonical user-facing task-management interface
-- `bd` = current local tracker backend in this repo
-- `br` = Beads Rust, a classic SQLite+JSONL beads-compatible backend / migration option
+- `br` = Beads Rust, the current local tracker backend in this repo (SQLite+JSONL)
+- `bd` = legacy Beads backend, retained in migration guides
 - `tk` = Ticket, a git-backed markdown ticket workflow alternative
 - `linear` = Linear-native backend preview (core commands only on this repo branch)
 
-On this repo today, `bd` remains the active backend.
+On this repo today, `br` remains the active backend.
 
 ### tm Backend Interoperability
 
@@ -660,7 +660,7 @@ See [Model Configuration](docs/model-configuration.md) for full documentation.
 
 ## Linear Integration (Optional)
 
-XPowers includes a `tm` CLI as the canonical task-management interface. In this repo the current backend is `bd`, but day-to-day usage should remain tm-first.
+XPowers includes a `tm` CLI as the canonical task-management interface. In this repo the current backend is `br`, but day-to-day usage should remain tm-first.
 
 Optionally, you can connect `tm sync` to [Linear](https://linear.app) to mirror your local issues to your team's Linear workspace.
 

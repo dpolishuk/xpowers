@@ -19,7 +19,7 @@ This document provides essential information for AI coding agents working with t
 - **Runtime**: Node.js/Bun for OpenCode plugins and the Gemini extension MCP servers (TypeScript)
 - **Hooks**: Bash, Python, JavaScript
 - **Tests**: Node.js built-in test runner
-- **Task Management**: **tm** as the canonical interface, currently backed by **bd** in this repo
+- **Task Management**: **tm** as the canonical interface, currently backed by **br** in this repo
 - **Package Manager**: Bun (for OpenCode), npm (for published plugin), npm/pip (for Gemini tools)
 - **Configuration**: JSON, YAML
 
@@ -27,7 +27,7 @@ This document provides essential information for AI coding agents working with t
 
 ### Prerequisites
 
-- Install **tm** support via this repo’s setup flow; note that the current backend in this repo is `bd`
+- Install **tm** support via this repo’s setup flow; note that the current backend in this repo is `br`
 - Install **Bun** for OpenCode plugin development
 - Node.js for running tests
 
@@ -267,7 +267,7 @@ test("description", () => {
 
 ## Task Management
 
-tm is the canonical user-facing interface in this repo. The current backend in this repo is `bd`, so some backend-specific maintenance and migration details still reference beads directly.
+tm is the canonical user-facing interface in this repo. The current backend in this repo is `br`, so some backend-specific maintenance and migration details still reference beads directly.
 
 ### Workflow
 
@@ -278,8 +278,8 @@ tm is the canonical user-facing interface in this repo. The current backend in t
 
 ### Backend Notes
 
-- `bd` = current backend in this repo
-- `br` = Beads Rust / classic beads-compatible alternative
+- `br` = current backend in this repo (Beads Rust)
+- `bd` = legacy Beads backend, retained in migration guides
 - `tk` = Ticket / git-backed markdown ticket workflow alternative
 - `linear` = Linear-native backend preview (core commands only on this repo branch)
 
@@ -288,9 +288,9 @@ These tools are related, but they are **not interchangeable day-to-day commands*
 ### Backend Configuration
 
 Located in `.beads/config.yaml`. Key settings:
-- `sync-branch`: Git branch for beads commits
-- `no-db`: Use JSONL instead of SQLite
-- `auto-start-daemon`: Start daemon automatically
+- `tm.backend: br`: Route `tm` commands to Beads Rust
+- `.beads/metadata.json`: Select the local `beads.db` SQLite database and JSONL export
+- `tm sync`: Export through `br sync --flush-only`; commit and push separately
 
 **NEVER** read `.beads/issues.jsonl` directly - always use `tm` (or a backend CLI only when a backend-specific guide explicitly requires it).
 
@@ -396,7 +396,7 @@ Do not hand-edit generated `codex-*` directories directly.
 <!-- BEGIN BEADS INTEGRATION -->
 ## Task Tracking
 
-**IMPORTANT**: tm is the canonical user-facing interface in this repo. The current backend in this repo is `bd`, so some backend-specific maintenance and migration details still reference beads directly. Do NOT create markdown TODO lists or alternate tracking systems.
+**IMPORTANT**: tm is the canonical user-facing interface in this repo. The current backend in this repo is `br`, so some backend-specific maintenance and migration details still reference beads directly. Do NOT create markdown TODO lists or alternate tracking systems.
 
 ### Why tm first?
 
@@ -451,8 +451,8 @@ tm close bd-42
 
 ### Backend Notes
 
-- `bd` = current backend in this repo
-- `br` = Beads Rust / classic beads-compatible alternative
+- `br` = current backend in this repo (Beads Rust)
+- `bd` = legacy Beads backend, retained in migration guides
 - `tk` = Ticket / git-backed markdown ticket workflow alternative
 - `linear` = Linear-native backend preview (core commands only on this repo branch)
 

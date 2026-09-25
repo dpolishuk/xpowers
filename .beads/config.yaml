@@ -1,5 +1,8 @@
 # Beads Configuration File
-# This file configures default behavior for all bd commands in this repository
+# Project task manager backend (Beads Rust / SQLite + JSONL)
+tm.backend: br
+
+# Legacy backend options below remain available for compatibility.
 # All settings can also be set via environment variables (BD_* prefix)
 # or overridden with command-line flags
 

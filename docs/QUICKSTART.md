@@ -5,14 +5,14 @@ Use this guide when you want the shortest path to the repo’s canonical task-ma
 ## Core Model
 
 - `tm` = canonical user-facing interface
-- `bd` = current backend in this repo
-- `br` = Beads Rust / classic beads-compatible alternative
+- `br` = current backend in this repo (Beads Rust)
+- `bd` = legacy Beads backend, retained in migration guides
 - `tk` = Ticket / git-backed markdown alternative
 - `linear` = Linear-native backend preview (core commands only on this repo branch)
 
 These tools are related, but they are **not interchangeable day-to-day commands**. `tm` selects **one backend per project**.
 
-Current backend note for this repo: `bd` is the active backend, while `linear` is available as a preview backend on this branch.
+Current backend note for this repo: `br` is the active backend, while `linear` is available as a preview backend on this branch.
 
 ## Daily Workflow
 

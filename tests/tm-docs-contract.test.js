@@ -30,7 +30,7 @@ test("AGENTS guide does not claim a conflicting bd-first docs model", () => {
 
   assert.equal(agentsGuide.includes("uses **bd (beads)** for ALL issue tracking"), false)
   assert.equal(agentsGuide.includes("tm is the canonical user-facing interface"), true)
-  assert.equal(agentsGuide.includes("current backend in this repo is `bd`"), true)
+  assert.equal(agentsGuide.includes("current backend in this repo is `br`"), true)
   assert.equal(agentsGuide.includes("use `bd` CLI"), false)
   assert.equal(commandsSection.includes("tm ready"), true)
   assert.equal(commandsSection.includes("tm show <id>"), true)
@@ -62,8 +62,8 @@ test("Docs index surfaces the canonical tm setup and integration guides", () => 
 test("README first-pass classifies bd br and tk with distinct roles", () => {
   const readme = read("README.md")
 
-  assert.equal(readme.includes("`bd` = current local tracker backend in this repo"), true)
-  assert.equal(readme.includes("`br` = Beads Rust"), true)
+  assert.equal(readme.includes("`br` = Beads Rust, the current local tracker backend in this repo"), true)
+  assert.equal(readme.includes("`bd` = legacy Beads backend"), true)
   assert.equal(readme.includes("`tk` = Ticket"), true)
   assert.equal(readme.includes("`linear` = Linear-native backend preview"), true)
   assert.equal(readme.includes("not interchangeable day-to-day commands"), true)

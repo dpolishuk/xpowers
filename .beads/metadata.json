@@ -1,8 +1,4 @@
 {
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "xpowers",
-  "project_id": "600ea335-0af1-4b42-b749-fbf65d5d90d5",
+  "database": "beads.db",
   "jsonl_export": "issues.jsonl"
 }
