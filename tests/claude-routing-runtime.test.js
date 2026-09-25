@@ -3,9 +3,30 @@ const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
-const { spawnSync } = require("node:child_process")
+const crypto = require("node:crypto")
+const { spawn, spawnSync } = require("node:child_process")
 
 const runtime = path.resolve(__dirname, "../scripts/claude-routing")
+
+function installedFixture(t) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-integrity-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const project = path.join(dir, "project")
+  const home = path.join(dir, "home")
+  fs.mkdirSync(project)
+  fs.mkdirSync(home)
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"), PYTHONDONTWRITEBYTECODE: "1" }
+  const run = (args, installed = false) => spawnSync("python3", ["-B", path.join(installed ? path.join(project, ".claude/xpowers-routing") : runtime, "cli.py"), ...args, "--project", project], {
+    env, encoding: "utf8", timeout: 10000,
+  })
+  const result = run(["install"])
+  assert.equal(result.status, 0, result.stderr)
+  const hash = crypto.createHash("sha256").update(project).digest("hex").slice(0, 24)
+  const manifest = path.join(home, ".claude/xpowers-routing", hash, "install-manifest.json")
+  return { dir, project, home, env, run, manifest, runtime: path.join(project, ".claude/xpowers-routing") }
+}
+
+function assertSuccess(result) { assert.equal(result.status, 0, result.stderr) }
 
 function python(code, data = {}) {
   const result = spawnSync("python3", ["-B", "-c", `import sys,json; sys.path.insert(0,${JSON.stringify(runtime)}); import common; data=json.load(sys.stdin); ${code}`], {
@@ -187,4 +208,147 @@ test("on/off and session-start affect only one session without modifying project
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("activation and smoke reject changed or missing installed runtime modules", t => {
+  const f = installedFixture(t)
+  assertSuccess(f.run(["on", "--session", "already-active"]))
+  for (const name of ["guard.py", "cli.py", "common.py", "install.py"]) {
+    const target = path.join(f.runtime, name)
+    const original = fs.readFileSync(target)
+    for (const action of ["modified", "missing"]) {
+      if (action === "modified") fs.writeFileSync(target, name === "guard.py" ? "def handle(data, project): return {}\n" : "# accidental truncation\n")
+      else fs.unlinkSync(target)
+      const on = f.run(["on", "--session", `drift-${name}-${action}`])
+      assert.equal(on.status, 1, `${name} ${action} must block activation`)
+      assert.match(on.stderr, /runtime.*(changed|missing|modified)/i)
+      assert.equal(f.run(["status", "--session", `drift-${name}-${action}`]).stdout.trim(), "OFF")
+      const smoke = f.run(["smoke", "--session", "already-active"])
+      assert.equal(smoke.status, 1, `${name} ${action} must fail smoke`)
+      assert.match(smoke.stderr, /runtime.*(changed|missing|modified)/i)
+      if (name === "guard.py") {
+        const installedSmoke = f.run(["smoke", "--session", "already-active"], true)
+        assert.equal(installedSmoke.status, 1)
+        assert.match(installedSmoke.stderr, /runtime.*guard\.py/i)
+      }
+      fs.writeFileSync(target, original)
+    }
+  }
+  assertSuccess(f.run(["smoke", "--session", "already-active"], true))
+})
+
+test("installed activation rejects a guard that silently allows project writes", t => {
+  const f = installedFixture(t)
+  fs.writeFileSync(path.join(f.runtime, "guard.py"), "def handle(data, project): return {}\n")
+  const on = f.run(["on", "--session", "changed-guard"], true)
+  assert.equal(on.status, 1)
+  assert.match(on.stderr, /runtime.*guard\.py/i)
+  assert.equal(f.run(["status", "--session", "changed-guard"]).stdout.trim(), "OFF")
+})
+
+test("runtime integrity requires ownership snapshots and covers extra helper modules", t => {
+  const f = installedFixture(t)
+  const original = fs.readFileSync(f.manifest, "utf8")
+  fs.unlinkSync(f.manifest)
+  const missing = f.run(["on", "--session", "missing-backup"])
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /ownership.*(backup|manifest).*missing|missing.*ownership/i)
+  const manifest = JSON.parse(original)
+  delete manifest.files["xpowers-routing/guard.py"]
+  fs.writeFileSync(f.manifest, JSON.stringify(manifest))
+  const missingSnapshot = f.run(["on", "--session", "missing-snapshot"])
+  assert.equal(missingSnapshot.status, 1)
+  assert.match(missingSnapshot.stderr, /snapshot.*guard\.py|guard\.py.*snapshot/i)
+  const complete = JSON.parse(original)
+  const helper = path.join(f.runtime, "future-helper.py")
+  fs.writeFileSync(helper, "# helper\n")
+  complete.files["xpowers-routing/future-helper.py"] = { before: null, installed: { data: Buffer.from("# helper\n").toString("base64"), mode: fs.statSync(helper).mode & 0o777 } }
+  fs.writeFileSync(f.manifest, JSON.stringify(complete))
+  assertSuccess(f.run(["on", "--session", "valid-helper"]))
+  fs.writeFileSync(helper, "# drift\n")
+  const changedHelper = f.run(["on", "--session", "changed-helper"])
+  assert.equal(changedHelper.status, 1)
+  assert.match(changedHelper.stderr, /runtime.*future-helper\.py/i)
+})
+
+test("activation and restore serialize so reinstall cannot revive the old session", async t => {
+  const f = installedFixture(t)
+  const paused = path.join(f.dir, "activation-validated")
+  const restoreAttempted = path.join(f.dir, "restore-attempted")
+  const restoreFinished = path.join(f.dir, "restore-finished")
+  const release = path.join(f.dir, "release-activation")
+  const start = code => {
+    const child = spawn("python3", ["-B", "-c", code, runtime, f.project, paused, restoreAttempted, release], { env: f.env })
+    t.after(() => child.kill())
+    return new Promise((resolve, reject) => {
+      let output = ""
+      child.stderr.on("data", chunk => { output += chunk })
+      child.on("error", reject)
+      child.on("close", status => resolve({ status, stderr: output }))
+    })
+  }
+  const waitFor = async target => {
+    const deadline = Date.now() + 5000
+    while (!fs.existsSync(target)) {
+      assert.ok(Date.now() < deadline, `timed out waiting for ${target}`)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const on = start(`import sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import cli
+project,paused,release=sys.argv[2],Path(sys.argv[3]),Path(sys.argv[5])
+check=cli.check_profile
+def pause_after_check(project, config):
+    check(project,config)
+    paused.touch()
+    deadline=time.monotonic()+8
+    while not release.exists():
+        if time.monotonic()>deadline: raise RuntimeError('activation was not released')
+        time.sleep(0.01)
+cli.check_profile=pause_after_check
+sys.argv=['cli.py','on','--project',project,'--session','concurrent-session']
+raise SystemExit(cli.main())
+`)
+  await waitFor(paused)
+  const restore = start(`import sys,contextlib,fcntl
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import install,common
+project,attempted=Path(sys.argv[2]),Path(sys.argv[4])
+lock=install._locked
+@contextlib.contextmanager
+def observe_restore_lock(project):
+    with (common.control_dir(project)/'install.lock').open('a+b') as probe:
+        try:
+            fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            attempted.write_text('blocked')
+        else:
+            attempted.write_text('available')
+            fcntl.flock(probe,fcntl.LOCK_UN)
+    with lock(project) as control: yield control
+install._locked=observe_restore_lock
+install.restore(project)
+attempted.with_name('restore-finished').touch()
+`)
+  await waitFor(restoreAttempted)
+  // A nonblocking probe proves whether activation owns the install lock. If it
+  // does not, complete restore before releasing activation to expose the race.
+  if (fs.readFileSync(restoreAttempted, "utf8") !== "blocked") await waitFor(restoreFinished)
+  fs.writeFileSync(release, "continue\n")
+  const results = await Promise.all([on, restore])
+  results.forEach(assertSuccess)
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", "concurrent-session"]).stdout.trim(), "OFF")
+})
+
+test("activation after restore fails and leaves its old session disabled", t => {
+  const f = installedFixture(t)
+  assertSuccess(f.run(["on", "--session", "restored-session"]))
+  assertSuccess(f.run(["install", "--restore"]))
+  assert.equal(f.run(["on", "--session", "restored-session"]).status, 1)
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", "restored-session"]).stdout.trim(), "OFF")
 })

@@ -41,6 +41,30 @@ def check_profile(project, config):
     for event, entry in install._hook_entries(project).items():
         if entry not in settings.get("hooks", {}).get(event, []):
             raise ValueError(f"Missing routing {event} hook; rerun setup-claude-routing.sh")
+    control = common.control_dir(project)
+    install._safe_target(control / "install-manifest.json", Path.home())
+    manifest = install._read_manifest(control, project)
+    if manifest is None:
+        raise ValueError("Routing ownership backup is missing; recover the external install-manifest.json before activation")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("Routing ownership manifest is missing file snapshots; recover the installation backup")
+    runtime_files = {name: snapshots.get("installed") if isinstance(snapshots, dict) else None for name, snapshots in files.items()
+                     if name.startswith("xpowers-routing/") and name.endswith(".py")}
+    for filename in ("cli.py", "common.py", "guard.py", "install.py"):
+        if not isinstance(runtime_files.get("xpowers-routing/" + filename), dict):
+            raise ValueError(f"Routing ownership snapshot is missing for {filename}; recover the installation backup")
+    for name, snapshot in runtime_files.items():
+        if not isinstance(snapshot, dict):
+            raise ValueError(f"Routing ownership snapshot is missing for {name}; recover the installation backup")
+        target = project / ".claude" / name
+        install._safe_target(target, project)
+        if install._snapshot(target) != snapshot:
+            raise ValueError(f"Installed routing runtime changed or is missing: {target.name}; resolve local edits and rerun setup-claude-routing.sh")
+    runtime_dir = project / ".claude/xpowers-routing"
+    unexpected = {str(target.relative_to(project / ".claude")) for target in runtime_dir.rglob("*.py")} - set(runtime_files)
+    if unexpected:
+        raise ValueError("Installed routing runtime changed: unowned Python files: " + ", ".join(sorted(unexpected)))
 
 
 def active(project, session):
@@ -54,9 +78,9 @@ def active(project, session):
 
 
 def smoke(project, session):
-    import guard
     config = common.load_config(project)
     check_profile(project, config)
+    import guard
     if not active(project, session):
         raise ValueError("Run /routing-on in this session before /routing-smoke-test")
     base = {"session_id": session, "cwd": str(project)}
@@ -116,9 +140,13 @@ def main():
             common.atomic_json(common.session_path(project, args.session), {"enabled": False})
             print("XPowers routing is OFF for this session.")
         elif args.action == "on":
-            config = common.load_config(project)
-            check_profile(project, config)
-            common.atomic_json(common.session_path(project, args.session), {"enabled": True})
+            import install
+            # Restore holds this same lock while removing files and disabling
+            # sessions. Validation and activation must be one serialized step.
+            with install._locked(project):
+                config = common.load_config(project)
+                check_profile(project, config)
+                common.atomic_json(common.session_path(project, args.session), {"enabled": True})
             print(common.workflow(config))
         elif args.action == "status":
             print("ON" if active(project, args.session) else "OFF")

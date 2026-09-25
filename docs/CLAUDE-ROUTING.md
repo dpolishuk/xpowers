@@ -84,8 +84,10 @@ bash scripts/setup-claude-routing.sh --project /path/to/your/project
 ```
 
 Then start a new Claude session. Activation rejects a config that differs from
-the generated snapshot. Supplying `--preset` explicitly replaces configuration
-with that preset's defaults. A no-flag reinstall preserves the existing config.
+the generated snapshot and checks the installed Python runtime against its
+external ownership manifest. Missing or modified runtime files must be repaired
+before activation or a smoke check can succeed. Supplying `--preset` explicitly
+replaces configuration with that preset's defaults. A no-flag reinstall preserves the existing config.
 Do not edit generated agent files; customize their models and limits in the JSON.
 
 ## Work and acceptance
@@ -181,6 +183,10 @@ Keep the external backup directory available: the project-local
 If the original backup is missing or managed files have changed, reinstall stops
 before replacing project files. Recover the backup or restore the profile before
 transferring the project to a different machine.
+
+Activation and restore share the installer lock. If they overlap, restore either
+disables the just-activated session or activation detects the removed profile;
+reinstalling does not silently reactivate that session.
 
 ## References
 
