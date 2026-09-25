@@ -55,3 +55,25 @@ These wrappers map to the same canonical command semantics used by Claude and Op
 - `refactor-design` → `refactoring-design`
 - `refactor-diagnose` → `refactoring-diagnosis`
 - `refactor-execute` → `refactoring-safely`
+
+## Optional native repository routing
+
+The normal XPowers installer installs skills and wrappers; it does **not** activate
+native Codex agent routing. A separate, opt-in setup script can add managed,
+repository-local Codex configuration for the six roles `default`, `explorer`,
+`worker`, `verifier`, `senior`, and `reviewer`.
+
+From a checked-out XPowers repository, preview and then apply it to a target Git
+working tree:
+
+```bash
+bash scripts/setup-codex-routing.sh --repo /path/to/project --dry-run
+bash scripts/setup-codex-routing.sh --repo /path/to/project
+```
+
+It requires Bash, Git, and Python 3.9+ on macOS, Linux, or WSL. It does not call
+models, install packages into the repository or system, or change global Codex or
+ordinary Desktop Chat/Work settings. The generated `.codex/ROUTING-SMOKE-TEST.md`
+is the required runtime check in a new trusted session. Read
+[docs/CODEX-ROUTING.md](docs/CODEX-ROUTING.md) for configuration formats, safety
+behavior, adoption, restore, and validation limits.

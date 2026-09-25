@@ -10,6 +10,7 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 - [QUICKSTART.md](QUICKSTART.md) — shortest path to the tm-first workflow in this repo
 - [linear-mcp-setup.md](linear-mcp-setup.md) — canonical Linear setup and `tm sync` guide
 - [model-configuration.md](model-configuration.md) — model/provider configuration guide for supported hosts
+- [CODEX-ROUTING.md](CODEX-ROUTING.md) — optional repository-local native Codex routing setup and verification
 
 ## Host-Specific Install Guides
 
