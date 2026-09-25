@@ -3,7 +3,7 @@
 import * as p from "@clack/prompts"
 import { existsSync, readFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { cp, mkdir, readFile, readdir, rm, writeFile, symlink, unlink, stat, rename, chmod } from "node:fs/promises"
+import { cp, mkdir, readFile, readdir, rm, writeFile, symlink, unlink, stat, lstat, rename, chmod } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -986,7 +986,11 @@ const installHost = async (host: HostConfig, persist?: (files: string[]) => Prom
   const backupEntries: Array<{ originalPath: string, backupPath: string }> = []
   const createdPaths: string[] = []
   const metadataBefore = new Map<string, string | null>()
+  let previousZcodeFiles: string[] = []
   if (host.id === "zcode") {
+    const shared = await readZcodeManifest(target)
+    const previous = shared ?? (await readManifest())?.hosts?.zcode
+    if (previous?.targetDir === target) previousZcodeFiles = previous.files.filter(safeManifestEntry)
     for (const name of [".xpowers-version", ".xpowers-manifest"]) {
       const file = join(target, name)
       // Invalid metadata must not be replaced with a regular file.
@@ -1056,6 +1060,21 @@ const installHost = async (host: HostConfig, persist?: (files: string[]) => Prom
       // uninstallHost to delete the whole AGENTS.md before postUninstall runs.
     }
 
+    if (host.id === "zcode") {
+      const current = new Set(installedFiles.map(file => file.replace(/\/+$/, "")))
+      for (const entry of new Set(previousZcodeFiles)) {
+        const file = entry.replace(/\/+$/, "")
+        // ZCode owns individual skill directories and command files, never
+        // their shared parent directories or unrelated host metadata.
+        if (!/^(skills|commands)\/[^/]+$/.test(file) || current.has(file)) continue
+        const originalPath = join(target, file)
+        if (!await lstat(originalPath).catch(() => null)) continue
+        const backupPath = `${originalPath}.xpowers-backup-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        await rename(originalPath, backupPath)
+        backupEntries.push({ originalPath, backupPath })
+      }
+    }
+
     // Write version file last (after postInstall succeeds)
     await writeFile(join(target, ".xpowers-version"), VERSION + "\n", "utf8")
     installedFiles.push(".xpowers-version")
@@ -1077,7 +1096,7 @@ const installHost = async (host: HostConfig, persist?: (files: string[]) => Prom
       await rm(createdPath, { recursive: true, force: true }).catch(() => {})
     }
     for (const { originalPath, backupPath } of backupEntries.reverse()) {
-      if (existsSync(backupPath)) {
+      if (await lstat(backupPath).catch(() => null)) {
         await rename(backupPath, originalPath).catch(() => {})
       }
     }
@@ -1303,7 +1322,7 @@ Options:
   --dry-run          Preview without installing or removing anything
   --status           Show installation status (including native Antigravity plugins)
   --json, -j         Output structured JSON (implies --yes, for AI agents)
-  --uninstall        Remove all installed files and features
+  --uninstall        Remove everything; with --hosts zcode, remove only ZCode
   --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,antigravity,pi,zcode (kimi-code is also accepted)
   --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
@@ -1346,8 +1365,11 @@ Options:
       manifest ??= { version: VERSION, installedAt: "shell install", hosts: {}, features: {} }
       manifest.hosts.zcode = zcode
     }
-    if (!manifest && args.hosts.length === 1 && args.hosts[0] === "zcode") {
-      p.outro("No ZCode installation to remove.")
+    if (args.hosts.length === 1 && args.hosts[0] === "zcode") {
+      // Explicit ZCode cleanup is host-scoped. Its uninstall path already
+      // retires only its own JSON records and preserves all shared features.
+      if (manifest?.hosts.zcode) await uninstallHost("zcode", manifest)
+      p.outro("XPowers removed from ZCode.")
       return
     }
     if (!manifest) {

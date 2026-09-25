@@ -1341,9 +1341,38 @@ install_zcode() (
   manifest_add ".xpowers-version"
   write_manifest "${transaction}/new" || exit 1
 
+  # Retired skills/commands must not remain active after the new manifest no
+  # longer owns them. Keep them in the same rollback area as replaced entries.
+  local previous_entries="" json_data json_target entry current still_managed
+  json_data=$(read_kimi_json_manifest zcode) || exit 1
+  json_target=$(printf '%s\n' "$json_data" | head -1)
+  if [[ -f "${home}/.xpowers-manifest" ]]; then
+    previous_entries=$(cat "${home}/.xpowers-manifest") || exit 1
+  elif [[ "$json_target" == "$home" ]]; then
+    previous_entries=$(printf '%s\n' "$json_data" | tail -n +2)
+  fi
+  while IFS= read -r entry; do
+    entry="${entry%/}"
+    case "$entry" in
+      ""|\#*|/*|*..*) continue ;;
+      skills/*|commands/*) ;;
+      *) continue ;;
+    esac
+    [[ "${entry#*/}" != */* && -n "${entry#*/}" ]] || continue
+    still_managed=false
+    for current in "${MANIFEST_ENTRIES[@]}"; do
+      if [[ "${current%/}" == "$entry" ]]; then still_managed=true; break; fi
+    done
+    [[ "$still_managed" == false ]] || continue
+    if [[ -e "${home}/${entry}" || -L "${home}/${entry}" ]]; then
+      mkdir -p "$(dirname "${transaction}/old/${entry}")" || exit 1
+      mv "${home}/${entry}" "${transaction}/old/${entry}" || exit 1
+      replaced+=("$entry")
+    fi
+  done <<< "$previous_entries"
+
   # Replacing entire entries avoids nested directories on reinstall, and lets
   # any copy/metadata failure restore the exact previous user content.
-  local entry
   for entry in "${MANIFEST_ENTRIES[@]}" .xpowers-manifest; do
     entry="${entry%/}"
     mkdir -p "$(dirname "${home}/${entry}")" "$(dirname "${transaction}/old/${entry}")" || exit 1
@@ -1355,7 +1384,7 @@ install_zcode() (
   done
   # The shared text manifest is now authoritative. Retire the Bun mirror so it
   # cannot outlive a later shell uninstall and delete user-recreated files.
-  local json_target; json_target=$(read_kimi_json_manifest zcode | head -1) || exit 1
+  json_target=$(read_kimi_json_manifest zcode | head -1) || exit 1
   if [[ "$json_target" == "$home" ]]; then
     cp "$json_manifest" "${transaction}/json-before" || exit 1
     json_changed=true

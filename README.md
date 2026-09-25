@@ -598,6 +598,8 @@ ZCode discovers the skills and `/commands` at session start, so restart any open
 
 ```bash
 ./scripts/install.sh --hosts zcode --uninstall --yes
+# Or remove only ZCode with Bun:
+bun scripts/install.ts --hosts zcode --uninstall
 ```
 
 </details>

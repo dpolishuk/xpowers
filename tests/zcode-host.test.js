@@ -18,13 +18,14 @@ function fixture(t) {
   return home
 }
 
-function run(home, installer, uninstall = false, extraEnv = {}) {
+function run(home, installer, uninstall = false, extraEnv = {}, options = {}) {
+  const hostArgs = options.allHosts ? [] : ["--hosts", "zcode"]
   const args = installer === "bash"
-    ? ["scripts/install.sh", "--hosts", "zcode", "--yes"]
-    : ["scripts/install.ts", "--hosts", "zcode", "--yes", "--json", "--features", "__none__"]
+    ? ["scripts/install.sh", ...hostArgs, "--yes"]
+    : ["scripts/install.ts", ...hostArgs, "--yes", "--json", "--features", "__none__"]
   if (uninstall) args.push("--uninstall")
   return spawnSync(installer === "bash" ? "bash" : bun, args, {
-    cwd: repoRoot,
+    cwd: options.sourceRoot ?? repoRoot,
     encoding: "utf8",
     timeout: 60000,
     env: {
@@ -297,5 +298,125 @@ for (const installer of ["bash", "bun"]) {
     success(run(home, installer, true))
     assert.equal(fs.readFileSync(path.join(source, "SKILL.md"), "utf8"), "source must survive\n")
     assert.throws(() => fs.lstatSync(link), { code: "ENOENT" })
+  })
+}
+
+function otherInstallation(home) {
+  const otherHome = path.join(home, ".claude")
+  fs.mkdirSync(otherHome)
+  const file = path.join(otherHome, "owned.md")
+  const settings = path.join(otherHome, "settings.json")
+  fs.writeFileSync(file, "other host content\n")
+  fs.writeFileSync(settings, JSON.stringify({ statusline: "xpowers statusline", theme: "dark" }))
+  const global = path.join(home, ".xpowers/manifest.json")
+  const manifest = JSON.parse(fs.readFileSync(global, "utf8"))
+  const record = { targetDir: otherHome, files: ["owned.md"] }
+  const feature = { installed: true, metadata: { owner: "claude" } }
+  manifest.hosts.claude = record
+  manifest.features.statusline = feature
+  fs.writeFileSync(global, JSON.stringify(manifest))
+  return { file, settings, global, record, feature }
+}
+
+for (const installer of ["bash", "bun"]) {
+  for (const legacy of [false, true]) {
+    test(`${installer} explicit ZCode uninstall preserves unrelated hosts and features (${legacy ? "JSON-only" : "shared"})`, { timeout: 120000 }, (t) => {
+      const home = fixture(t)
+      success(run(home, "bun"))
+      if (legacy) fs.unlinkSync(path.join(home, ".zcode/.xpowers-manifest"))
+      const other = otherInstallation(home)
+      success(run(home, installer, true))
+      assertRemoved(home)
+      success(run(home, installer, true))
+      assert.equal(fs.readFileSync(other.file, "utf8"), "other host content\n")
+      assert.equal(JSON.parse(fs.readFileSync(other.settings, "utf8")).statusline, "xpowers statusline")
+      const remaining = JSON.parse(fs.readFileSync(other.global, "utf8"))
+      assert.deepEqual(remaining.hosts, { claude: other.record })
+      assert.deepEqual(remaining.features, { statusline: other.feature })
+    })
+  }
+}
+
+test("unqualified Bun uninstall still removes all installed hosts and features", { timeout: 120000 }, (t) => {
+  const home = fixture(t)
+  success(run(home, "bun"))
+  const other = otherInstallation(home)
+  success(run(home, "bun", true, {}, { allHosts: true }))
+  assertRemoved(home)
+  assert.equal(fs.existsSync(other.file), false)
+  assert.equal(JSON.parse(fs.readFileSync(other.settings, "utf8")).statusline, undefined)
+  assert.equal(fs.existsSync(other.global), false)
+})
+
+function sourceFixture(t) {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-zcode-source-"))
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }))
+  fs.cpSync(path.join(repoRoot, "scripts"), path.join(source, "scripts"), { recursive: true })
+  fs.mkdirSync(path.join(source, ".claude-plugin"))
+  fs.copyFileSync(path.join(repoRoot, ".claude-plugin/plugin.json"), path.join(source, ".claude-plugin/plugin.json"))
+  fs.symlinkSync(path.join(repoRoot, "node_modules"), path.join(source, "node_modules"))
+  for (const relative of ["skills/retired-skill/SKILL.md", ".agents/skills/codex-agent-retired/SKILL.md", "commands/retired.md"]) {
+    const file = path.join(source, relative)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, `original ${relative}\n`)
+  }
+  return source
+}
+
+function renameSourceEntries(source) {
+  for (const [before, after] of [
+    ["skills/retired-skill", "skills/replacement-skill"],
+    [".agents/skills/codex-agent-retired", ".agents/skills/codex-agent-replacement"],
+    ["commands/retired.md", "commands/replacement.md"],
+  ]) fs.renameSync(path.join(source, before), path.join(source, after))
+}
+
+for (const installer of ["bash", "bun"]) {
+  for (const legacy of [false, true]) {
+    test(`${installer} ZCode upgrade removes retired entries from ${legacy ? "legacy JSON" : "shared"} ownership`, { timeout: 120000 }, (t) => {
+      const home = fixture(t)
+      const sourceRoot = sourceFixture(t)
+      success(run(home, "bun", false, {}, { sourceRoot }))
+      if (legacy) fs.unlinkSync(path.join(home, ".zcode/.xpowers-manifest"))
+      const user = put(home, "skills/user-skill/SKILL.md", "user skill\n")
+      renameSourceEntries(sourceRoot)
+      success(run(home, installer, false, {}, { sourceRoot }))
+      for (const relative of ["skills/retired-skill", "skills/codex-agent-retired", "commands/retired.md"]) {
+        assert.equal(fs.existsSync(path.join(home, ".zcode", relative)), false, `retired entry remains active: ${relative}`)
+      }
+      for (const relative of ["skills/replacement-skill/SKILL.md", "skills/codex-agent-replacement/SKILL.md", "commands/replacement.md"]) {
+        assert.equal(fs.existsSync(path.join(home, ".zcode", relative)), true)
+      }
+      assert.equal(fs.readFileSync(user, "utf8"), "user skill\n")
+      assert.doesNotMatch(fs.readFileSync(path.join(home, ".zcode/.xpowers-manifest"), "utf8"), /retired/)
+    })
+  }
+
+  test(`${installer} failed ZCode upgrade restores retired files and previous ownership`, {
+    timeout: 120000,
+    skip: process.getuid?.() === 0 && "root bypasses directory permissions",
+  }, (t) => {
+    const home = fixture(t)
+    const sourceRoot = sourceFixture(t)
+    success(run(home, "bun", false, {}, { sourceRoot }))
+    const shared = path.join(home, ".zcode/.xpowers-manifest")
+    const before = fs.readFileSync(shared, "utf8")
+    renameSourceEntries(sourceRoot)
+    const globalDir = path.join(home, ".xpowers")
+    fs.chmodSync(globalDir, 0o555)
+    try {
+      assert.notEqual(run(home, installer, false, {}, { sourceRoot }).status, 0)
+    } finally {
+      fs.chmodSync(globalDir, 0o755)
+    }
+    for (const [relative, original] of [
+      ["skills/retired-skill/SKILL.md", "skills/retired-skill/SKILL.md"],
+      ["skills/codex-agent-retired/SKILL.md", ".agents/skills/codex-agent-retired/SKILL.md"],
+      ["commands/retired.md", "commands/retired.md"],
+    ]) assert.equal(fs.readFileSync(path.join(home, ".zcode", relative), "utf8"), `original ${original}\n`)
+    assert.equal(fs.readFileSync(shared, "utf8"), before)
+    for (const relative of ["skills/replacement-skill", "skills/codex-agent-replacement", "commands/replacement.md"]) {
+      assert.equal(fs.existsSync(path.join(home, ".zcode", relative)), false)
+    }
   })
 }
