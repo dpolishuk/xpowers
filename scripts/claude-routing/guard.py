@@ -86,9 +86,6 @@ def _tokens(command):
         raise ValueError("A nonempty shell command is required")
     if any(ord(char) < 32 and char != "\t" for char in command):
         raise ValueError("Multiline commands and shell control characters are not allowed")
-    # Do not evaluate expansions, including ones hidden inside double quotes.
-    if "`" in command or "$" in command:
-        raise ValueError("Shell expansion is not allowed in coordinator commands")
     # shlex does not expand globs/braces, but Bash does before executing Git.
     # Preserve quoted literal search patterns while refusing unquoted expansion
     # that could turn an innocuous-looking argument into --output or --ext-diff.
@@ -105,6 +102,11 @@ def _tokens(command):
         if char == "\\":
             escaped = True
             continue
+        # Single-quoted or escaped dollars/backticks are literal search text.
+        # Everywhere else they can evaluate shell substitutions, including
+        # inside double quotes, and must not reach the command allowlist.
+        if char in "`$":
+            raise ValueError("Shell expansion is not allowed in coordinator commands")
         if quote == '"':
             if char == '"':
                 quote = None

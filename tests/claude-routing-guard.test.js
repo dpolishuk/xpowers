@@ -265,6 +265,19 @@ test("shell expansion screening preserves quoted literal search patterns", (t) =
   ]) denied(f.run("Bash", { command }), command)
 })
 
+test("shell queries preserve literal dollars and backticks without allowing substitution", (t) => {
+  const f = fixture(t)
+  for (const command of [
+    "rg '^foo$' src", "rg '`literal`' src", "rg '$(literal)' src",
+    "rg \\$literal src", "rg \\`literal\\` src", "rg \"\\$literal\" src", "rg \"\\`literal\\`\" src",
+  ]) allowed(f.run("Bash", { command }), command)
+  for (const command of [
+    "rg $(touch victim.txt) src", "rg \"$(touch victim.txt)\" src",
+    "rg `touch victim.txt` src", "rg \"`touch victim.txt`\" src",
+    "rg $PATTERN src", "rg \"$PATTERN\" src", "rg \"\\\\$PATTERN\" src",
+  ]) denied(f.run("Bash", { command }), command)
+})
+
 test("only exact session control commands bypass coordinator shell restrictions", (t) => {
   const f = fixture(t)
   const control = `python3 ${f.project}/.claude/xpowers-routing/cli.py`
