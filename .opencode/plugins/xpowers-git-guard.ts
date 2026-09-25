@@ -214,12 +214,14 @@ const autoCommit = async (
 
   try {
     // Only stage files that were modified during this session, not everything
-    const addResult = await $`git -C ${cwd} add ${filesToCommit}`.quiet().nothrow()
+    const addResult = await $`git -C ${cwd} add -- ${filesToCommit}`.quiet().nothrow()
     if (addResult.exitCode !== 0) {
       return { ok: false, error: "git add failed" }
     }
 
-    const commitResult = await $`git -C ${cwd} commit -m ${message}`.quiet().nothrow()
+    // Restrict the commit too: the index may already contain unrelated user
+    // changes. --only preserves that staging while committing these paths.
+    const commitResult = await $`git -C ${cwd} commit --only -m ${message} -- ${filesToCommit}`.quiet().nothrow()
     if (commitResult.exitCode !== 0) {
       const stderr = await commitResult.text()
       // Check if nothing to commit

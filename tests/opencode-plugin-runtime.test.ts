@@ -283,3 +283,55 @@ test("slow mode matches an exhaustive subsequence oracle for repeated lines", as
     }
   } finally { await f.cleanup() }
 })
+
+for (const kind of ["modified", "new", "deleted"] as const) {
+  test(`git guard auto-commits only the session ${kind} file and preserves unrelated staging`, async () => {
+    const f = await gitFixture()
+    try {
+      await writeFile(join(f.directory, "unrelated.txt"), "pre-staged by the user")
+      await $`git -C ${f.directory} add unrelated.txt`.quiet()
+      const name = kind === "new" ? "created.ts" : "sample.ts"
+      const filePath = join(f.directory, name)
+      if (kind === "deleted") {
+        await rm(filePath)
+      } else {
+        await writeFile(filePath, "session change")
+      }
+      await f.hooks["tool.execute.after"]({
+        tool: "write", sessionID: f.sessionID, callID: "session-edit", args: { filePath },
+      }, result())
+      await f.event("session.deleted")
+      const committed = await $`git -C ${f.directory} diff-tree --no-commit-id --name-only -r HEAD`.quiet().text()
+      expect(committed.trim()).toBe(name)
+      const staged = await $`git -C ${f.directory} diff --cached --name-only`.quiet().text()
+      expect(staged.trim()).toBe("unrelated.txt")
+      expect(await $`git -C ${f.directory} show :unrelated.txt`.quiet().text()).toBe("pre-staged by the user")
+      expect(f.toasts.some(t => t.title === "Auto-Commit" && t.variant === "success")).toBe(true)
+      if (kind === "deleted") {
+        const file = await $`git -C ${f.directory} cat-file -e HEAD:sample.ts`.quiet().nothrow()
+        expect(file.exitCode).not.toBe(0)
+      } else {
+        expect(await $`git -C ${f.directory} show ${`HEAD:${name}`}`.quiet().text()).toBe("session change")
+      }
+    } finally { await f.cleanup() }
+  })
+}
+
+test("git guard does not commit unrelated staging when a new session file disappears", async () => {
+  const f = await gitFixture()
+  try {
+    await writeFile(join(f.directory, "unrelated.txt"), "pre-staged by the user")
+    await $`git -C ${f.directory} add unrelated.txt`.quiet()
+    const filePath = join(f.directory, "temporary.ts")
+    await writeFile(filePath, "temporary")
+    await f.hooks["tool.execute.after"]({
+      tool: "write", sessionID: f.sessionID, callID: "temporary-edit", args: { filePath },
+    }, result())
+    await rm(filePath)
+    await f.event("session.deleted")
+    expect((await $`git -C ${f.directory} rev-list --count HEAD`.quiet().text()).trim()).toBe("1")
+    expect((await $`git -C ${f.directory} diff --cached --name-only`.quiet().text()).trim()).toBe("unrelated.txt")
+    expect(f.toasts.some(t => t.title === "Auto-Commit Failed")).toBe(true)
+    expect(f.toasts.some(t => t.title === "Auto-Commit")).toBe(false)
+  } finally { await f.cleanup() }
+})
