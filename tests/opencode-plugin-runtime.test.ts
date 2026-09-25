@@ -8,17 +8,18 @@ import gitGuard from "../.opencode/plugins/xpowers-git-guard"
 import notify from "../.opencode/plugins/xpowers-notify"
 import lintGate from "../.opencode/plugins/xpowers-lint-gate"
 import contextGauge from "../.opencode/plugins/xpowers-context-gauge"
+import taskMonitor from "../.opencode/plugins/xpowers-task-monitor"
 
 // Payloads follow @opencode-ai/plugin 1.14.20 Hooks: before args live in
 // output; after args live in input; bash results expose metadata.exit.
 const result = (metadata: Record<string, unknown> = {}) => ({ title: "tool", output: "", metadata })
-const fixture = async (plugin: any, configName?: string, config: object = {}) => {
+const fixture = async (plugin: any, configName?: string, config: object = {}, shell: any = $) => {
   const directory = await mkdtemp(join(tmpdir(), "xpowers-plugin-test-"))
   await mkdir(join(directory, ".opencode"))
   if (configName) await writeFile(join(directory, ".opencode", configName), JSON.stringify(config))
   const toasts: any[] = []
   const prompts: any[] = []
-  const hooks = await plugin({ directory, $, client: {
+  const hooks = await plugin({ directory, $: shell, client: {
     tui: { showToast: async ({ body }: any) => { toasts.push(body) } },
     session: { prompt: async (input: any) => { prompts.push(input) } },
   } })
@@ -334,4 +335,119 @@ test("git guard does not commit unrelated staging when a new session file disapp
     expect(f.toasts.some(t => t.title === "Auto-Commit Failed")).toBe(true)
     expect(f.toasts.some(t => t.title === "Auto-Commit")).toBe(false)
   } finally { await f.cleanup() }
+})
+
+
+// Keep lifecycle tests deterministic: these timers never touch the real clock,
+// and only the shell boundary is fake. Production polling and SDK hooks run.
+const controlledTimers = () => {
+  const original = { setTimeout, setInterval, clearTimeout, clearInterval }
+  let nextId = 0
+  const scheduled = new Map<number, { callback: () => Promise<void>; repeat: boolean }>()
+  globalThis.setTimeout = ((callback: () => Promise<void>) => {
+    scheduled.set(++nextId, { callback, repeat: false })
+    return nextId
+  }) as any
+  globalThis.setInterval = ((callback: () => Promise<void>) => {
+    scheduled.set(++nextId, { callback, repeat: true })
+    return nextId
+  }) as any
+  globalThis.clearTimeout = globalThis.clearInterval = ((id: number) => { scheduled.delete(id) }) as any
+  return {
+    scheduled,
+    async fire(id: number) {
+      const entry = scheduled.get(id)
+      if (!entry) return
+      if (!entry.repeat) scheduled.delete(id)
+      await entry.callback()
+    },
+    restore() { Object.assign(globalThis, original) },
+  }
+}
+
+const shellResult = (output: string) => ({ exitCode: 0, text: async () => output })
+const fakeTaskShell = (fetch: () => Promise<ReturnType<typeof shellResult>>) => () => ({
+  quiet() { return this },
+  nothrow: fetch,
+})
+
+test("task monitor keeps polling after a session is deleted", async () => {
+  const timers = controlledTimers()
+  let calls = 0
+  let f: Awaited<ReturnType<typeof fixture>> | undefined
+  try {
+    f = await fixture(taskMonitor, "task-monitor-config.json", { pollIntervalMs: 5000 }, fakeTaskShell(async () => {
+      calls++
+      return shellResult(`○ test-${calls} ● P1 Task ${calls}`)
+    }))
+    const initial = [...timers.scheduled].find(([, entry]) => !entry.repeat)![0]
+    const interval = [...timers.scheduled].find(([, entry]) => entry.repeat)![0]
+    await timers.fire(initial)
+    await f.event("session.deleted")
+    expect(timers.scheduled.has(interval)).toBe(true)
+    await timers.fire(interval)
+    expect(calls).toBe(2)
+    expect(f.toasts.filter(t => t.title === "New Task Ready")).toHaveLength(2)
+  } finally {
+    if (f) {
+      await f.hooks.event({ event: { type: "server.instance.disposed", properties: { directory: f.directory } } })
+      await f.cleanup()
+    }
+    timers.restore()
+  }
+})
+
+test("task monitor cancels both timers only when its own instance is disposed", async () => {
+  const timers = controlledTimers()
+  let calls = 0
+  let f: Awaited<ReturnType<typeof fixture>> | undefined
+  try {
+    f = await fixture(taskMonitor, "task-monitor-config.json", { pollIntervalMs: 5000 }, fakeTaskShell(async () => {
+      calls++
+      return shellResult("○ test-1 ● P1 Task")
+    }))
+    const queuedCallbacks = [...timers.scheduled.values()].map(entry => entry.callback)
+    expect(timers.scheduled.size).toBe(2)
+    await f.hooks.event({ event: { type: "server.instance.disposed", properties: { directory: "/another/project" } } })
+    expect(timers.scheduled.size).toBe(2)
+    await f.hooks.event({ event: { type: "server.instance.disposed", properties: { directory: f.directory } } })
+    expect(timers.scheduled.size).toBe(0)
+    // Already-queued callbacks and later session events must also be harmless.
+    for (const callback of queuedCallbacks) await callback()
+    await f.event("session.idle")
+    await f.hooks.tool.xpowers_task_status.execute({}, {})
+    expect(calls).toBe(0)
+    expect(f.toasts).toHaveLength(0)
+  } finally {
+    if (f) await f.cleanup()
+    timers.restore()
+  }
+})
+
+test("task monitor discards an in-flight poll result after disposal", async () => {
+  const timers = controlledTimers()
+  let calls = 0
+  let complete!: (result: ReturnType<typeof shellResult>) => void
+  const pending = new Promise<ReturnType<typeof shellResult>>(resolve => { complete = resolve })
+  let f: Awaited<ReturnType<typeof fixture>> | undefined
+  try {
+    f = await fixture(taskMonitor, "task-monitor-config.json", { pollIntervalMs: 5000 }, fakeTaskShell(() => {
+      calls++
+      return pending
+    }))
+    const initial = [...timers.scheduled].find(([, entry]) => !entry.repeat)![0]
+    const poll = timers.fire(initial)
+    expect(calls).toBe(1)
+    await f.hooks.event({ event: { type: "server.instance.disposed", properties: { directory: f.directory } } })
+    complete(shellResult("○ test-1 ● P1 Late task"))
+    await poll
+    expect(f.toasts).toHaveLength(0)
+    expect(timers.scheduled.size).toBe(0)
+    await f.event("session.idle")
+    expect(calls).toBe(1)
+    expect(await readFile(join(f.directory, ".opencode/cache/task-monitor/seen-tasks.json"), "utf8").catch(() => null)).toBeNull()
+  } finally {
+    if (f) await f.cleanup()
+    timers.restore()
+  }
 })

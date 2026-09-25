@@ -201,10 +201,12 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
 
   let lastTaskCount = 0
   let pollTimer: ReturnType<typeof setInterval> | null = null
+  let initialPollTimer: ReturnType<typeof setTimeout> | null = null
   let isPolling = false
   let isShuttingDown = false
 
   const notifyNewTasks = async (tasks: ParsedTask[]) => {
+    if (isShuttingDown) return
     // When trackSeenTasks is disabled, treat all tasks as new
     const newTasks = config.trackSeenTasks
       ? tasks.filter((t) => !seenTasks.has(t.id))
@@ -213,6 +215,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
     if (newTasks.length === 0) return
 
     for (const task of newTasks.slice(0, config.maxTasksInToast)) {
+      if (isShuttingDown) return
       await showToast(
         ctx.client,
         "New Task Ready",
@@ -224,6 +227,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
       )
     }
 
+    if (isShuttingDown) return
     if (newTasks.length > config.maxTasksInToast) {
       await showToast(
         ctx.client,
@@ -235,7 +239,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
     }
 
     // Record newly seen tasks (only when tracking is enabled)
-    if (config.trackSeenTasks) {
+    if (config.trackSeenTasks && !isShuttingDown) {
       for (const task of newTasks) {
         seenTasks.set(task.id, { ...task, firstSeenAt: Date.now() })
       }
@@ -244,7 +248,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
   }
 
   const notifyTaskCount = async (count: number, changed: boolean) => {
-    if (!config.showTaskCount) return
+    if (isShuttingDown || !config.showTaskCount) return
     if (!changed && count === lastTaskCount) return
 
     lastTaskCount = count
@@ -267,7 +271,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
 
     try {
       const result = await fetchTasks(ctx.$)
-      if (!result.ok) return
+      if (isShuttingDown || !result.ok) return
 
       const relevantTasks = result.tasks.filter((t) => t.priority <= config.minPriority)
       const prevCount = lastTaskCount
@@ -287,9 +291,13 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
 
   const stopPolling = () => {
     isShuttingDown = true
-    if (pollTimer) {
+    if (pollTimer !== null) {
       clearInterval(pollTimer)
       pollTimer = null
+    }
+    if (initialPollTimer !== null) {
+      clearTimeout(initialPollTimer)
+      initialPollTimer = null
     }
   }
 
@@ -297,17 +305,24 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
   if (config.pollIntervalMs >= 5000) {
     pollTimer = setInterval(doPoll, config.pollIntervalMs)
     // Initial poll after short delay to let OpenCode fully initialize
-    setTimeout(doPoll, 3000)
+    initialPollTimer = setTimeout(async () => {
+      initialPollTimer = null
+      await doPoll()
+    }, 3000)
   }
 
   return {
     // Show task count when session starts
     event: async ({ event }) => {
-      const sessionId = (event as any).session_id ?? (event as any).sessionID
+      if (event.type === "server.instance.disposed") {
+        if (event.properties.directory === ctx.directory) stopPolling()
+        return
+      }
+      if (isShuttingDown) return
 
       if (event.type === "session.created" && config.notifyOnSessionStart) {
         const result = await fetchTasks(ctx.$)
-        if (result.ok) {
+        if (result.ok && !isShuttingDown) {
           const tasks = result.tasks.filter((t) => t.priority <= config.minPriority)
           if (tasks.length > 0) {
             const summary = tasks
@@ -329,7 +344,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
       // Show task summary when agent goes idle
       if (event.type === "session.idle" && config.notifyOnSessionIdle) {
         const result = await fetchTasks(ctx.$)
-        if (!result.ok) return
+        if (isShuttingDown || !result.ok) return
 
         const tasks = result.tasks.filter((t) => t.priority <= config.minPriority)
 
@@ -353,7 +368,7 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
       // Note: pollTimer is per-plugin, not per-session.
       // In long-lived OpenCode processes, new sessions after deletion
       // should still receive task notifications, so we do NOT stop polling here.
-      // The timer is only cleaned up when the plugin itself is destroyed.
+      // server.instance.disposed above owns timer cleanup.
     },
 
     // Custom tool: AI can query task status
@@ -365,7 +380,9 @@ const xpowersTaskMonitorPlugin: Plugin = async (ctx) => {
           showAll: tool.schema.boolean().optional().describe("Show all ready tasks, not just top priority"),
         },
         async execute(args, toolCtx) {
+          if (isShuttingDown) return "Task monitor stopped."
           const result = await fetchTasks(ctx.$)
+          if (isShuttingDown) return "Task monitor stopped."
           if (!result.ok) {
             return `Error checking tasks: ${result.error}`
           }
