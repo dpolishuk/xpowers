@@ -60,6 +60,14 @@ Recommendations:
 2. Add null check with default for issue #2
 3. Add try/finally to close handle for issue #3
 ```
+OR
+
+```
+VERDICT: INCONCLUSIVE
+
+Missing capability: [exact unavailable capability, e.g. "Bash — cannot run shell commands"]
+Command that would have been run: [exact command the dispatch asked for]
+```
 
 ## Severity Levels
 

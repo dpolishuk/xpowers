@@ -69,6 +69,14 @@ Dead Code:
 1. utils.ts:oldHelper() - Never called, remove
 2. types.ts:LegacyType - No usages found
 ```
+OR
+
+```
+VERDICT: INCONCLUSIVE
+
+Missing capability: [exact unavailable capability, e.g. "Bash — cannot run shell commands"]
+Command that would have been run: [exact command the dispatch asked for]
+```
 
 ## Severity Levels
 

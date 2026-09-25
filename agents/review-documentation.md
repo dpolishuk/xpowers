@@ -70,6 +70,14 @@ Files to Update:
 - README.md
 - src/utils.ts (inline comment)
 ```
+OR
+
+```
+VERDICT: INCONCLUSIVE
+
+Missing capability: [exact unavailable capability, e.g. "Bash — cannot run shell commands"]
+Command that would have been run: [exact command the dispatch asked for]
+```
 
 ## Severity Levels
 
