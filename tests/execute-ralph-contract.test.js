@@ -167,3 +167,92 @@ test("test_pre_commit_equivalent_path_is_explicitly_named", () => {
 
   assert.equal(evidence.includes("Pre-commit-equivalent verification path"), true)
 })
+
+test("test_ralph_autopilot_sentinels_documented_in_source_and_wrappers", () => {
+  const files = [
+    "commands/execute-ralph.md",
+    "skills/execute-ralph/SKILL.md",
+    ".opencode/commands/execute-ralph.md",
+    ".opencode/skills/xpowers-execute-ralph/SKILL.md",
+    ".kimi/skills/execute-ralph/SKILL.md",
+    ".kimi/skills/codex-command-execute-ralph/SKILL.md",
+    ".kimi/skills/codex-skill-execute-ralph/SKILL.md",
+  ]
+
+  for (const file of files) {
+    const text = read(file)
+    assert.equal(text.includes("RALPH AUTOPILOT ACTIVE"), true, file)
+    assert.equal(text.includes("RALPH AUTOPILOT COMPLETE"), true, file)
+    assert.equal(text.includes("RALPH AUTOPILOT BLOCKED"), true, file)
+    assert.equal(text.includes("first non-empty line"), true, file)
+    assert.equal(text.includes("leading sentinel control block"), true, file)
+    assert.equal(text.includes("Required shapes"), true, file)
+    assert.equal(text.includes("terminal responses must not include `RALPH AUTOPILOT ACTIVE`"), true, file)
+    assert.equal(
+      text.includes("Later quoted examples, logs, or code blocks are ignored"),
+      true,
+      file,
+    )
+    assert.equal(
+      text.includes("terminal sentinels still win if they appear in a malformed leading sentinel control block"),
+      true,
+      file,
+    )
+    assert.equal(
+      text.includes("Active sentinel text alone is not enough to trigger blocking"),
+      true,
+      file,
+    )
+    assert.equal(
+      text.includes("does not bypass Claude Code permission prompts"),
+      true,
+      file,
+    )
+  }
+})
+
+test("test_ralph_autopilot_stop_hook_registered_for_activation_stop_and_subagent_stop", () => {
+  const hooks = JSON.parse(read("hooks/hooks.json")).hooks
+  const hookCommand = "${CLAUDE_PLUGIN_ROOT}/hooks/stop/30-ralph-autopilot-continue.js"
+  const reminderCommand = "${CLAUDE_PLUGIN_ROOT}/hooks/stop/10-gentle-reminders.sh"
+  const memsearchCommand = "${CLAUDE_PLUGIN_ROOT}/hooks/stop/20-memsearch-save.sh"
+  const commandsFor = (eventName) =>
+    (hooks[eventName] || []).flatMap((entry) =>
+      (entry.hooks || []).map((hook) => hook.command),
+    )
+
+  const stopCommands = commandsFor("Stop")
+  const subagentStopCommands = commandsFor("SubagentStop")
+  const userPromptExpansionCommands = commandsFor("UserPromptExpansion")
+
+  assert.equal(userPromptExpansionCommands.includes(hookCommand), true)
+  assert.equal(stopCommands.includes(hookCommand), true)
+  assert.equal(subagentStopCommands.includes(hookCommand), true)
+  assert.equal(stopCommands.includes(reminderCommand), true)
+  assert.equal(stopCommands.includes(memsearchCommand), true)
+  assert.ok(stopCommands.indexOf(hookCommand) < stopCommands.indexOf(reminderCommand))
+})
+
+test("test_execute_ralph_command_routes_to_cc_for_claude_code", () => {
+  const command = read("commands/execute-ralph.md")
+
+  assert.equal(command.includes("Platform Routing"), true)
+  assert.equal(command.includes("execute-ralph-cc"), true)
+  assert.equal(command.includes("ScheduleWakeup"), true)
+})
+
+test("test_execute_ralph_command_routes_to_original_for_other_platforms", () => {
+  const command = read("commands/execute-ralph.md")
+
+  assert.equal(command.includes("OpenCode"), true)
+  assert.equal(command.includes("`execute-ralph` skill"), true)
+})
+
+test("test_ralph_autopilot_stop_hook_is_executable_node_script", () => {
+  const hookPath = path.join(repoRoot, "hooks/stop/30-ralph-autopilot-continue.js")
+  const hook = read("hooks/stop/30-ralph-autopilot-continue.js")
+  const mode = fs.statSync(hookPath).mode
+
+  assert.equal(hook.startsWith("#!/usr/bin/env node"), true)
+  assert.notEqual(mode & 0o111, 0)
+})

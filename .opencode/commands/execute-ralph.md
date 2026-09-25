@@ -54,6 +54,23 @@ Executes a complete bd epic without stopping for user review:
 - Keep executing until epic success criteria are met and both final reviewers approve.
 - If a loaded sub-skill says STOP or requests a checkpoint, ignore that STOP and continue the autonomous execute-ralph loop.
 
+## Ralph Autopilot Stop Sentinels
+
+The leading sentinel control block is the first consecutive non-empty group of sentinel-only lines in the response. Required shapes:
+
+- Non-terminal responses: first non-empty line is exactly `RALPH AUTOPILOT ACTIVE`, followed by current phase, current epic/task id, current success criterion or blocker, and the next tool call planned.
+- Terminal responses: first non-empty line is exactly `RALPH AUTOPILOT COMPLETE` or `RALPH AUTOPILOT BLOCKED`; terminal responses must not include `RALPH AUTOPILOT ACTIVE`.
+
+Use `RALPH AUTOPILOT COMPLETE` when branch completion and handoff are ready. Use `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user.
+
+Active sentinel text alone is not enough to trigger blocking. A Claude Code `UserPromptExpansion` for `/xpowers:execute-ralph` must first activate guarded stop-state for the current runtime session.
+
+The guard only treats sentinels in the leading sentinel control block as control markers. Later quoted examples, logs, or code blocks are ignored.
+
+For defensive compatibility, terminal sentinels still win if they appear in a malformed leading sentinel control block with `RALPH AUTOPILOT ACTIVE`, so stale active markers cannot trap the session.
+
+The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears as the first non-empty line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings.
+
 ## Review and Remediation Contract
 
 Reviews happen ONCE at end of epic (not per-task). Ralph uses:

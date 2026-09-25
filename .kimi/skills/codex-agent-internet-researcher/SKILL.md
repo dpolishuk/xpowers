@@ -15,7 +15,7 @@ This skill wraps the source file `agents/internet-researcher.md` for Codex Skill
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: internet-researcher
@@ -92,4 +92,4 @@ When conducting internet research, you will:
    - Always note which tier your sources fall into
 
 Your goal is to provide accurate, current, well-sourced information from the internet so that planning and design decisions are based on real-world knowledge, not outdated assumptions. Be thorough in research, transparent about source quality, and concise in reporting.
-```
+````

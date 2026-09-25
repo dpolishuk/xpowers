@@ -3,13 +3,6 @@
 name: code-reviewer
 description: >
   Human-facing code reviewer for major milestones. Provides detailed explanations, suggestions, and code samples (not just verdicts). Use after completing a logical chunk of work against the original plan. Contrast with autonomous-reviewer (machine-facing, verdict-only) and review-implementation (spec-focused, requirements checklist). Examples: <example>Context: The user is creating a code-review agent that should be called after a logical chunk of code is written. user: "I've finished implementing the user authentication system as outlined in step 3 of our plan" assistant: "Great work! Now let me use the xpowers:code-reviewer agent to review the implementation against our plan and coding standards" <commentary>Since a major project step has been completed, use the xpowers:code-reviewer agent to validate the work against the plan and identify any issues.</commentary></example> <example>Context: User has completed a significant feature implementation. user: "The API endpoints for the task management system are now complete - that covers step 2 from our architecture document" assistant: "Excellent! Let me have the xpowers:code-reviewer agent examine this implementation to ensure it aligns with our plan and follows best practices" <commentary>A numbered step from the planning document has been completed, so the xpowers:code-reviewer agent should review the work.</commentary></example>
-# Model Configuration:
-# - inherit: Use the parent's/current model (default)
-# - providerID/modelID: Explicit model selection (e.g., anthropic/claude-sonnet-4-5)
-# 
-# Recommended: Capable model (sonnet, glm-4.7) for complex reasoning and analysis
-# See docs/model-configuration.md for details
-model: inherit
 
 ---
 

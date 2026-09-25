@@ -15,7 +15,7 @@ This skill wraps the source file `agents/review-documentation.md` for Codex Skil
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: review-documentation
 description: Documentation reviewer - checks if docs need updates for API changes, new features, config changes. Returns PASS or ISSUES_FOUND.
@@ -94,4 +94,4 @@ Files to Update:
 - Self-explanatory code
 - Test files
 - Obvious patterns following existing conventions
-```
+````

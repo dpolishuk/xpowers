@@ -29,7 +29,7 @@ type HostConfig = {
   detect: () => boolean
   targetDir: () => string
   sources: Record<string, SourceMapping>
-  postInstall?: (targetDir: string) => Promise<void>
+  postInstall?: (targetDir: string, installedFiles: string[]) => Promise<void>
   postUninstall?: (targetDir: string) => Promise<void>
   availableFeatures: string[]
 }
@@ -74,6 +74,38 @@ const throwOnSpawnFailure = (result: { exitCode: number, stdout: Uint8Array, std
   const stdout = result.stdout.toString().trim()
   throw new Error(`${label}${stderr || stdout ? `: ${stderr || stdout}` : ""}`)
 }
+
+const THIRD_PARTY_SKIP_ENV = "XPOWERS_SKIP_THIRD_PARTY_FEATURES"
+const THIRD_PARTY_FEATURES = new Set(["br", "bv", "graphify", "claude-mem"])
+const HOST_INDEPENDENT_FEATURES = new Set(["tm-cli", "br", "bv"])
+const BEADS_RUST_INSTALL_REF = process.env.XPOWERS_BEADS_RUST_INSTALL_REF || "f4687e51a5aa155fe27cb8ea6d7fdae942b0154f"
+const BEADS_VIEWER_INSTALL_REF = process.env.XPOWERS_BEADS_VIEWER_INSTALL_REF || "bb977f5b812b2987d77544872287b502b5b3a444"
+
+const skipThirdPartyFeatures = () => {
+  const value = process.env[THIRD_PARTY_SKIP_ENV]?.toLowerCase()
+  return value === "1" || value === "true" || value === "yes"
+}
+
+const thirdPartySkipMessage = () => `skipped (${THIRD_PARTY_SKIP_ENV}=1)`
+
+const GRAPHIFY_SUPPORTED_HOSTS = "Claude Code, Codex, OpenCode, Gemini CLI, or Pi Agent"
+const GRAPHIFY_TARGETS = [
+  { hostId: "claude", label: "Claude Code", args: ["graphify", "install"] },
+  { hostId: "codex", label: "Codex", args: ["graphify", "install", "--platform", "codex"] },
+  { hostId: "opencode", label: "OpenCode", args: ["graphify", "install", "--platform", "opencode"] },
+  { hostId: "gemini", label: "Gemini CLI", args: ["graphify", "install", "--platform", "gemini"] },
+  { hostId: "pi", label: "Pi Agent", args: ["graphify", "install", "--platform", "pi"] },
+]
+
+const graphifyTargetsForHosts = (hosts: string[]) => {
+  const selectedHosts = new Set(hosts)
+  return GRAPHIFY_TARGETS.filter((target) => selectedHosts.has(target.hostId))
+}
+
+const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`
+const graphifyCommand = (args: string[]) => args.join(" ")
+const beadsRustInstallUrl = () => `https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/${BEADS_RUST_INSTALL_REF}/install.sh`
+const beadsViewerInstallUrl = () => `https://raw.githubusercontent.com/Dicklesworthstone/beads_viewer/${BEADS_VIEWER_INSTALL_REF}/install.sh`
 
 const copyDir = async (src: string, dest: string) => {
   await mkdir(dest, { recursive: true })
@@ -154,7 +186,7 @@ const HOSTS: HostConfig[] = [
       commands: { from: "commands" },
       hooks: { from: "hooks" },
     },
-    availableFeatures: ["memsearch", "statusline"],
+    availableFeatures: ["memsearch", "statusline", "graphify", "claude-mem"],
     postInstall: async (targetDir) => {
       // Copy statusline script
       const src = join(REPO_ROOT, "scripts", "xpowers-statusline.sh")
@@ -175,7 +207,7 @@ const HOSTS: HostConfig[] = [
       plugins: { from: ".opencode/plugins" },
       scripts: { from: ".opencode/scripts" },
     },
-    availableFeatures: ["memsearch", "supermemory", "routing-wizard"],
+    availableFeatures: ["memsearch", "supermemory", "routing-wizard", "graphify", "claude-mem"],
     postInstall: async (targetDir) => {
       // Copy package.json and run bun install
       const pkgSrc = join(REPO_ROOT, ".opencode", "package.json")
@@ -244,12 +276,173 @@ const HOSTS: HostConfig[] = [
     },
   },
   {
+    id: "kimi_code",
+    name: "Kimi Code CLI",
+    detect: () => existsSync(join(homedir(), ".kimi-code")) || existsSync(join(xdgConfig(), "kimi-code")) || commandExists("kimi"),
+    targetDir: () => process.env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"),
+    sources: {},
+    availableFeatures: [],
+    postInstall: async (target, installedFiles) => {
+      // Determine which fallback skills (if any) are already owned by a
+      // previous XPowers install, so we can refresh them safely or remove them
+      // when the plugin path takes over. We inspect both the TypeScript
+      // installer JSON manifest and the shell installer's per-home text
+      // manifest so users can switch between the two documented installers
+      // without losing upgrade/uninstall tracking.
+      const prevManifest = await readManifest()
+      const prevKimiHost = prevManifest?.hosts?.kimi_code
+      const ownedFromJson =
+        prevKimiHost?.targetDir === target
+          ? (prevKimiHost.files
+              ?.filter((f) => f.startsWith("skills/"))
+              ?.map((f) => f.split("/")[1]) ?? [])
+          : []
+      const shellManifestPath = join(target, ".xpowers-manifest")
+      const ownedFromShell = existsSync(shellManifestPath)
+        ? (await readFile(shellManifestPath, "utf8"))
+            .split(/\n/)
+            .map((l) => l.trim())
+            .filter((l) => l.startsWith("skills/"))
+            .map((l) => l.split("/")[1])
+        : []
+      const ownedSkills = new Set([...ownedFromJson, ...ownedFromShell])
+
+      // Register the plugin with Kimi Code so MCP servers and sessionStart load.
+      let pluginInstalled = false
+      if (commandExists("kimi")) {
+        const installResult = Bun.spawnSync(["kimi", "plugin", "install", REPO_ROOT], { stdout: "pipe", stderr: "pipe" })
+        pluginInstalled = installResult.exitCode === 0
+        if (!pluginInstalled) {
+          const stderr = installResult.stderr.toString().trim()
+          console.warn(`kimi plugin install failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+
+      if (pluginInstalled) {
+        // Managed plugin provides skills. If a previous fallback install left
+        // XPowers-owned skill copies on disk, remove them so they don't
+        // duplicate the plugin's skills or become untracked orphans. Validate
+        // names first to avoid path traversal from corrupt manifests.
+        const safeSkillName = /^[a-z0-9_-]+$/i
+        for (const dirname of ownedSkills) {
+          if (!safeSkillName.test(dirname)) {
+            p.log.warn(`Ignoring unsafe Kimi Code fallback skill entry from manifest: ${dirname}`)
+            continue
+          }
+          const skillPath = join(target, "skills", dirname)
+          if (existsSync(skillPath)) {
+            await rm(skillPath, { recursive: true, force: true })
+            p.log.info(`Removed managed fallback skill (plugin now provides it): ${dirname}`)
+          }
+        }
+
+        // Clear the stale per-home text manifest from a previous shell fallback
+        // install so a later fallback install doesn't treat user-recreated
+        // skills as XPowers-owned.
+        const shellManifest = join(target, ".xpowers-manifest")
+        if (existsSync(shellManifest)) {
+          await rm(shellManifest, { force: true })
+        }
+      }
+
+      if (!pluginInstalled) {
+        // Fallback: copy skills to the canonical user-level path. Kimi Code
+        // discovers skills under ~/.kimi-code/skills/ automatically, so this
+        // works when the `kimi` binary is unavailable or plugin registration
+        // failed. We only copy here to avoid clobbering/restoring backups when
+        // the managed plugin path succeeds.
+        const sourceSkills = join(REPO_ROOT, ".kimi-code", "skills")
+        const targetSkills = join(target, "skills")
+        if (existsSync(sourceSkills)) {
+          await mkdir(targetSkills, { recursive: true })
+          const items = await listItems(sourceSkills, undefined, ["common-patterns"])
+          for (const item of items) {
+            if (item.startsWith("codex-")) continue
+            const srcPath = join(sourceSkills, item)
+            const destPath = join(targetSkills, item)
+            if (existsSync(destPath) && !ownedSkills.has(item)) {
+              p.log.warn(`Skipping fallback skill ${item}: already exists at ${destPath}`)
+              continue
+            }
+            const s = await stat(srcPath)
+            if (s.isDirectory()) {
+              await copyDir(srcPath, destPath)
+              installedFiles.push(`skills/${item}/`)
+            } else {
+              await copyFile(srcPath, destPath)
+              installedFiles.push(`skills/${item}`)
+            }
+          }
+        }
+      }
+
+      // Install guard hooks into ~/.kimi-code/config.toml
+      const hookScript = join(REPO_ROOT, "scripts", "install-kimi-code-hooks.sh")
+      if (existsSync(hookScript)) {
+        const hookResult = Bun.spawnSync(["bash", hookScript], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, KIMI_CODE_HOME: target },
+        })
+        if (hookResult.exitCode !== 0) {
+          const stderr = hookResult.stderr.toString().trim()
+          console.warn(`Kimi Code hook installation failed${stderr ? `: ${stderr}` : ""}`)
+        } else {
+          // Track the guard hooks so uninstall can remove them cleanly.
+          const guardHooks = [
+            "hooks/pre-tool-use/block-beads-direct-read.py",
+            "hooks/pre-tool-use/01-block-pre-commit-edits.py",
+            "hooks/pre-tool-use/block-dangerous-bash.py",
+            "hooks/pre-tool-use/block-env-writes.py",
+            "hooks/post-tool-use/02-block-bd-truncation.py",
+            "hooks/post-tool-use/03-block-pre-commit-bash.py",
+            "hooks/post-tool-use/04-block-pre-existing-checks.py",
+          ]
+          for (const hook of guardHooks) {
+            installedFiles.push(hook)
+          }
+        }
+      }
+    },
+    postUninstall: async (target) => {
+      if (commandExists("kimi")) {
+        const removeResult = Bun.spawnSync(["kimi", "plugin", "remove", "xpowers"], { stdout: "pipe", stderr: "pipe" })
+        if (removeResult.exitCode !== 0) {
+          const stderr = removeResult.stderr.toString().trim()
+          console.warn(`kimi plugin remove failed${stderr ? `: ${stderr}` : ""}`)
+        }
+      }
+      // `kimi plugin remove` leaves the managed directory behind, so clean it
+      // up explicitly to match the user's expectation that uninstall removes
+      // the XPowers code.
+      const managedDir = join(target, "plugins", "managed", "xpowers")
+      if (existsSync(managedDir)) {
+        await rm(managedDir, { recursive: true, force: true })
+      }
+      // Remove XPowers hooks block from config.toml
+      const configFile = join(target, "config.toml")
+      if (existsSync(configFile)) {
+        let config = await readFile(configFile, "utf8")
+        config = config
+          .split(/\n/)
+          .filter((line, index, lines) => {
+            const startIdx = lines.findIndex((l) => l.includes("# BEGIN XPOWERS KIMI-CODE HOOKS"))
+            const endIdx = lines.findIndex((l) => l.includes("# END XPOWERS KIMI-CODE HOOKS"))
+            if (startIdx === -1 || endIdx === -1) return true
+            return index < startIdx || index > endIdx
+          })
+          .join("\n")
+        await writeFile(configFile, config, "utf8")
+      }
+    },
+  },
+  {
     id: "gemini",
     name: "Gemini CLI",
     detect: () => commandExists("gemini"),
     targetDir: () => join(REPO_ROOT, ".gemini-extension"),
     sources: {},
-    availableFeatures: [],
+    availableFeatures: ["graphify", "claude-mem"],
     postInstall: async () => {
       if (!commandExists("gemini")) {
         throw new Error("gemini CLI not found — cannot install extension")
@@ -272,7 +465,7 @@ const HOSTS: HostConfig[] = [
     sources: {
       "extensions/xpowers": { from: ".pi/extensions/xpowers", exclude: ["routing.json"] },
     },
-    availableFeatures: ["memsearch"],
+    availableFeatures: ["memsearch", "graphify"],
     postInstall: async (targetDir) => {
       const extDir = join(targetDir, "extensions", "xpowers")
 
@@ -445,6 +638,144 @@ const FEATURES: FeatureConfig[] = [
     uninstall: async () => {
       if (commandExists("python3")) {
         Bun.spawnSync(["python3", "-m", "pip", "uninstall", "-y", "memsearch"], { stdout: "pipe", stderr: "pipe" })
+      }
+    },
+  },
+  {
+    id: "br",
+    name: "Beads Rust (br)",
+    hint: "classic beads-compatible Rust task CLI",
+    install: async () => {
+      if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const installUrl = beadsRustInstallUrl()
+      if (!commandExists("curl")) {
+        return `curl not found — install manually: curl -fsSL ${installUrl} | bash -s -- --skip-skills`
+      }
+      const result = Bun.spawnSync([
+        "bash",
+        "-lc",
+        `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash -s -- --skip-skills --quiet --no-gum`,
+      ], { stdout: "pipe", stderr: "pipe" })
+      return result.exitCode === 0
+        ? "br installed"
+        : `br install failed — try: curl -fsSL ${installUrl} | bash -s -- --skip-skills`
+    },
+    uninstall: async () => {
+      await unlink(join(homedir(), ".local", "bin", "br")).catch(() => {})
+      await unlink(join(homedir(), ".local", "bin", "br.exe")).catch(() => {})
+    },
+  },
+  {
+    id: "bv",
+    name: "Beads Viewer (bv)",
+    hint: "graph-aware Beads TUI and robot-mode triage sidecar",
+    install: async () => {
+      if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const installUrl = beadsViewerInstallUrl()
+      if (!commandExists("curl")) {
+        return `curl not found — install manually: curl -fsSL ${installUrl} | bash`
+      }
+      const result = Bun.spawnSync([
+        "bash",
+        "-lc",
+        `set -o pipefail; curl -fsSL ${shellQuote(installUrl)} | bash`,
+      ], { stdout: "pipe", stderr: "pipe" })
+      return result.exitCode === 0
+        ? "bv installed"
+        : `bv install failed — try: curl -fsSL ${installUrl} | bash`
+    },
+    uninstall: async () => {
+      await unlink(join(homedir(), ".local", "bin", "bv")).catch(() => {})
+      await unlink(join(homedir(), ".local", "bin", "bv.exe")).catch(() => {})
+    },
+  },
+  {
+    id: "graphify",
+    name: "graphify knowledge graph",
+    hint: "code/docs/media knowledge graph skill and CLI",
+    install: async (hosts) => {
+      if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+      const targets = graphifyTargetsForHosts(hosts)
+      if (targets.length === 0) return `skipped (${GRAPHIFY_SUPPORTED_HOSTS} not selected)`
+      if (!commandExists("python3")) {
+        return `python3 not found — install manually: python3 -m pip install --user graphifyy && ${graphifyCommand(targets[0].args)}`
+      }
+      const packageResult = Bun.spawnSync(["python3", "-m", "pip", "install", "--user", "graphifyy", "--quiet"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      if (packageResult.exitCode !== 0) {
+        return "graphify package install failed — try: python3 -m pip install --user graphifyy"
+      }
+
+      const installed: string[] = []
+      const failed: string[] = []
+      for (const target of targets) {
+        const result = Bun.spawnSync([
+          "bash",
+          "-lc",
+          `PATH="$HOME/.local/bin:$PATH" ${target.args.map(shellQuote).join(" ")}`,
+        ], { stdout: "pipe", stderr: "pipe" })
+        if (result.exitCode !== 0) {
+          failed.push(`${target.label} (exit ${result.exitCode}; try: ${graphifyCommand(target.args)})`)
+          continue
+        }
+        installed.push(target.label)
+      }
+
+      if (failed.length > 0) {
+        return installed.length > 0
+          ? `graphify installed for ${installed.join(", ")}; could not install for ${failed.join(", ")}`
+          : `graphify install failed for ${failed.join(", ")}`
+      }
+      return `graphify installed for ${installed.join(", ")}`
+    },
+    uninstall: async () => {
+      if (commandExists("python3")) {
+        Bun.spawnSync(["python3", "-m", "pip", "uninstall", "-y", "graphifyy"], { stdout: "pipe", stderr: "pipe" })
+      }
+    },
+  },
+  {
+    id: "claude-mem",
+    name: "Claude-Mem",
+    hint: "persistent memory plugin for Claude Code, OpenCode, and Gemini CLI",
+    install: async (hosts) => {
+      if (skipThirdPartyFeatures()) return thirdPartySkipMessage()
+
+      const targets: Array<{ label: string, args: string[] }> = []
+      if (hosts.includes("claude")) targets.push({ label: "Claude Code", args: ["npx", "--yes", "claude-mem", "install"] })
+      if (hosts.includes("opencode")) targets.push({ label: "OpenCode", args: ["npx", "--yes", "claude-mem", "install", "--ide", "opencode"] })
+      if (hosts.includes("gemini")) targets.push({ label: "Gemini CLI", args: ["npx", "--yes", "claude-mem", "install", "--ide", "gemini-cli"] })
+
+      if (targets.length === 0) return "skipped (Claude Code, OpenCode, or Gemini CLI not selected)"
+      if (!commandExists("npx")) return "npx not found — install manually: npx --yes claude-mem install"
+
+      const installed: string[] = []
+      const failed: string[] = []
+      for (const target of targets) {
+        const result = Bun.spawnSync(target.args, { stdout: "pipe", stderr: "pipe" })
+        if (result.exitCode !== 0) {
+          failed.push(`${target.label} (exit ${result.exitCode}; try: ${target.args.join(" ")})`)
+          continue
+        }
+        installed.push(target.label)
+      }
+      if (failed.length > 0) {
+        return installed.length > 0
+          ? `claude-mem installed for ${installed.join(", ")}; could not install for ${failed.join(", ")}`
+          : `claude-mem install failed for ${failed.join(", ")}`
+      }
+      return `claude-mem installed for ${installed.join(", ")}`
+    },
+    uninstall: async () => {
+      if (!commandExists("npx")) {
+        p.log.warn("npx not found — skipping claude-mem uninstall")
+        return
+      }
+      const result = Bun.spawnSync(["npx", "--yes", "claude-mem", "uninstall", "--all"], { stdout: "pipe", stderr: "pipe" })
+      if (result.exitCode !== 0) {
+        p.log.warn("claude-mem uninstall failed — try: npx --yes claude-mem uninstall --all")
       }
     },
   },
@@ -642,7 +973,7 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
 
     // Run post-install and track additional files (before writing version marker)
     if (host.postInstall) {
-      await host.postInstall(target)
+      await host.postInstall(target, installedFiles)
       // Re-scan for files that postInstall may have added
       if (host.id === "opencode") {
         for (const f of ["package.json", "task-context.json", "cass-memory.json"]) {
@@ -751,6 +1082,12 @@ type CliArgs = {
   allowConflicts: boolean
 }
 
+const HOST_ID_ALIASES: Record<string, string> = {
+  "kimi-code": "kimi_code",
+}
+
+const normalizeHostId = (id: string) => HOST_ID_ALIASES[id] || id
+
 const parseArgs = (): CliArgs => {
   const args: CliArgs = { yes: false, uninstall: false, json: false, hosts: [], features: [], help: false, allowConflicts: false }
   const argv = process.argv.slice(2)
@@ -771,7 +1108,7 @@ const parseArgs = (): CliArgs => {
         args.yes = true // JSON implies non-interactive
         break
       case "--hosts":
-        args.hosts = (argv[++i] || "").split(",").filter(Boolean)
+        args.hosts = (argv[++i] || "").split(",").filter(Boolean).map(normalizeHostId)
         break
       case "--features":
         args.features = (argv[++i] || "").split(",").filter(Boolean)
@@ -819,8 +1156,8 @@ Options:
   --yes, -y          Auto-install all detected hosts and features
   --json, -j         Output structured JSON (implies --yes, for AI agents)
   --uninstall        Remove all installed files and features
-  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,gemini,pi
-  --features <list>  Comma-separated feature IDs: memsearch,supermemory,statusline,routing-wizard,tm-cli
+  --hosts <list>     Comma-separated host IDs: claude,opencode,kimi,kimi_code,gemini,pi (kimi-code is also accepted)
+  --features <list>  Comma-separated feature IDs: memsearch,br,bv,graphify,claude-mem,supermemory,statusline,routing-wizard,tm-cli
   --allow-conflicts  Advanced: continue despite detected hyperpowers/myhyperpowers/superpowers installs
   --help, -h         Show this help
 `)
@@ -895,7 +1232,7 @@ Options:
 
   if (detected.length === 0 && args.hosts.length === 0 && args.features.length === 0) {
     p.log.error("No supported hosts detected. Install Claude Code, OpenCode, or another supported tool first.")
-    p.log.info("You can still install host-independent features: bun scripts/install.ts --features tm-cli")
+    p.log.info("You can still install host-independent features: bun scripts/install.ts --features tm-cli,br,bv")
     p.outro("Nothing to install.")
     return
   }
@@ -947,7 +1284,7 @@ Options:
 
   // Phase 3: Select features
   const availableFeatures = FEATURES.filter((f) =>
-    f.id === "tm-cli" || selectedHostIds.some((hid) => HOSTS.find((h) => h.id === hid)?.availableFeatures.includes(f.id)),
+    HOST_INDEPENDENT_FEATURES.has(f.id) || selectedHostIds.some((hid) => HOSTS.find((h) => h.id === hid)?.availableFeatures.includes(f.id)),
   )
 
   let selectedFeatureIds: string[]
@@ -980,6 +1317,7 @@ Options:
   }
 
   let hostInstallFailed = false
+  const successfulHostIds: string[] = []
 
   for (const hostId of selectedHostIds) {
     const host = HOSTS.find((h) => h.id === hostId)
@@ -993,6 +1331,7 @@ Options:
     try {
       const files = await installHost(host)
       manifest.hosts[hostId] = { targetDir: host.targetDir(), files }
+      successfulHostIds.push(hostId)
       s.stop(`${host.name}: ${files.length} items installed`)
     } catch (err) {
       hostInstallFailed = true
@@ -1001,17 +1340,38 @@ Options:
   }
 
   // Phase 5: Install features
-  for (const featureId of selectedFeatureIds) {
+  const featuresWereExplicitlyRequested = args.features.length > 0
+  const shouldInstallFeatures = featuresWereExplicitlyRequested || successfulHostIds.length > 0
+  const featureHostIds = featuresWereExplicitlyRequested ? selectedHostIds : successfulHostIds
+  const featureResults: Record<string, boolean> = {}
+
+  if (!shouldInstallFeatures && selectedFeatureIds.length > 0) {
+    p.log.warn("Skipping default feature setup because no selected hosts installed successfully.")
+    for (const featureId of selectedFeatureIds) featureResults[featureId] = false
+  }
+
+  const selectedThirdPartyFeatureIds = selectedFeatureIds.filter((id) => THIRD_PARTY_FEATURES.has(id))
+  if (shouldInstallFeatures && selectedThirdPartyFeatureIds.length > 0 && !skipThirdPartyFeatures() && !args.json) {
+    p.log.warn(`Third-party features run upstream installers/packages: ${selectedThirdPartyFeatureIds.join(", ")}`)
+  }
+
+  for (const featureId of shouldInstallFeatures ? selectedFeatureIds : []) {
     const feature = FEATURES.find((f) => f.id === featureId)
     if (!feature) {
       p.log.warn(`Unknown feature "${featureId}" — skipping. Supported: ${FEATURES.map((f) => f.id).join(", ")}`)
+      featureResults[featureId] = false
       continue
     }
 
     s.start(`Setting up ${feature.name}...`)
-    const result = await feature.install(selectedHostIds, REPO_ROOT)
+    const result = await feature.install(featureHostIds, REPO_ROOT)
     const success = !result.includes("failed") && !result.includes("not found") && !result.includes("skipped")
-    manifest.features[featureId] = { installed: success, metadata: { lastResult: result } }
+    featureResults[featureId] = success
+    const existingFeature = manifest.features[featureId]
+    manifest.features[featureId] = {
+      installed: success || existingFeature?.installed === true,
+      metadata: { ...(existingFeature?.metadata ?? {}), lastResult: result },
+    }
     s.stop(result)
   }
 
@@ -1027,6 +1387,7 @@ Options:
       features: Object.fromEntries(
         Object.entries(manifest.features).map(([k, v]) => [k, v.installed]),
       ),
+      featureResults,
       manifestPath: manifestPath(),
     }))
   } else {

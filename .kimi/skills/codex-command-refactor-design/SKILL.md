@@ -15,10 +15,10 @@ This skill wraps the source file `commands/refactor-design.md` for Codex Skills 
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Design a refactor with composition, DI, and test strategy
 ---
 
 Use the xpowers:refactoring-design skill exactly as written
-```
+````

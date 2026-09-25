@@ -1,13 +1,6 @@
 ---
 name: autonomous-reviewer
 description: Machine-facing reviewer for automated pipelines. Returns structured verdicts (PASS/NEEDS_FIX/APPROVED/GAPS_FOUND) with actionable fix instructions for orchestrators to act on. Can research unclear patterns via web search. Use during continuous execution (ralph, execute-ralph). Contrast with code-reviewer (human-facing, narrative explanations) and review-implementation (spec-focused, requirements checklist).
-# Model Configuration:
-# - inherit: Use the parent's/current model (default)
-# - providerID/modelID: Explicit model selection (e.g., anthropic/claude-opus-4-5)
-# 
-# Recommended: Most capable model (opus, glm-4.7) for final validation and comprehensive review
-# See docs/model-configuration.md for details
-model: inherit
 ---
 
 > 📚 See the main xpowers documentation: [Global README](../README.md)

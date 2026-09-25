@@ -15,7 +15,7 @@ This skill wraps the source file `commands/write-plan.md` for Codex Skills compa
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Create detailed implementation plan with bite-sized tasks
 ---
@@ -25,4 +25,4 @@ Use the xpowers:writing-plans skill exactly as written.
 Planning topic: $ARGUMENTS
 
 If no topic is provided, ask the user for the feature or goal to plan before proceeding.
-```
+````

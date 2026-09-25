@@ -1,15 +1,24 @@
-import { executePiSubagentAsync, type ExecutePiSubagentParams, type StructuredSubagentOutput } from "./subagent"
+import { executeSubagentAsync } from "./subagent-bridge.js"
 import { executePiTasksParallel } from "./task-runner"
+import { resolveRoutingEntry, type RoutingConfig, normalizeRoutingConfig } from "./routing"
+import { readFileSync, existsSync } from "node:fs"
+import { join, dirname, basename, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+import type { StructuredTaskOutput } from "./task-runner"
 
 export interface ResolvedParallelReviewRoute {
   model?: string | null
   effort?: string
 }
 
-export interface ParallelReviewParams extends ExecutePiSubagentParams {
+export interface ParallelReviewParams {
+  task: string
   type: "review" | "validation"
   agent: "review-quality" | "review-implementation" | "review-simplification"
   format: "structured"
+  model?: string | null
+  effort?: string
+  cwd?: string
 }
 
 export interface ParallelReviewRequest {
@@ -23,7 +32,55 @@ export interface ParallelReviewExecutionContext {
   uiCtx?: any
 }
 
-export type ParallelReviewExecutor = (params: ParallelReviewParams) => Promise<StructuredSubagentOutput>
+export type ParallelReviewExecutor = (params: ParallelReviewParams) => Promise<StructuredTaskOutput>
+
+function getRoutingConfigPath(): string {
+  const sourceDir = dirname(fileURLToPath(import.meta.url))
+  const extDir = basename(sourceDir) === "dist" ? resolve(sourceDir, "..") : sourceDir
+  return join(extDir, "routing.json")
+}
+
+let _routingConfigCache: RoutingConfig | undefined
+
+function loadRoutingConfig(): RoutingConfig {
+  if (_routingConfigCache) return _routingConfigCache
+  try {
+    const routingPath = getRoutingConfigPath()
+    if (existsSync(routingPath)) {
+      _routingConfigCache = normalizeRoutingConfig(JSON.parse(readFileSync(routingPath, "utf8")))
+      return _routingConfigCache
+    }
+  } catch {
+    // ignore
+  }
+  return normalizeRoutingConfig({})
+}
+
+/** Test helper to clear the routing config cache. */
+export function __testClearRoutingConfigCache(): void {
+  _routingConfigCache = undefined
+}
+
+async function defaultParallelReviewExecutor(params: ParallelReviewParams): Promise<StructuredTaskOutput> {
+  const config = loadRoutingConfig()
+  const routing = resolveRoutingEntry(config, {
+    type: params.type,
+    agent: params.agent,
+    explicitModel: params.model ?? undefined,
+  })
+  const result = await executeSubagentAsync(
+    {
+      task: params.task,
+      model: params.model,
+      effort: params.effort,
+      agent: params.agent,
+      cwd: params.cwd,
+      format: params.format,
+    },
+    routing.model ? { model: routing.model, effort: routing.effort } : undefined,
+  )
+  return JSON.parse(result.content[0]?.text || "{}") as StructuredTaskOutput
+}
 
 export function buildParallelReviewRequests(cwd?: string): ParallelReviewRequest[] {
   return [
@@ -60,11 +117,6 @@ export function buildParallelReviewRequests(cwd?: string): ParallelReviewRequest
   ]
 }
 
-async function defaultParallelReviewExecutor(params: ParallelReviewParams): Promise<StructuredSubagentOutput> {
-  const result = await executePiSubagentAsync(params)
-  return JSON.parse(result.content[0]?.text || "{}") as StructuredSubagentOutput
-}
-
 function applyResolvedRoute(
   request: ParallelReviewRequest,
   resolveRoute?: (params: Pick<ParallelReviewParams, "type" | "agent">) => ResolvedParallelReviewRoute,
@@ -86,7 +138,7 @@ export async function runParallelReview(
   execute: ParallelReviewExecutor = defaultParallelReviewExecutor,
 ): Promise<string> {
   const requests = buildParallelReviewRequests(ctx.cwd).map((request) => applyResolvedRoute(request, ctx.resolveRoute))
-  
+
   let dashboard: any = null
   let handle: any = null
   const controller = new AbortController()
@@ -103,10 +155,8 @@ export async function runParallelReview(
       }))
     }
     dashboard = new LiveExecutionDashboard(initialState, () => {
-      // Abort execution when user cancels
       controller.abort()
     })
-    // Launch dashboard and save handle
     handle = ctx.uiCtx.ui.custom(
       (tui: any, _theme: any, _keybindings: any, _done: (v: unknown) => void) => {
         dashboard.tui = tui

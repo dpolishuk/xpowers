@@ -15,7 +15,7 @@ This skill wraps the source file `agents/knowledge-aggregator.md` for Codex Skil
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: knowledge-aggregator
@@ -183,4 +183,4 @@ This is critical — your value scales with available sources but you must ALWAY
 3. **Graceful degradation**: Always produce output, regardless of source availability
 4. **Context over code**: Your value is finding information that ISN'T in the code
 5. **Honest gaps**: Reporting what you couldn't find is as valuable as what you found
-```
+````

@@ -19,7 +19,7 @@ flowchart TD
 ```
 
 <skill_overview>
-Execute a complete epic autonomously by dispatching one Agent subagent per task. Each subagent handles SRE refinement, TDD, test-runner, commit, and task closure in its own context. The main loop only tracks git log progress and epic criteria. End-of-epic: 3 specialized reviews (review-quality, security-scanner, test-effectiveness-analyst) in parallel, then dual final gate (autonomous-reviewer + review-implementation). Branch completion via finishing-a-development-branch.
+Execute a complete epic autonomously by dispatching one Agent subagent per task. **Platform routing:** If running in Claude Code (you see "You are Claude Code" in your system prompt), stop now and load the `execute-ralph-cc` skill instead -- it uses ScheduleWakeup for reliable autonomous looping in Claude Code. Continue with this skill only on other platforms (OpenCode, Gemini CLI, Kimi). Each subagent handles SRE refinement, TDD, test-runner, commit, and task closure in its own context. The main loop only tracks git log progress and epic criteria. End-of-epic: 3 specialized reviews (review-quality, security-scanner, test-effectiveness-analyst) in parallel, then dual final gate (autonomous-reviewer + review-implementation). Branch completion via finishing-a-development-branch.
 </skill_overview>
 
 <rigidity_level>
@@ -37,6 +37,27 @@ STRICT - Follow the four-phase loop exactly. Epic requirements are immutable. Ne
 | **4. Branch Completion** | finishing-a-development-branch | Epic closed |
 
 </quick_reference>
+
+## Ralph Autopilot Stop Contract
+
+The leading sentinel control block is the first consecutive non-empty group of sentinel-only lines in the response. Required shapes:
+
+- Non-terminal responses: first non-empty line is exactly `RALPH AUTOPILOT ACTIVE`, followed by enough objective state to resume without asking the user:
+  - Current phase
+  - Current epic/task id
+  - Current success criterion or blocker being handled
+  - Next tool call planned
+- Terminal responses: first non-empty line is exactly `RALPH AUTOPILOT COMPLETE` or `RALPH AUTOPILOT BLOCKED`; terminal responses must not include `RALPH AUTOPILOT ACTIVE`.
+
+Use `RALPH AUTOPILOT COMPLETE` when the branch is complete and handoff is ready. Use `RALPH AUTOPILOT BLOCKED` when a critical blocker must reach the user.
+
+Active sentinel text alone is not enough to trigger blocking. A Claude Code `UserPromptExpansion` for `/xpowers:execute-ralph` must first activate guarded stop-state for the current runtime session.
+
+The guard only treats sentinels in the leading sentinel control block as control markers. Later quoted examples, logs, or code blocks are ignored.
+
+For defensive compatibility, terminal sentinels still win if they appear in a malformed leading sentinel control block with `RALPH AUTOPILOT ACTIVE`, so stale active markers cannot trap the session.
+
+The Claude Code Stop/SubagentStop guard can resume Ralph only when the exact active sentinel appears as the first non-empty line in an activated execute-ralph session. It does not bypass Claude Code permission prompts or session permission-mode settings. When a permission prompt appears, comply with Claude Code's permission flow; do not claim that Ralph can override it.
 
 <when_to_use>
 

@@ -15,10 +15,10 @@ This skill wraps the source file `commands/refactor-diagnose.md` for Codex Skill
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Diagnose code/design smells and refactor targets
 ---
 
 Use the xpowers:refactoring-diagnosis skill exactly as written
-```
+````

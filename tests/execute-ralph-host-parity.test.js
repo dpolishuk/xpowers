@@ -24,6 +24,12 @@ const REQUIRED_COMMAND_CLAUSES = [
   "NEEDS_FIX, ISSUES_FOUND, GAPS_FOUND, CRITICAL_ISSUES -> remediation path",
   "Unknown or malformed verdict -> remediation path (never auto-approve)",
   "Mixed final reviewer outputs -> remediation path (no epic close).",
+  "RALPH AUTOPILOT ACTIVE",
+  "Required shapes",
+  "terminal responses must not include `RALPH AUTOPILOT ACTIVE`",
+  "Later quoted examples, logs, or code blocks are ignored",
+  "Active sentinel text alone is not enough to trigger blocking",
+  "does not bypass Claude Code permission prompts",
   "node --test tests/execute-ralph-contract.test.js",
   "node --test tests/codex-*.test.js",
   "node --test tests/*.test.js",
@@ -49,15 +55,63 @@ function createFakePiShim(binDir) {
   fs.chmodSync(piPath, 0o755)
 }
 
+function removeWritableTree(targetPath) {
+  if (!fs.existsSync(targetPath)) return
+
+  const makeWritable = (entryPath) => {
+    const stat = fs.lstatSync(entryPath)
+    if (stat.isSymbolicLink()) return
+    if (stat.isDirectory()) {
+      for (const child of fs.readdirSync(entryPath)) {
+        makeWritable(path.join(entryPath, child))
+      }
+      fs.chmodSync(entryPath, 0o700)
+      return
+    }
+    fs.chmodSync(entryPath, 0o600)
+  }
+
+  makeWritable(targetPath)
+  fs.rmSync(targetPath, { recursive: true, force: true })
+}
+
 test("Claude and OpenCode execute-ralph command wrappers stay aligned to the same contract clauses", () => {
   const files = [
     ["Claude canonical wrapper", "commands/execute-ralph.md"],
     ["OpenCode wrapper", ".opencode/commands/execute-ralph.md"],
     ["Kimi/Codex generated wrapper", ".kimi/skills/codex-command-execute-ralph/SKILL.md"],
+    ["Codex agent command wrapper", ".agents/skills/codex-command-execute-ralph/SKILL.md"],
   ]
 
   for (const [label, file] of files) {
     assertContainsAll(read(file), REQUIRED_COMMAND_CLAUSES, label)
+  }
+})
+
+test("host execute-ralph skill surfaces carry the autopilot stop contract", () => {
+  const clauses = [
+    "RALPH AUTOPILOT ACTIVE",
+    "RALPH AUTOPILOT COMPLETE",
+    "RALPH AUTOPILOT BLOCKED",
+    "first non-empty line",
+    "leading sentinel control block",
+    "Required shapes",
+    "terminal responses must not include `RALPH AUTOPILOT ACTIVE`",
+    "Later quoted examples, logs, or code blocks are ignored",
+    "terminal sentinels still win if they appear in a malformed leading sentinel control block",
+    "Active sentinel text alone is not enough to trigger blocking",
+    "does not bypass Claude Code permission prompts",
+  ]
+  const files = [
+    ["Claude canonical skill", "skills/execute-ralph/SKILL.md"],
+    ["OpenCode skill", ".opencode/skills/xpowers-execute-ralph/SKILL.md"],
+    ["Kimi native skill", ".kimi/skills/execute-ralph/SKILL.md"],
+    ["Kimi/Codex generated skill", ".kimi/skills/codex-skill-execute-ralph/SKILL.md"],
+    ["Codex agent generated skill", ".agents/skills/codex-skill-execute-ralph/SKILL.md"],
+  ]
+
+  for (const [label, file] of files) {
+    assertContainsAll(read(file), clauses, label)
   }
 })
 
@@ -125,7 +179,7 @@ test("Pi installed runtime resolves execute-ralph through the canonical command 
     assertContainsAll(output, REQUIRED_COMMAND_CLAUSES, "Pi installed execute-ralph output")
     assert.equal(output.includes("Pi invocation arguments: --reviewer-model=sonnet"), true)
   } finally {
-    fs.rmSync(home, { recursive: true, force: true })
-    fs.rmSync(binDir, { recursive: true, force: true })
+    removeWritableTree(home)
+    removeWritableTree(binDir)
   }
 })

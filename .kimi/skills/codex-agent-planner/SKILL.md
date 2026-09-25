@@ -15,7 +15,7 @@ This skill wraps the source file `agents/planner.md` for Codex Skills compatibil
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 
 name: planner
@@ -168,4 +168,4 @@ Task 3: [title] (depends on Task 1) - Risk: LOW
 4. **Dependency-aware**: Tasks in the right order, with clear reasons for ordering.
 5. **Risk-transparent**: Every task has an honest risk assessment.
 6. **Implementable**: A developer should be able to execute any task without asking clarifying questions.
-```
+````

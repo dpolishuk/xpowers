@@ -164,11 +164,14 @@ model: anthropic/claude-haiku-4-5  # Full providerID/modelID format
 
 **Supported model values:**
 
-| Value | Description | Example |
-|-------|-------------|---------|
-| `inherit` | Use the parent's/current model | `model: inherit` |
-| `providerID/modelID` | Explicit provider and model | `model: anthropic/claude-sonnet-4-5` |
-| `modelID` (OpenCode only) | Shorthand for built-in providers | `model: claude-sonnet-4-5` |
+| Value | Description | Example | Host |
+|-------|-------------|---------|------|
+| *(omit `model`)* | Inherit the parent's/current model (native fallback) | _(no `model` field)_ | OpenCode |
+| `inherit` | Use the parent's/current model | `model: inherit` | Claude Code only |
+| `providerID/modelID` | Explicit provider and model | `model: anthropic/claude-sonnet-4-5` | Both |
+
+> **⚠️ OpenCode:** Do NOT use `model: inherit` — it resolves to `undefined` and causes `ProviderModelNotFoundError`.
+> To inherit the parent model on OpenCode, simply omit the `model` field from frontmatter entirely.
 
 **Example agent configurations:**
 
@@ -372,7 +375,7 @@ Claude Code uses a different configuration approach. Models are resolved through
 }
 ```
 
-All agents with `model: inherit` will use `claude-sonnet-4-5`.
+All agents without an explicit `model` in frontmatter (or in `opencode.json` → `agent.<name>.model`) will use `claude-sonnet-4-5`.
 
 ---
 

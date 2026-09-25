@@ -15,7 +15,7 @@ This skill wraps the source file `agents/devops.md` for Codex Skills compatibili
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: devops
 description: DevOps reviewer - analyzes CI/CD pipelines, pre-commit hooks, build configurations, and diagnoses pipeline failures. Returns PASS or ISSUES_FOUND.
@@ -169,4 +169,4 @@ Recent CI: 3/5 last runs passed. Failures in workflow 'test' (run #456, #458).
 3. **Safety first**: Only run read-only diagnostic commands
 4. **Actionable**: Every finding includes a concrete suggested fix
 5. **Context-aware**: Check recent CI history to identify patterns, not just config
-```
+````

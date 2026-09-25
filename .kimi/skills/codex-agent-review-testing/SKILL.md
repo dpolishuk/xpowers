@@ -15,7 +15,7 @@ This skill wraps the source file `agents/review-testing.md` for Codex Skills com
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 name: review-testing
 description: Testing reviewer - evaluates test coverage, test quality, and testing gaps. Returns PASS or ISSUES_FOUND.
@@ -91,4 +91,4 @@ Recommended Tests:
 - Existing untested code (only new/changed code)
 - Test style preferences
 - Over-testing (testing implementation details)
-```
+````

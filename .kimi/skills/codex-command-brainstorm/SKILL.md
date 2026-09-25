@@ -15,7 +15,7 @@ This skill wraps the source file `commands/brainstorm.md` for Codex Skills compa
 
 ## Source Content
 
-```markdown
+````markdown
 ---
 description: Interactive design refinement using Socratic method
 ---
@@ -25,4 +25,4 @@ Use the xpowers:brainstorming skill exactly as written.
 Topic: $ARGUMENTS
 
 If no topic is provided, ask the user for the topic with a single question before proceeding.
-```
+````
