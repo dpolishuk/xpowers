@@ -21,6 +21,7 @@ type SourceMapping = {
   from: string
   pattern?: string
   exclude?: string[]
+  target?: string
 }
 
 type HostConfig = {
@@ -548,10 +549,11 @@ const HOSTS: HostConfig[] = [
     name: "ZCode",
     detect: () => existsSync(join(homedir(), ".zcode")),
     targetDir: () => join(homedir(), ".zcode"),
-    // ZCode loads agents and hooks from plugins only, so this host installs
-    // just the user-scope skills and slash commands surfaces.
+    // Native agents/hooks are plugin-only. Expose agent prompts as wrapper
+    // skills through the same transactional copy path as ordinary skills.
     sources: {
-      skills: { from: "skills", exclude: ["common-patterns"] },
+      skills: { from: "skills" },
+      agentWrappers: { from: ".agents/skills", pattern: "codex-agent-*", target: "skills" },
       commands: { from: "commands" },
     },
     availableFeatures: [],
@@ -940,11 +942,19 @@ const FEATURES: FeatureConfig[] = [
 // Core Install Engine
 // ---------------------------------------------------------------------------
 
-const installHost = async (host: HostConfig): Promise<string[]> => {
+const installHost = async (host: HostConfig, persist?: (files: string[]) => Promise<void>): Promise<string[]> => {
   const target = host.targetDir()
   const installedFiles: string[] = []
   const backupEntries: Array<{ originalPath: string, backupPath: string }> = []
   const createdPaths: string[] = []
+  const metadataBefore = new Map<string, string | null>()
+  if (host.id === "zcode") {
+    for (const name of [".xpowers-version", ".xpowers-manifest"]) {
+      const file = join(target, name)
+      // Invalid metadata must not be replaced with a regular file.
+      metadataBefore.set(file, existsSync(file) ? await readFile(file, "utf8") : null)
+    }
+  }
   const piExtensionDir = join(target, "extensions", "xpowers")
   const piExtensionExistedBeforeInstall = host.id === "pi" && existsSync(piExtensionDir)
   const piAgentsPath = host.id === "pi" ? join(target, "AGENTS.md") : null
@@ -957,7 +967,8 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
       if (!existsSync(srcDir)) continue
 
       const items = await listItems(srcDir, source.pattern, source.exclude)
-      const destDir = join(target, category)
+      const targetCategory = source.target ?? category
+      const destDir = join(target, targetCategory)
       await mkdir(destDir, { recursive: true })
 
       for (const item of items) {
@@ -972,15 +983,15 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
           backupEntries.push({ originalPath: destPath, backupPath })
         }
 
+        createdPaths.push(destPath)
         const s = await stat(srcPath)
         if (s.isDirectory()) {
           await copyDir(srcPath, destPath)
-          installedFiles.push(`${category}/${item}/`)
+          installedFiles.push(`${targetCategory}/${item}/`)
         } else {
           await copyFile(srcPath, destPath)
-          installedFiles.push(`${category}/${item}`)
+          installedFiles.push(`${targetCategory}/${item}`)
         }
-        createdPaths.push(destPath)
       }
     }
 
@@ -1011,6 +1022,13 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
     await writeFile(join(target, ".xpowers-version"), VERSION + "\n", "utf8")
     installedFiles.push(".xpowers-version")
 
+    if (host.id === "zcode") {
+      // Both installers use this per-host record. The global JSON is a mirror,
+      // so a shell uninstall can retire all ownership without stale entries.
+      await writeFile(join(target, ".xpowers-manifest"), `# XPowers ${VERSION}\n${installedFiles.join("\n")}\n`, "utf8")
+    }
+    if (persist) await persist(installedFiles)
+
     for (const { backupPath } of backupEntries.reverse()) {
       await rm(backupPath, { recursive: true, force: true }).catch(() => {})
     }
@@ -1024,6 +1042,10 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
       if (existsSync(backupPath)) {
         await rename(backupPath, originalPath).catch(() => {})
       }
+    }
+    for (const [file, content] of metadataBefore) {
+      if (content === null) await rm(file, { force: true })
+      else await writeFile(file, content, "utf8")
     }
     if (host.id === "pi") {
       if (piAgentsExistedBeforeInstall && piAgentsPath) {
@@ -1040,8 +1062,12 @@ const installHost = async (host: HostConfig): Promise<string[]> => {
 }
 
 const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
-  const hostData = manifest.hosts[hostId]
+  let hostData = manifest.hosts[hostId]
   if (!hostData) return
+  if (hostId === "zcode") {
+    const shared = await readZcodeManifest(hostData.targetDir)
+    if (shared) hostData = shared
+  }
 
   // Clean generated artifacts not in manifest
   if (hostId === "opencode") {
@@ -1050,6 +1076,7 @@ const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
   }
 
   for (const file of hostData.files) {
+    if (hostId === "zcode" && !safeManifestEntry(file)) continue
     const fullPath = join(hostData.targetDir, file)
     if (file.endsWith("/")) {
       await rm(fullPath, { recursive: true, force: true }).catch(() => {})
@@ -1057,11 +1084,22 @@ const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
       await unlink(fullPath).catch(() => {})
     }
   }
+  if (hostId === "zcode") await rm(join(hostData.targetDir, ".xpowers-manifest"), { force: true })
 }
 
 // ---------------------------------------------------------------------------
 // Manifest
 // ---------------------------------------------------------------------------
+
+const safeManifestEntry = (file: string): boolean =>
+  file.length > 0 && !file.startsWith("#") && !file.startsWith("/") && file !== "." && !file.includes("..")
+
+const readZcodeManifest = async (targetDir: string) => {
+  const path = join(targetDir, ".xpowers-manifest")
+  if (!existsSync(path)) return null
+  const files = (await readFile(path, "utf8")).split(/\n/).map((line) => line.trim()).filter(safeManifestEntry)
+  return { targetDir, files }
+}
 
 const readManifest = async (): Promise<InstallManifest | null> => {
   for (const path of [manifestPath(), legacyManifestPath()]) {
@@ -1078,7 +1116,13 @@ const readManifest = async (): Promise<InstallManifest | null> => {
 const writeManifest = async (manifest: InstallManifest) => {
   const path = manifestPath()
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(manifest, null, 2) + "\n", "utf8")
+  const temporary = `${path}.tmp-${process.pid}`
+  try {
+    await writeFile(temporary, JSON.stringify(manifest, null, 2) + "\n", "utf8")
+    await rename(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,7 +1225,16 @@ Options:
   if (args.uninstall) {
     p.intro("XPowers Uninstaller")
 
-    const manifest = await readManifest()
+    let manifest = await readManifest()
+    const zcode = await readZcodeManifest(join(homedir(), ".zcode"))
+    if (zcode) {
+      manifest ??= { version: VERSION, installedAt: "shell install", hosts: {}, features: {} }
+      manifest.hosts.zcode = zcode
+    }
+    if (!manifest && args.hosts.length === 1 && args.hosts[0] === "zcode") {
+      p.outro("No ZCode installation to remove.")
+      return
+    }
     if (!manifest) {
       p.log.warn("No new-format manifest found. Checking for legacy install...")
       // Fall back to old install.sh if available
@@ -1342,7 +1395,9 @@ Options:
 
     s.start(`Installing to ${host.name}...`)
     try {
-      const files = await installHost(host)
+      const files = await installHost(host, host.id === "zcode" ? async (files) => {
+        await writeManifest({ ...manifest, hosts: { ...manifest.hosts, [hostId]: { targetDir: host.targetDir(), files } } })
+      } : undefined)
       manifest.hosts[hostId] = { targetDir: host.targetDir(), files }
       successfulHostIds.push(hostId)
       s.stop(`${host.name}: ${files.length} items installed`)

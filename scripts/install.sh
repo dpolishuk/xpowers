@@ -509,12 +509,13 @@ write_manifest() {
   } > "$manifest"
 }
 
-# Read the TypeScript installer's global JSON manifest for the kimi_code host.
+# Read a host from the TypeScript installer's global JSON manifest (default: kimi_code).
 # Prints the recorded targetDir on the first line, then one file entry per line.
 # Returns empty output if the manifest or host entry is missing.
 # Falls back to node if python3 is not available so cleanup does not silently
 # skip TS-installed files.
 read_kimi_json_manifest() {
+  local host_id="${1:-kimi_code}"
   local json_manifest="${HOME}/.xpowers/manifest.json"
   [[ -f "$json_manifest" ]] || return 0
   if command -v python3 >/dev/null 2>&1; then
@@ -522,31 +523,34 @@ read_kimi_json_manifest() {
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    h = d.get('hosts', {}).get('kimi_code', {})
+    h = d.get('hosts', {}).get(sys.argv[2], {})
     print(h.get('targetDir', ''))
     for f in h.get('files', []):
         print(f)
 except Exception:
-    pass
-" "$json_manifest" 2>/dev/null || true
+    sys.exit(1)
+" "$json_manifest" "$host_id" 2>/dev/null || { [[ "$host_id" == kimi_code ]]; }
   elif command -v node >/dev/null 2>&1; then
     node -e "
 const fs = require('fs');
 const p = process.argv[1];
 try {
   const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-  const h = (d.hosts && d.hosts.kimi_code) || {};
+  const h = (d.hosts && d.hosts[process.argv[2]]) || {};
   console.log(h.targetDir || '');
   (h.files || []).forEach(f => console.log(f));
-} catch (e) {}
-" "$json_manifest" 2>/dev/null || true
+} catch (e) { process.exit(1); }
+" "$json_manifest" "$host_id" 2>/dev/null || { [[ "$host_id" == kimi_code ]]; }
+  else
+    [[ "$host_id" == kimi_code ]]
   fi
 }
 
-# Remove the hosts.kimi_code entry from the TypeScript installer's global
+# Remove the selected host entry (default: kimi_code) from the TypeScript installer's global
 # manifest. Delete the manifest entirely when no hosts remain. Falls back to
 # node if python3 is not available.
 clear_kimi_code_json_manifest() {
+  local host_id="${1:-kimi_code}"
   local json_manifest="${HOME}/.xpowers/manifest.json"
   [[ -f "$json_manifest" ]] || return 0
   if [[ "$DRY_RUN" == true ]]; then
@@ -558,31 +562,44 @@ import json, sys, os
 path = sys.argv[1]
 with open(path) as fh:
     d = json.load(fh)
-d.setdefault('hosts', {}).pop('kimi_code', None)
+d.setdefault('hosts', {}).pop(sys.argv[2], None)
 if not d.get('hosts') and not d.get('features'):
     os.remove(path)
 else:
-    with open(path, 'w') as fh:
-        json.dump(d, fh, indent=2)
-" "$json_manifest" 2>/dev/null || true
+    temporary = path + '.tmp-' + str(os.getpid())
+    try:
+        with open(temporary, 'w') as fh:
+            json.dump(d, fh, indent=2)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+" "$json_manifest" "$host_id" 2>/dev/null || { [[ "$host_id" == kimi_code ]]; }
   elif command -v node >/dev/null 2>&1; then
     node -e "
 const fs = require('fs');
 const p = process.argv[1];
 try {
   const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-  if (d.hosts) delete d.hosts.kimi_code;
+  if (d.hosts) delete d.hosts[process.argv[2]];
   const hasHosts = d.hosts && Object.keys(d.hosts).length > 0;
   const hasFeatures = d.features && Object.keys(d.features).length > 0;
   if (!hasHosts && !hasFeatures) {
     fs.unlinkSync(p);
   } else {
-    fs.writeFileSync(p, JSON.stringify(d, null, 2));
+    const temporary = p + '.tmp-' + process.pid;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify(d, null, 2));
+      fs.renameSync(temporary, p);
+    } finally {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    }
   }
-} catch (e) {}
-" "$json_manifest" 2>/dev/null || true
+} catch (e) { process.exit(1); }
+" "$json_manifest" "$host_id" 2>/dev/null || { [[ "$host_id" == kimi_code ]]; }
   else
     warn "Cannot update ${json_manifest}: python3 or node required"
+    [[ "$host_id" == kimi_code ]]
   fi
 }
 
@@ -591,8 +608,9 @@ try {
 # uninstall paths consistent.
 uninstall_from_json_manifest() {
   local home="$1"
+  local host_id="${2:-kimi_code}"
   local manifest_data
-  manifest_data=$(read_kimi_json_manifest)
+  manifest_data=$(read_kimi_json_manifest "$host_id") || return 1
   [[ -n "$manifest_data" ]] || return 0
 
   local target_dir
@@ -619,9 +637,9 @@ uninstall_from_json_manifest() {
     fi
   done <<< "$files"
 
-  # Remove the kimi_code host entry so stale ownership records do not affect
+  # Remove the selected host entry so stale ownership records do not affect
   # later installs.
-  clear_kimi_code_json_manifest
+  clear_kimi_code_json_manifest "$host_id"
 }
 
 uninstall_from_manifest() {
@@ -1222,38 +1240,83 @@ install_gemini() {
   fi
 }
 
-# ZCode discovers user-scope skills in ~/.zcode/skills/ and slash commands in
-# ~/.zcode/commands/. Agents and hooks are plugin-managed by ZCode, so this
-# host installs only the skills and commands subsets.
-install_zcode() {
+# ZCode discovers user-scope skills and commands. Agent prompts are exposed as
+# wrapper skills; ordinary skills retain their relative common-patterns refs.
+install_zcode() (
   local home; home="$(agent_path "zcode")"
   home="${home:-${HOME}/.zcode}"
+  local marker
+  for marker in .xpowers-version .xpowers-manifest; do
+    [[ ! -e "${home}/${marker}" || -f "${home}/${marker}" ]] || exit 1
+  done
+  mkdir -p "$home" || exit 1
+  local transaction; transaction=$(mktemp -d "${home}/.xpowers-install.XXXXXX") || exit 1
+  local committed=false
+  local -a replaced=()
+  local json_manifest="${HOME}/.xpowers/manifest.json"
+  local json_changed=false
+  cleanup_zcode_install() {
+    local status=$?
+    if [[ "$committed" != true ]]; then
+      local entry
+      # Bash 3.2 treats expansion of an empty array as unbound under set -u.
+      if (( ${#replaced[@]} > 0 )); then
+        for entry in "${replaced[@]}"; do
+          rm -rf "${home}/${entry}"
+          if [[ -e "${transaction}/old/${entry}" || -L "${transaction}/old/${entry}" ]]; then
+            mv "${transaction}/old/${entry}" "${home}/${entry}" || return 1
+          fi
+        done
+      fi
+      if [[ "$json_changed" == true ]]; then
+        cp "${transaction}/json-before" "$json_manifest" || return 1
+      fi
+    fi
+    rm -rf "$transaction"
+    return "$status"
+  }
+  trap cleanup_zcode_install EXIT
+  mkdir -p "${transaction}/new/skills" "${transaction}/new/commands" || exit 1
   MANIFEST_ENTRIES=()
-  ensure_dir "${home}/skills"
-  ensure_dir "${home}/commands"
-  maybe_backup "$home" "${home}/.xpowers-backups"
-
-  # Skills (recursive copy of each skill dir)
-  for d in "${REPO_ROOT}"/skills/*/; do
-    [[ -d "$d" ]] || continue
-    local name; name="$(basename "$d")"
-    [[ "$name" == "common-patterns" ]] && continue
-    copy_item "$d" "${home}/skills/${name}"
+  local source name
+  for source in "${REPO_ROOT}"/skills/*/ "${REPO_ROOT}"/.agents/skills/codex-agent-*/; do
+    [[ -d "$source" ]] || continue
+    name="$(basename "$source")"
+    copy_item "${source%/}" "${transaction}/new/skills/${name}" || exit 1
     manifest_add "skills/${name}/"
   done
-
-  # Slash commands
-  for f in "${REPO_ROOT}"/commands/*.md; do
-    [[ -f "$f" ]] || continue
-    local name; name="$(basename "$f")"
-    copy_item "$f" "${home}/commands/${name}"
+  for source in "${REPO_ROOT}"/commands/*.md; do
+    [[ -f "$source" ]] || continue
+    name="$(basename "$source")"
+    copy_item "$source" "${transaction}/new/commands/${name}" || exit 1
     manifest_add "commands/${name}"
   done
-
+  printf '%s\n' "$VERSION" > "${transaction}/new/.xpowers-version" || exit 1
   manifest_add ".xpowers-version"
-  echo "${VERSION}" > "${home}/.xpowers-version"
-  write_manifest "$home"
-}
+  write_manifest "${transaction}/new" || exit 1
+
+  # Replacing entire entries avoids nested directories on reinstall, and lets
+  # any copy/metadata failure restore the exact previous user content.
+  local entry
+  for entry in "${MANIFEST_ENTRIES[@]}" .xpowers-manifest; do
+    entry="${entry%/}"
+    mkdir -p "$(dirname "${home}/${entry}")" "$(dirname "${transaction}/old/${entry}")" || exit 1
+    if [[ -e "${home}/${entry}" || -L "${home}/${entry}" ]]; then
+      mv "${home}/${entry}" "${transaction}/old/${entry}" || exit 1
+    fi
+    replaced+=("$entry")
+    mv "${transaction}/new/${entry}" "${home}/${entry}" || exit 1
+  done
+  # The shared text manifest is now authoritative. Retire the Bun mirror so it
+  # cannot outlive a later shell uninstall and delete user-recreated files.
+  local json_target; json_target=$(read_kimi_json_manifest zcode | head -1) || exit 1
+  if [[ "$json_target" == "$home" ]]; then
+    cp "$json_manifest" "${transaction}/json-before" || exit 1
+    json_changed=true
+    clear_kimi_code_json_manifest zcode || exit 1
+  fi
+  committed=true
+)
 
 # ---------------------------------------------------------------------------
 # Validation functions
@@ -1543,7 +1606,17 @@ uninstall_pi() {
 uninstall_zcode() {
   local home; home="$(agent_path "zcode")"
   home="${home:-${HOME}/.zcode}"
-  uninstall_from_manifest "$home"
+  if [[ -f "${home}/.xpowers-manifest" ]]; then
+    # Prefer the shared record over an older JSON mirror.
+    uninstall_from_manifest "$home" || return 1
+  else
+    uninstall_from_json_manifest "$home" zcode || return 1
+  fi
+  local json_target; json_target=$(read_kimi_json_manifest zcode | head -1) || return 1
+  if [[ "$json_target" == "$home" ]]; then
+    clear_kimi_code_json_manifest zcode || return 1
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------

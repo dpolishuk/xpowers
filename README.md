@@ -562,10 +562,12 @@ You can also use `/skills` in Codex UI to discover and select the same wrappers.
 <details>
 <summary><strong>ZCode</strong></summary>
 
-Use the unified installer to install skills and slash commands to `~/.zcode/skills` and `~/.zcode/commands`:
+Use either installer to install skills (including their reference files), agent wrapper skills, and slash commands to `~/.zcode/skills` and `~/.zcode/commands`:
 
 ```bash
 ./scripts/install.sh --zcode
+# Or with Bun:
+bun scripts/install.ts --hosts zcode --yes
 ```
 
 Or install to all detected agents at once:
@@ -574,7 +576,11 @@ Or install to all detected agents at once:
 ./scripts/install.sh --all
 ```
 
-ZCode discovers the skills and `/commands` at session start, so restart any open sessions after installing. ZCode loads agents and hooks from plugins only, so those XPowers surfaces are not part of this host install.
+ZCode discovers the skills and `/commands` at session start, so restart any open sessions after installing. Agent prompts are available as `codex-agent-*` wrapper skills; native agents and hooks require a ZCode plugin and are not installed here. Both installers share ownership tracking, so you can reinstall or uninstall with either one.
+
+```bash
+./scripts/install.sh --hosts zcode --uninstall --yes
+```
 
 </details>
 

@@ -2389,12 +2389,12 @@ test("install.sh --zcode installs skills and commands with version marker", { ti
   const output = combinedOutput(result)
   assert.equal(result.status, 0, output)
 
-  // Skills copied to ~/.zcode/skills (common-patterns is a reference dir, not a skill)
+  // Skills and their relative reference material are copied to ~/.zcode/skills
   const skillsDir = path.join(zcodeHome, "skills")
   assert.equal(fs.existsSync(skillsDir), true)
   const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
   assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
-  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+  assert.equal(skills.includes("common-patterns"), true, "common-patterns references must be preserved")
 
   // Slash commands copied to ~/.zcode/commands
   const commandsDir = path.join(zcodeHome, "commands")
@@ -2486,7 +2486,7 @@ test("bun installer --hosts zcode installs skills and commands", { timeout: 1200
   assert.equal(fs.existsSync(path.join(skillsDir, "test-driven-development", "SKILL.md")), true)
   const skills = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory())
   assert.ok(skills.length >= 15, `expected 15+ skills, found ${skills.length}`)
-  assert.equal(skills.includes("common-patterns"), false, "common-patterns should not be installed")
+  assert.equal(skills.includes("common-patterns"), true, "common-patterns references must be preserved")
   assert.equal(fs.existsSync(path.join(zcodeHome, "commands", "brainstorm.md")), true)
   assert.equal(fs.existsSync(path.join(zcodeHome, "hooks")), false, "hooks should not be installed for ZCode")
 
