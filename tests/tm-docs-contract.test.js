@@ -87,11 +87,11 @@ test("README and AGENTS agree on Codex wrapper location and host support", () =>
   const agentsGuide = read("AGENTS.md")
   const codexSection = readme.split("<summary><strong>Codex CLI</strong></summary>")[1]?.split("</details>")[0] || ""
 
-  assert.equal(readme.includes("Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, and Codex CLI"), true)
+  assert.equal(readme.includes("Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode"), true)
   assert.equal(readme.includes("Generated output is written to `.agents/skills`"), true)
   assert.equal(readme.includes(".kimi/skills"), false)
   assert.equal(agentsGuide.includes(".agents/               # Codex-compatible generated wrappers"), true)
-  assert.equal(agentsGuide.includes("supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, and Pi)"), true)
+  assert.equal(agentsGuide.includes("supports multiple developer hosts (Claude Code, OpenCode, Gemini CLI, Antigravity CLI, Kimi Code CLI, Kimi CLI, Codex CLI, Pi, and ZCode)"), true)
   assert.equal(codexSection.includes("./scripts/install.sh --codex"), true)
   assert.equal(codexSection.includes("~/.codex/skills"), true)
 })
