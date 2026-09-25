@@ -1603,18 +1603,64 @@ uninstall_pi() {
   done
 }
 
+# Atomically update ZCode's shared ownership record, including an empty record
+# after removal. An unlink failure then leaves a harmless empty tombstone.
+write_zcode_manifest() {
+  local home="$1" entries="$2" temporary
+  [[ ! -d "${home}/.xpowers-manifest" ]] || return 1
+  mkdir -p "$home" || return 1
+  temporary=$(mktemp "${home}/.xpowers-manifest.XXXXXX") || return 1
+  if ! printf '# XPowers %s\n%s\n' "$VERSION" "$entries" > "$temporary" \
+    || ! mv -f "$temporary" "${home}/.xpowers-manifest"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
 uninstall_zcode() {
   local home; home="$(agent_path "zcode")"
   home="${home:-${HOME}/.zcode}"
+  local json_data json_target entries="" entry
+  json_data=$(read_kimi_json_manifest zcode) || return 1
+  json_target=$(printf '%s\n' "$json_data" | head -1)
   if [[ -f "${home}/.xpowers-manifest" ]]; then
-    # Prefer the shared record over an older JSON mirror.
-    uninstall_from_manifest "$home" || return 1
+    entries=$(cat "${home}/.xpowers-manifest") || return 1
+  elif [[ "$json_target" == "$home" ]]; then
+    # Migrate JSON-only installs before retiring their global record. If file
+    # removal fails, the shared record remains available for either installer.
+    entries=$(printf '%s\n' "$json_data" | tail -n +2)
   else
-    uninstall_from_json_manifest "$home" zcode || return 1
+    return 0
   fi
-  local json_target; json_target=$(read_kimi_json_manifest zcode | head -1) || return 1
-  if [[ "$json_target" == "$home" ]]; then
-    clear_kimi_code_json_manifest zcode || return 1
+
+  if [[ "$DRY_RUN" != true ]]; then
+    write_zcode_manifest "$home" "$entries" || return 1
+    if [[ "$json_target" == "$home" ]]; then
+      clear_kimi_code_json_manifest zcode || return 1
+    fi
+  fi
+
+  local remaining=""
+  while IFS= read -r entry; do
+    case "$entry" in
+      ""|\#*|"."|".."|/*|*..*) continue ;;
+    esac
+    if [[ "$DRY_RUN" == true ]]; then
+      info "Would remove: ${home}/${entry}"
+    elif [[ "$entry" == */ ]]; then
+      rm -rf "${home}/${entry%/}" || remaining+="${entry}"$'\n'
+    else
+      rm -f "${home}/${entry}" || remaining+="${entry}"$'\n'
+    fi
+  done <<< "$entries"
+  [[ "$DRY_RUN" == true ]] && return 0
+
+  # Drop entries already removed, so recreating one between retries is safe.
+  write_zcode_manifest "$home" "$remaining" || return 1
+  [[ -z "$remaining" ]] || return 1
+  rm -f "${home}/.xpowers-manifest" || return 1
+  if [[ "$PURGE" == true ]]; then
+    rm -rf "${home}/.xpowers-backups" || return 1
   fi
   return 0
 }

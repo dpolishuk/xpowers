@@ -226,3 +226,76 @@ test("Bash ZCode removes staging files when the first destination is blocked", {
   assert.equal(fs.readFileSync(blocker, "utf8"), "user file\n")
   assert.deepEqual(fs.readdirSync(path.join(home, ".zcode")), ["skills"])
 })
+
+for (const installer of ["bash", "bun"]) {
+  test(`${installer} ZCode stops before deleting files when global ownership cannot be retired`, {
+    timeout: 120000,
+    skip: process.getuid?.() === 0 && "root bypasses directory permissions",
+  }, (t) => {
+    const home = fixture(t)
+    success(run(home, "bun"))
+    const globalDir = path.join(home, ".xpowers")
+    const global = path.join(globalDir, "manifest.json")
+    const before = fs.readFileSync(global, "utf8")
+    fs.chmodSync(globalDir, 0o555)
+    try {
+      const result = run(home, installer, true)
+      assert.notEqual(result.status, 0, "uninstall must report the ownership write failure")
+      assertInstalled(home)
+      assert.equal(fs.readFileSync(global, "utf8"), before)
+    } finally {
+      fs.chmodSync(globalDir, 0o755)
+    }
+    success(run(home, installer, true))
+    assertRemoved(home)
+    const recreated = put(home, "skills/brainstorming/SKILL.md", "recreated user skill\n")
+    success(run(home, installer, true))
+    assert.equal(fs.readFileSync(recreated, "utf8"), "recreated user skill\n")
+  })
+
+  test(`${installer} ZCode preserves retry tracking after partial removal of a JSON-only install`, {
+    timeout: 120000,
+    skip: process.getuid?.() === 0 && "root bypasses directory permissions",
+  }, (t) => {
+    const home = fixture(t)
+    put(home, "skills/brainstorming/SKILL.md", "owned skill\n")
+    const command = put(home, "commands/brainstorm.md", "owned command\n")
+    const global = path.join(home, ".xpowers/manifest.json")
+    fs.mkdirSync(path.dirname(global))
+    fs.writeFileSync(global, JSON.stringify({ version: "legacy", installedAt: "earlier", features: {}, hosts: {
+      zcode: { targetDir: path.join(home, ".zcode"), files: ["commands/brainstorm.md", "skills/brainstorming/"] },
+    } }))
+    const skills = path.join(home, ".zcode/skills")
+    fs.chmodSync(skills, 0o555)
+    try {
+      const result = run(home, installer, true)
+      assert.notEqual(result.status, 0, "a removal error must not be reported as success")
+      assert.equal(fs.existsSync(command), false)
+      const pending = fs.readFileSync(path.join(home, ".zcode/.xpowers-manifest"), "utf8")
+      assert.match(pending, /skills\/brainstorming\//)
+      assert.doesNotMatch(pending, /commands\/brainstorm.md/)
+      fs.writeFileSync(command, "recreated user command\n")
+    } finally {
+      fs.chmodSync(skills, 0o755)
+    }
+    success(run(home, installer, true))
+    assert.equal(fs.existsSync(path.join(skills, "brainstorming")), false)
+    assert.equal(fs.readFileSync(command, "utf8"), "recreated user command\n")
+  })
+}
+
+for (const installer of ["bash", "bun"]) {
+  test(`${installer} ZCode uninstall removes skill symlinks without deleting their source`, { timeout: 120000 }, (t) => {
+    const home = fixture(t)
+    const source = path.join(home, "source-skill")
+    fs.mkdirSync(source)
+    fs.writeFileSync(path.join(source, "SKILL.md"), "source must survive\n")
+    const link = path.join(home, ".zcode/skills/brainstorming")
+    fs.mkdirSync(path.dirname(link))
+    fs.symlinkSync(source, link)
+    put(home, ".xpowers-manifest", "skills/brainstorming/\n")
+    success(run(home, installer, true))
+    assert.equal(fs.readFileSync(path.join(source, "SKILL.md"), "utf8"), "source must survive\n")
+    assert.throws(() => fs.lstatSync(link), { code: "ENOENT" })
+  })
+}

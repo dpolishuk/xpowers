@@ -1062,11 +1062,11 @@ const installHost = async (host: HostConfig, persist?: (files: string[]) => Prom
 }
 
 const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
-  let hostData = manifest.hosts[hostId]
+  const hostData = manifest.hosts[hostId]
   if (!hostData) return
   if (hostId === "zcode") {
-    const shared = await readZcodeManifest(hostData.targetDir)
-    if (shared) hostData = shared
+    await uninstallZcodeHost(hostData)
+    return
   }
 
   // Clean generated artifacts not in manifest
@@ -1076,7 +1076,6 @@ const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
   }
 
   for (const file of hostData.files) {
-    if (hostId === "zcode" && !safeManifestEntry(file)) continue
     const fullPath = join(hostData.targetDir, file)
     if (file.endsWith("/")) {
       await rm(fullPath, { recursive: true, force: true }).catch(() => {})
@@ -1084,7 +1083,6 @@ const uninstallHost = async (hostId: string, manifest: InstallManifest) => {
       await unlink(fullPath).catch(() => {})
     }
   }
-  if (hostId === "zcode") await rm(join(hostData.targetDir, ".xpowers-manifest"), { force: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,6 +1099,49 @@ const readZcodeManifest = async (targetDir: string) => {
   return { targetDir, files }
 }
 
+const writeZcodeManifest = async (targetDir: string, files: string[]) => {
+  await mkdir(targetDir, { recursive: true })
+  const path = join(targetDir, ".xpowers-manifest")
+  const temporary = `${path}.tmp-${process.pid}`
+  try {
+    await writeFile(temporary, `# XPowers ${VERSION}\n${files.join("\n")}\n`, "utf8")
+    await rename(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+const uninstallZcodeHost = async (hostData: InstallManifest["hosts"][string]) => {
+  const shared = await readZcodeManifest(hostData.targetDir)
+  const files = (shared ?? hostData).files.filter(safeManifestEntry)
+  // Keep retry information for JSON-only installs before retiring any mirror.
+  await writeZcodeManifest(hostData.targetDir, files)
+  for (const path of [manifestPath(), legacyManifestPath()]) {
+    if (!existsSync(path)) continue
+    const persisted = JSON.parse(await readFile(path, "utf8")) as InstallManifest
+    if (persisted.hosts?.zcode?.targetDir !== hostData.targetDir) continue
+    delete persisted.hosts.zcode
+    // A failure must stop before files or their shared ownership are removed.
+    await writeManifest(persisted, path)
+  }
+
+  const remaining: string[] = []
+  for (const file of files) {
+    try {
+      // A trailing slash makes Bun follow a skill symlink into its source.
+      const target = join(hostData.targetDir, file.replace(/\/+$/, ""))
+      await rm(target, { recursive: file.endsWith("/"), force: true })
+    } catch {
+      remaining.push(file)
+    }
+  }
+  // Persist only failed entries. If the final unlink fails, the empty record
+  // remains authoritative and cannot delete user-recreated files on retry.
+  await writeZcodeManifest(hostData.targetDir, remaining)
+  if (remaining.length) throw new Error(`ZCode uninstall could not remove: ${remaining.join(", ")}`)
+  await rm(join(hostData.targetDir, ".xpowers-manifest"), { force: true })
+}
+
 const readManifest = async (): Promise<InstallManifest | null> => {
   for (const path of [manifestPath(), legacyManifestPath()]) {
     if (!existsSync(path)) continue
@@ -1113,8 +1154,7 @@ const readManifest = async (): Promise<InstallManifest | null> => {
   return null
 }
 
-const writeManifest = async (manifest: InstallManifest) => {
-  const path = manifestPath()
+const writeManifest = async (manifest: InstallManifest, path = manifestPath()) => {
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.tmp-${process.pid}`
   try {
