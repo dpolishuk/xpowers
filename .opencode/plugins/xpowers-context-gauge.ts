@@ -83,7 +83,14 @@ const loadConfig = async (directory: string): Promise<Required<ContextGaugeConfi
   try {
     const raw = await readFile(configPath, "utf8")
     const parsed = JSON.parse(raw) as ContextGaugeConfig
-    return { ...DEFAULT_CONFIG, ...parsed }
+    return {
+      ...DEFAULT_CONFIG,
+      ...parsed,
+      modelLimits: {
+        ...DEFAULT_MODEL_LIMITS,
+        ...(parsed.modelLimits ?? {}),
+      },
+    }
   } catch {
     return { ...DEFAULT_CONFIG }
   }
@@ -142,23 +149,41 @@ const resolveModelLimit = (
 ): number => {
   if (!modelId) return defaultLimit
 
-  const normalized = modelId.toLowerCase().replace(/[^a-z0-9.-]/g, "")
+  // Strip provider prefix (e.g., "openai/gpt-4o" → "gpt-4o")
+  const withoutProvider = modelId.includes("/")
+    ? modelId.split("/").pop() ?? modelId
+    : modelId
+
+  const normalized = withoutProvider.toLowerCase().replace(/[^a-z0-9.-]/g, "")
 
   // Try exact match first
+  if (limits[withoutProvider]) return limits[withoutProvider]
   if (limits[modelId]) return limits[modelId]
 
-  // Try normalized match
+  // Try normalized exact match
   if (limits[normalized]) return limits[normalized]
 
-  // Try partial match on model family
+  // Try partial match: prefer longest/specific match first to avoid
+  // "gpt-4" matching before "gpt-4o" or "gpt-4.1"
+  const candidates: { key: string; limit: number; len: number }[] = []
   for (const [key, limit] of Object.entries(limits)) {
     const normalizedKey = key.toLowerCase().replace(/[^a-z0-9.-]/g, "")
+    if (!normalizedKey || normalizedKey === "default") continue
+
+    // Key must be a prefix of the model ID, followed by a separator or end
     if (
-      normalized.includes(normalizedKey) ||
-      normalizedKey.includes(normalized)
+      normalized === normalizedKey ||
+      normalized.startsWith(normalizedKey + "-") ||
+      normalized.startsWith(normalizedKey + ".")
     ) {
-      return limit
+      candidates.push({ key, limit, len: normalizedKey.length })
     }
+  }
+
+  // Prefer longest match (most specific)
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.len - a.len)
+    return candidates[0].limit
   }
 
   return defaultLimit
@@ -173,6 +198,9 @@ type GaugeState = {
   modelId: string | null
   contextLimit: number
   compactSuggested: boolean
+  createdAt: number
+  messageContents: Map<string, string>  // partId -> previous content for delta counting
+  messageIds: Set<string>
 }
 
 const sessions = new Map<string, GaugeState>()
@@ -187,10 +215,22 @@ const getState = (sessionId: string): GaugeState => {
       modelId: null,
       contextLimit: DEFAULT_CONFIG.defaultLimit,
       compactSuggested: false,
+      createdAt: Date.now(),
+      messageContents: new Map(),
+      messageIds: new Set(),
     }
     sessions.set(sessionId, state)
   }
   return state
+}
+
+const cleanupOldGaugeSessions = (ttlMs: number = 86400000) => {
+  const cutoff = Date.now() - ttlMs
+  for (const [id, s] of sessions) {
+    if (s.createdAt < cutoff) {
+      sessions.delete(id)
+    }
+  }
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
@@ -205,8 +245,16 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
   return {
     // ── Monitor message additions to estimate context growth ──────────────
     event: async ({ event }) => {
-      const sessionId =
-        (event as any).session_id ?? (event as any).sessionID ?? "unknown"
+      const sessionId = event.type === "message.updated"
+        ? event.properties.info.sessionID
+        : event.type === "message.part.updated"
+          ? event.properties.part.sessionID
+          : event.type === "session.created" || event.type === "session.deleted"
+            ? event.properties.info.id
+            : event.type === "session.idle" || event.type === "session.compacted"
+              ? event.properties.sessionID
+              : undefined
+      if (!sessionId) return
       const state = getState(sessionId)
 
       if (event.type === "session.created" && sessionId) {
@@ -218,6 +266,9 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
           modelId: null,
           contextLimit: config.defaultLimit,
           compactSuggested: false,
+          createdAt: Date.now(),
+          messageContents: new Map(),
+          messageIds: new Set(),
         })
         return
       }
@@ -241,59 +292,33 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
 
       if (event.type === "session.deleted" && sessionId) {
         sessions.delete(sessionId)
+        // Cleanup orphaned sessions older than 24 hours
+        cleanupOldGaugeSessions()
         return
       }
 
-      if (event.type === "message.updated") {
-        const message = (event as any).properties?.message
-        if (!message) return
-
-        // Try to extract content from message
-        let content = ""
-        if (message.content) {
-          if (typeof message.content === "string") {
-            content = message.content
-          } else if (Array.isArray(message.content)) {
-            content = message.content
-              .map((part: any) => {
-                if (typeof part === "string") return part
-                if (part?.text) return part.text
-                if (part?.code) return part.code
-                return ""
-              })
-              .join(" ")
-          }
+      if (event.type === "message.updated" || event.type === "message.part.updated") {
+        // Message metadata and streamed content arrive as separate SDK events.
+        const message = event.type === "message.updated" ? event.properties.info : undefined
+        const part = event.type === "message.part.updated" ? event.properties.part : undefined
+        const messageId = message?.id ?? part?.messageID
+        if (messageId && !state.messageIds.has(messageId)) {
+          state.messageIds.add(messageId)
+          state.messageCount++
+        }
+        if (part?.type === "text" || part?.type === "reasoning") {
+          const previous = state.messageContents.get(part.id) ?? ""
+          state.estimatedTokens = Math.max(0,
+            state.estimatedTokens + estimateTokens(part.text) - estimateTokens(previous))
+          state.messageContents.set(part.id, part.text)
         }
 
-        // Also check parts
-        const parts = (event as any).properties?.parts ?? []
-        if (parts.length > 0 && !content) {
-          content = parts
-            .map((part: any) => {
-              if (part.type === "text") return part.text ?? ""
-              if (part.type === "code") return part.code ?? ""
-              return ""
-            })
-            .join(" ")
-        }
-
-        const addedTokens = estimateTokens(content)
-        state.estimatedTokens += addedTokens
-        state.messageCount += 1
-
-        // Try to detect model from message metadata
-        const detectedModel =
-          message.model ??
-          (event as any).properties?.model ??
-          (event as any).properties?.provider
-
+        const detectedModel = message?.role === "user"
+          ? message.model.modelID
+          : message?.modelID
         if (detectedModel && detectedModel !== state.modelId) {
           state.modelId = detectedModel
-          state.contextLimit = resolveModelLimit(
-            detectedModel,
-            config.modelLimits,
-            config.defaultLimit,
-          )
+          state.contextLimit = resolveModelLimit(detectedModel, config.modelLimits, config.defaultLimit)
         }
 
         // Calculate usage percentage
@@ -331,7 +356,7 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
               8000,
             )
 
-            if (!state.compactSuggested && config.suggestCompactAt <= config.dangerThreshold) {
+            if (!state.compactSuggested && usage >= config.suggestCompactAt) {
               state.compactSuggested = true
 
               // Inject suggestion into session
@@ -391,8 +416,8 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
     // ── Monitor bash commands for model switches ───────────────────────────
     "tool.execute.after": async (input, output) => {
       // Detect if a bash command changed the model
-      if (input.tool === "bash") {
-        const command = String((output.args as any)?.command ?? "")
+      if (input.tool === "bash" && output.metadata?.exit === 0) {
+        const command = String((input.args as any)?.command ?? "")
 
         // Check for model switching commands
         const modelMatch = command.match(
