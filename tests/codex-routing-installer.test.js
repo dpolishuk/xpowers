@@ -14,6 +14,101 @@ const INSTALLER = path.join(ROOT, 'scripts', 'setup-codex-routing.sh')
 const PYTHON = process.env.PYTHON_BIN || 'python3'
 const ROLES = ['default', 'explorer', 'worker', 'verifier', 'senior', 'reviewer']
 
+const FAULT_HARNESS = String.raw`
+import errno
+import json
+from pathlib import Path
+import sys
+
+installer = Path(sys.argv[1])
+root = Path(sys.argv[2]).resolve()
+scenario = sys.argv[3]
+source = installer.read_text()
+payload = source[source.index('from __future__'):source.rindex('\nPY\n')]
+namespace = {'__name__': 'codex_routing_fault_test'}
+exec(compile(payload, str(installer), 'exec'), namespace)
+
+gitdir = Path(namespace['git'](root, 'rev-parse', '--absolute-git-dir')).resolve()
+originals = {
+    '.codex/config.toml': b'config-before\n',
+    'AGENTS.md': b'agents-before\n',
+}
+installed = {
+    '.codex/config.toml': b'config-installed\n',
+    'AGENTS.md': b'agents-installed\n',
+}
+modes = {'.codex/config.toml': 0o600, 'AGENTS.md': 0o640}
+for relative, data in originals.items():
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    target.chmod(modes[relative])
+
+real_atomic_write = namespace['atomic_write']
+
+def backup_dir():
+    backups = sorted((gitdir / 'codex-routing-backups').iterdir())
+    assert len(backups) == 1, backups
+    return backups[0]
+
+def transaction_state():
+    return json.loads((backup_dir() / 'transaction.json').read_text())['state']
+
+if scenario == 'apply-rollback':
+    def fail_second_target(path, data, mode):
+        if Path(path) == root / 'AGENTS.md':
+            raise OSError(errno.ENOSPC, 'injected apply failure')
+        return real_atomic_write(path, data, mode)
+    namespace['atomic_write'] = fail_second_target
+    try:
+        namespace['apply_changes'](root, gitdir, originals, installed)
+        raise AssertionError('apply unexpectedly succeeded')
+    except OSError as error:
+        assert error.errno == errno.ENOSPC
+    for relative, data in originals.items():
+        target = root / relative
+        assert target.read_bytes() == data
+        assert target.stat().st_mode & 0o777 == modes[relative]
+    assert transaction_state() == 'ROLLED_BACK'
+
+elif scenario in ('restore-rollback', 'restore-concurrent-edit'):
+    namespace['apply_changes'](root, gitdir, originals, installed)
+    before_restore = {
+        relative: ((root / relative).read_bytes(),
+                   (root / relative).stat().st_mode & 0o777)
+        for relative in installed
+    }
+
+    def fail_second_restore(path, data, mode):
+        if Path(path) == root / 'AGENTS.md':
+            if scenario == 'restore-concurrent-edit':
+                real_atomic_write(path, b'later-user-edit\n', 0o600)
+            raise OSError(errno.ENOSPC, 'injected restore failure')
+        return real_atomic_write(path, data, mode)
+    namespace['atomic_write'] = fail_second_restore
+    try:
+        namespace['restore'](root, gitdir, backup_dir().name, False)
+        raise AssertionError('restore unexpectedly succeeded')
+    except OSError as error:
+        assert error.errno == errno.ENOSPC
+
+    config_data, config_mode = before_restore['.codex/config.toml']
+    assert (root / '.codex/config.toml').read_bytes() == config_data
+    assert (root / '.codex/config.toml').stat().st_mode & 0o777 == config_mode
+    if scenario == 'restore-rollback':
+        for relative, (data, mode) in before_restore.items():
+            target = root / relative
+            assert target.read_bytes() == data
+            assert target.stat().st_mode & 0o777 == mode
+        assert transaction_state() == 'COMMITTED'
+    else:
+        assert (root / 'AGENTS.md').read_bytes() == b'later-user-edit\n'
+        assert (root / 'AGENTS.md').stat().st_mode & 0o777 == 0o600
+        assert transaction_state() == 'RECOVERY_REQUIRED'
+else:
+    raise AssertionError(f'unknown scenario: {scenario}')
+`
+
 function makeRepo(t) {
   const repo = mkdtempSync(path.join(tmpdir(), 'xpowers-codex-routing-'))
   t.after(() => rmSync(repo, { recursive: true, force: true }))
@@ -24,6 +119,13 @@ function makeRepo(t) {
 function run(repo, args = [], extraEnv = {}) {
   return spawnSync('bash', [INSTALLER, '--repo', repo, '--offline', ...args], {
     encoding: 'utf8', env: { ...process.env, PYTHON_BIN: PYTHON, ...extraEnv },
+  })
+}
+
+function runFaultHarness(t, scenario) {
+  const repo = makeRepo(t)
+  return spawnSync(PYTHON, ['-I', '-c', FAULT_HARNESS, INSTALLER, repo, scenario], {
+    encoding: 'utf8',
   })
 }
 
@@ -270,6 +372,21 @@ test('backup restore recovers exact bytes and modes and refuses later edits', (t
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /changed after installation/)
   assert.equal(readFileSync(path.join(repo, '.codex/agents/worker.toml'), 'utf8'), 'later user edit\n')
+})
+
+test('mid-apply failure rolls back earlier writes and records a completed rollback', (t) => {
+  const result = runFaultHarness(t, 'apply-rollback')
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('mid-restore failure returns the full installed snapshot and committed state', (t) => {
+  const result = runFaultHarness(t, 'restore-rollback')
+  assert.equal(result.status, 0, result.stderr)
+})
+
+test('restore rollback preserves a concurrent edit and marks recovery required', (t) => {
+  const result = runFaultHarness(t, 'restore-concurrent-edit')
+  assert.equal(result.status, 0, result.stderr)
 })
 
 test('modern rerun preserves compatible V2 table settings and aligns its cap', (t) => {
