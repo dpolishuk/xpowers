@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { join, dirname } from "node:path"
+import { join, dirname, resolve } from "node:path"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // XPowers Git Guard Plugin
@@ -42,7 +42,7 @@ type SessionState = {
   commitMade: boolean
   warnedOnIdle: boolean
   createdAt: number
-  pendingCommitStagedFiles: string[]  // staged files captured before git commit
+  pendingCommits: Map<string, { files: string[]; head: string | null }>
 }
 
 const DEFAULT_CONFIG: Required<GitGuardConfig> = {
@@ -264,7 +264,7 @@ const sessions = new Map<string, SessionState>()
 const getSessionState = (sessionId: string): SessionState => {
   let state = sessions.get(sessionId)
   if (!state) {
-    state = { filesModified: new Set(), filesCommitted: new Set(), commitMade: false, warnedOnIdle: false, createdAt: Date.now(), pendingCommitStagedFiles: [] }
+    state = { filesModified: new Set(), filesCommitted: new Set(), commitMade: false, warnedOnIdle: false, createdAt: Date.now(), pendingCommits: new Map() }
     sessions.set(sessionId, state)
   }
   return state
@@ -300,7 +300,11 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
 
       // Capture staged files BEFORE the commit executes
       const status = await getGitStatus(ctx.$, ctx.directory)
-      state.pendingCommitStagedFiles = [...status.stagedFiles]
+      const head = await ctx.$`git -C ${ctx.directory} rev-parse --verify HEAD`.quiet().nothrow()
+      state.pendingCommits.set(input.callID, {
+        files: status.stagedFiles,
+        head: head.exitCode === 0 ? (await head.text()).trim() : null,
+      })
     },
 
     // ── Track file modifications and git commits ──────────────────────────
@@ -310,10 +314,11 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
 
       // Track file writes/edits
       if (input.tool === "edit" || input.tool === "write") {
-        const args = output.args ?? {}
+        const args = input.args ?? {}
         const filePath = String(args.filePath ?? args.file_path ?? "")
         if (filePath) {
-          state.filesModified.add(filePath)
+          state.filesModified.add(resolve(ctx.directory, filePath))
+          state.warnedOnIdle = false
 
           // Extra warning for protected paths
           if (isProtectedPath(filePath, config.protectedPaths)) {
@@ -331,16 +336,28 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
 
       // Track git commits
       if (input.tool === "bash") {
-        const command = String((output.args as any)?.command ?? "")
+        const command = String((input.args as any)?.command ?? "")
         if (/git\s+commit/.test(command)) {
+          const pending = state.pendingCommits.get(input.callID)
+          state.pendingCommits.delete(input.callID)
+          // OpenCode bash uses metadata.exit (null on abort/timeout). A zero
+          // shell status alone is insufficient for "git commit ... || true".
+          if (!pending || output.metadata?.exit !== 0) return
+          const head = await ctx.$`git -C ${ctx.directory} rev-parse --verify HEAD`.quiet().nothrow()
+          if (head.exitCode !== 0 || (await head.text()).trim() === pending.head) return
           state.commitMade = true
 
-          // Use staged files captured BEFORE the commit (post-commit staged list is empty)
-          for (const file of state.pendingCommitStagedFiles) {
-            state.filesCommitted.add(file)
-            state.filesModified.delete(file)
+          const remaining = await getGitStatus(ctx.$, ctx.directory)
+          const dirty = new Set([
+            ...remaining.modifiedFiles, ...remaining.stagedFiles,
+            ...remaining.deletedFiles, ...remaining.untrackedFiles,
+          ].map(file => resolve(ctx.directory, file)))
+          for (const file of pending.files) {
+            const path = resolve(ctx.directory, file)
+            state.filesCommitted.add(path)
+            // A partially staged file may still contain uncommitted edits.
+            if (!dirty.has(path)) state.filesModified.delete(path)
           }
-          state.pendingCommitStagedFiles = []
 
           await showToast(
             ctx.client,
@@ -356,7 +373,12 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
 
     // ── Session lifecycle ─────────────────────────────────────────────────
     event: async ({ event }) => {
-      const sessionId = (event as any).session_id ?? (event as any).sessionID ?? "unknown"
+      const sessionId = event.type === "session.idle"
+        ? event.properties.sessionID
+        : event.type === "session.created" || event.type === "session.deleted"
+          ? event.properties.info.id
+          : undefined
+      if (!sessionId) return
 
       if (event.type === "session.created" && sessionId) {
         // Reset state for new session
@@ -366,14 +388,14 @@ const xpowersGitGuardPlugin: Plugin = async (ctx) => {
           commitMade: false,
           warnedOnIdle: false,
           createdAt: Date.now(),
-          pendingCommitStagedFiles: [],
+          pendingCommits: new Map(),
         })
         return
       }
 
       if (event.type === "session.deleted" && sessionId) {
         const state = sessions.get(sessionId)
-        if (state && config.autoCommitOnSessionEnd && state.filesModified.size > 0 && !state.commitMade) {
+        if (state && config.autoCommitOnSessionEnd && state.filesModified.size > 0) {
           // Auto-commit on session end — only commit files modified during this session
           const filesToCommit = Array.from(state.filesModified)
           const result = await autoCommit(ctx.$, ctx.directory, config.autoCommitMessage, filesToCommit)

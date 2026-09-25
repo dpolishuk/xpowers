@@ -199,7 +199,8 @@ type GaugeState = {
   contextLimit: number
   compactSuggested: boolean
   createdAt: number
-  messageContents: Map<string, string>  // messageId -> previous content for delta counting
+  messageContents: Map<string, string>  // partId -> previous content for delta counting
+  messageIds: Set<string>
 }
 
 const sessions = new Map<string, GaugeState>()
@@ -216,6 +217,7 @@ const getState = (sessionId: string): GaugeState => {
       compactSuggested: false,
       createdAt: Date.now(),
       messageContents: new Map(),
+      messageIds: new Set(),
     }
     sessions.set(sessionId, state)
   }
@@ -243,8 +245,16 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
   return {
     // ── Monitor message additions to estimate context growth ──────────────
     event: async ({ event }) => {
-      const sessionId =
-        (event as any).session_id ?? (event as any).sessionID ?? "unknown"
+      const sessionId = event.type === "message.updated"
+        ? event.properties.info.sessionID
+        : event.type === "message.part.updated"
+          ? event.properties.part.sessionID
+          : event.type === "session.created" || event.type === "session.deleted"
+            ? event.properties.info.id
+            : event.type === "session.idle" || event.type === "session.compacted"
+              ? event.properties.sessionID
+              : undefined
+      if (!sessionId) return
       const state = getState(sessionId)
 
       if (event.type === "session.created" && sessionId) {
@@ -258,6 +268,7 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
           compactSuggested: false,
           createdAt: Date.now(),
           messageContents: new Map(),
+          messageIds: new Set(),
         })
         return
       }
@@ -286,67 +297,28 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
         return
       }
 
-      if (event.type === "message.updated") {
-        const message = (event as any).properties?.message
-        if (!message) return
-
-        // Try to extract content from message
-        let content = ""
-        if (message.content) {
-          if (typeof message.content === "string") {
-            content = message.content
-          } else if (Array.isArray(message.content)) {
-            content = message.content
-              .map((part: any) => {
-                if (typeof part === "string") return part
-                if (part?.text) return part.text
-                if (part?.code) return part.code
-                return ""
-              })
-              .join(" ")
-          }
+      if (event.type === "message.updated" || event.type === "message.part.updated") {
+        // Message metadata and streamed content arrive as separate SDK events.
+        const message = event.type === "message.updated" ? event.properties.info : undefined
+        const part = event.type === "message.part.updated" ? event.properties.part : undefined
+        const messageId = message?.id ?? part?.messageID
+        if (messageId && !state.messageIds.has(messageId)) {
+          state.messageIds.add(messageId)
+          state.messageCount++
+        }
+        if (part?.type === "text" || part?.type === "reasoning") {
+          const previous = state.messageContents.get(part.id) ?? ""
+          state.estimatedTokens = Math.max(0,
+            state.estimatedTokens + estimateTokens(part.text) - estimateTokens(previous))
+          state.messageContents.set(part.id, part.text)
         }
 
-        // Also check parts
-        const parts = (event as any).properties?.parts ?? []
-        if (parts.length > 0 && !content) {
-          content = parts
-            .map((part: any) => {
-              if (part.type === "text") return part.text ?? ""
-              if (part.type === "code") return part.code ?? ""
-              return ""
-            })
-            .join(" ")
-        }
-
-        // Incremental token counting: only count the delta on streaming updates
-        const messageId = message.id ?? (event as any).properties?.messageId ?? ""
-        const prevContent = messageId ? state.messageContents.get(String(messageId)) : undefined
-        const prevTokens = prevContent !== undefined ? estimateTokens(prevContent) : 0
-        const newTokens = estimateTokens(content)
-        const deltaTokens = Math.max(0, newTokens - prevTokens)
-
-        state.estimatedTokens += deltaTokens
-        if (prevContent === undefined) {
-          state.messageCount += 1 // only count new messages, not streaming updates
-        }
-        if (messageId) {
-          state.messageContents.set(String(messageId), content)
-        }
-
-        // Try to detect model from message metadata
-        const detectedModel =
-          message.model ??
-          (event as any).properties?.model ??
-          (event as any).properties?.provider
-
+        const detectedModel = message?.role === "user"
+          ? message.model.modelID
+          : message?.modelID
         if (detectedModel && detectedModel !== state.modelId) {
           state.modelId = detectedModel
-          state.contextLimit = resolveModelLimit(
-            detectedModel,
-            config.modelLimits,
-            config.defaultLimit,
-          )
+          state.contextLimit = resolveModelLimit(detectedModel, config.modelLimits, config.defaultLimit)
         }
 
         // Calculate usage percentage
@@ -444,8 +416,8 @@ const xpowersContextGaugePlugin: Plugin = async (ctx) => {
     // ── Monitor bash commands for model switches ───────────────────────────
     "tool.execute.after": async (input, output) => {
       // Detect if a bash command changed the model
-      if (input.tool === "bash") {
-        const command = String((output.args as any)?.command ?? "")
+      if (input.tool === "bash" && output.metadata?.exit === 0) {
+        const command = String((input.args as any)?.command ?? "")
 
         // Check for model switching commands
         const modelMatch = command.match(

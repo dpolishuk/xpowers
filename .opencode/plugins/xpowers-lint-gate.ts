@@ -555,7 +555,7 @@ const xpowersLintGatePlugin: Plugin = async (ctx) => {
     "tool.execute.after": async (input, output) => {
       if (input.tool !== "write" && input.tool !== "edit") return
 
-      const args = output.args ?? {}
+      const args = input.args ?? {}
       const filePath = String(args.filePath ?? args.file_path ?? "")
       if (!filePath) return
 

@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
-import { join, dirname } from "node:path"
+import { join, dirname, resolve } from "node:path"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // XPowers Slow Mode Plugin
@@ -118,91 +118,68 @@ const isProtectedPath = (filePath: string, patterns: string[]): boolean => {
 
 // ── Diff Computation ────────────────────────────────────────────────────────
 
-/**
- * Compute LCS (Longest Common Subsequence) between two arrays.
- * Returns a Set of indices into `a` that are part of the LCS.
- */
-const computeLcsIndices = (a: string[], b: string[]): Set<number> => {
-  const m = a.length
-  const n = b.length
-  // Use two rows for space efficiency
-  let prev = new Array(n + 1).fill(0)
-  let curr = new Array(n + 1).fill(0)
-
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        curr[j] = prev[j - 1] + 1
-      } else {
-        curr[j] = Math.max(prev[j], curr[j - 1])
-      }
-    }
-    ;[prev, curr] = [curr, prev]
-  }
-
-  // Backtrack to find which indices of `a` are in the LCS
-  const lcsIndices = new Set<number>()
-  let i = m
-  let j = n
-  while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      lcsIndices.add(i - 1)
-      i--
-      j--
-    } else if (prev[j] > curr[j - 1]) {
-      i--
-    } else {
-      j--
-    }
-  }
-  return lcsIndices
-}
+// Bound the exact LCS table to ~4 MB. Common prefixes/suffixes are stripped
+// first, so small edits to large files still get an exact diff. Larger changed
+// regions use a conservative replacement (not necessarily minimal), avoiding
+// quadratic work and never understating a rewrite to the approval threshold.
+const MAX_LCS_CELLS = 1_000_000
 
 const computeLineDiff = (original: string, updated: string): { added: number; removed: number; diffLines: string[] } => {
-  const origLines = original.split("\n")
-  const newLines = updated.split("\n")
+  const origLines = original === "" ? [] : original.split("\n")
+  const newLines = updated === "" ? [] : updated.split("\n")
+  let start = 0
+  while (start < origLines.length && start < newLines.length && origLines[start] === newLines[start]) start++
+  let oldEnd = origLines.length
+  let newEnd = newLines.length
+  while (oldEnd > start && newEnd > start && origLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--
+    newEnd--
+  }
 
-  const lcsIndices = computeLcsIndices(origLines, newLines)
+  const m = oldEnd - start
+  const n = newEnd - start
+  const oldMatched = new Set<number>()
+  const newMatched = new Set<number>()
+  if (m > 0 && n > 0 && (m + 1) * (n + 1) <= MAX_LCS_CELLS) {
+    const width = n + 1
+    const table = new Uint32Array((m + 1) * width)
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        table[i * width + j] = origLines[start + i - 1] === newLines[start + j - 1]
+          ? table[(i - 1) * width + j - 1] + 1
+          : Math.max(table[(i - 1) * width + j], table[i * width + j - 1])
+      }
+    }
+    // Both sides must come from the SAME path, including duplicate lines.
+    let i = m
+    let j = n
+    while (i > 0 && j > 0) {
+      if (origLines[start + i - 1] === newLines[start + j - 1]) {
+        oldMatched.add(start + --i)
+        newMatched.add(start + --j)
+      } else if (table[(i - 1) * width + j] >= table[i * width + j - 1]) {
+        i--
+      } else {
+        j--
+      }
+    }
+  }
 
   let added = 0
   let removed = 0
   const diffLines: string[] = []
-
-  // Lines in original but not in LCS = removed
-  for (let i = 0; i < origLines.length; i++) {
-    if (!lcsIndices.has(i) && origLines[i].trim().length > 0) {
+  for (let i = start; i < oldEnd; i++) {
+    if (!oldMatched.has(i)) {
       removed++
-      if (diffLines.length < 20) {
-        diffLines.push(`- ${origLines[i].slice(0, 80)}`)
-      }
+      if (diffLines.length < 20) diffLines.push(`- ${origLines[i].slice(0, 80)}`)
     }
   }
-
-  // Build a set of LCS lines for quick lookup on the new side
-  const lcsLines = new Set<string>()
-  for (let i = 0; i < origLines.length; i++) {
-    if (lcsIndices.has(i)) lcsLines.add(origLines[i])
-  }
-
-  // Lines in new but not in LCS = added
-  // We use a separate pass to handle duplicates correctly
-  const newLcsIndices = computeLcsIndices(newLines, origLines)
-  for (let i = 0; i < newLines.length; i++) {
-    if (!newLcsIndices.has(i) && newLines[i].trim().length > 0) {
+  for (let i = start; i < newEnd; i++) {
+    if (!newMatched.has(i)) {
       added++
-      if (diffLines.length < 20) {
-        diffLines.push(`+ ${newLines[i].slice(0, 80)}`)
-      }
+      if (diffLines.length < 20) diffLines.push(`+ ${newLines[i].slice(0, 80)}`)
     }
   }
-
-  // If no semantic diff found, report line count change
-  if (added === 0 && removed === 0) {
-    const countDiff = newLines.length - origLines.length
-    if (countDiff > 0) added = countDiff
-    if (countDiff < 0) removed = -countDiff
-  }
-
   return { added, removed, diffLines }
 }
 
@@ -314,8 +291,9 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
       if (input.tool !== "write" && input.tool !== "edit") return
 
       const args = output.args ?? {}
-      const filePath = String(args.filePath ?? args.file_path ?? "")
-      if (!filePath) return
+      const requestedPath = String(args.filePath ?? args.file_path ?? "")
+      if (!requestedPath) return
+      const filePath = resolve(ctx.directory, requestedPath)
 
       // Check protected paths
       if (isProtectedPath(filePath, config.protectedPaths)) {
@@ -342,9 +320,10 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
     "tool.execute.after": async (input, output) => {
       if (input.tool !== "write" && input.tool !== "edit") return
 
-      const args = output.args ?? {}
-      const filePath = String(args.filePath ?? args.file_path ?? "")
-      if (!filePath) return
+      const args = input.args ?? {}
+      const requestedPath = String(args.filePath ?? args.file_path ?? "")
+      if (!requestedPath) return
+      const filePath = resolve(ctx.directory, requestedPath)
 
       const sessionId = (input as any).sessionID ?? "unknown"
       const state = getSessionState(sessionId)
@@ -384,6 +363,7 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
         linesRemoved: removed,
       }
       state.changes.push(change)
+      state.summaryLogged = false
 
       // Determine if we should show notification
       const isSmallChange = config.autoApproveThreshold > 0 && totalChanged <= config.autoApproveThreshold
@@ -426,7 +406,12 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
 
     // ── Session lifecycle: cleanup and summary ─────────────────────────────
     event: async ({ event }) => {
-      const sessionId = (event as any).session_id ?? (event as any).sessionID ?? "unknown"
+      const sessionId = event.type === "session.idle"
+        ? event.properties.sessionID
+        : event.type === "session.created" || event.type === "session.deleted"
+          ? event.properties.info.id
+          : undefined
+      if (!sessionId) return
 
       if (event.type === "session.created" && sessionId) {
         // Initialize session state
@@ -463,7 +448,7 @@ const xpowersSlowModePlugin: Plugin = async (ctx) => {
             6000,
           )
 
-          // Write summary to log (only once per session)
+          // Write one summary per revision of the session changes
           await logSessionSummary(logDir, sessionId, state.changes)
           state.summaryLogged = true
         }

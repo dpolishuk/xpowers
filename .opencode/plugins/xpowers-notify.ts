@@ -260,7 +260,7 @@ const xpowersNotifyPlugin: Plugin = async (ctx) => {
     "tool.execute.after": async (input, output) => {
       // Task tool (subagent dispatch)
       if (input.tool === "task") {
-        const args = (output.args ?? {}) as Record<string, unknown>
+        const args = (input.args ?? {}) as Record<string, unknown>
         const agentName = formatAgentName(args)
         const modelInfo = formatModelInfo(args)
 
@@ -292,8 +292,8 @@ const xpowersNotifyPlugin: Plugin = async (ctx) => {
       }
 
       // Bash tool (long-running build/test commands)
-      if (input.tool === "bash" && config.onTaskComplete) {
-        const command = String((output.args as any)?.command ?? "")
+      if (input.tool === "bash") {
+        const command = String((input.args as any)?.command ?? "")
         const isLongRunning =
           /\b(npm test|yarn test|pnpm test|bun test|pytest|jest|vitest|cargo test|go test|make|build|lint)\b/.test(
             command,
@@ -302,8 +302,13 @@ const xpowersNotifyPlugin: Plugin = async (ctx) => {
         if (!isLongRunning) return
 
         const title = `${config.titlePrefix} · Build/Test`
-        const message = `Completed: ${command.slice(0, 60)}${command.length > 60 ? "..." : ""}`
-        await notify(title, message, "success")
+        const exit = output.metadata?.exit
+        const succeeded = exit === 0
+        const failed = typeof exit === "number" && exit !== 0
+        if (failed ? !config.onTaskError : !config.onTaskComplete) return
+        const status = succeeded ? "Completed" : failed ? "Failed" : "Finished (exit status unknown)"
+        const message = `${status}: ${command.slice(0, 60)}${command.length > 60 ? "..." : ""}`
+        await notify(title, message, succeeded ? "success" : failed ? "error" : "warning")
       }
     },
   }
