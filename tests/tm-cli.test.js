@@ -17,10 +17,22 @@ function runTm(args = [], opts = {}) {
 }
 
 test("tm with no config defaults to bd backend", () => {
-  // Running tm --version without TM_BACKEND should show "bd" as backend
-  const result = runTm(["--version"], { env: { TM_BACKEND: "" } })
-  assert.equal(result.status, 0)
-  assert.match(result.stdout, /backend: bd/)
+  const os = require("node:os")
+  const fs = require("node:fs")
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tm-default-backend-"))
+
+  try {
+    // An empty project must not inherit this repository's configured backend.
+    fs.mkdirSync(path.join(tmpRoot, ".beads"))
+    const result = runTm(["--version"], {
+      cwd: tmpRoot,
+      env: { TM_BACKEND: "", TM_REPO_ROOT: tmpRoot },
+    })
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /backend: bd/)
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  }
 })
 
 test("tm with TM_BACKEND=bd explicitly selects bd backend", () => {
@@ -42,7 +54,9 @@ test("tm with TM_BACKEND=tk explicitly selects tk backend", () => {
 })
 
 test("tm with TM_BACKEND=linear requires credentials before running commands", () => {
-  const result = runTm(["ready"], { env: { TM_BACKEND: "linear" } })
+  const result = runTm(["ready"], {
+    env: { TM_BACKEND: "linear", LINEAR_API_KEY: "", LINEAR_TEAM_KEY: "" },
+  })
   assert.equal(result.status, 1)
   assert.match(result.stderr, /Linear backend requires LINEAR_API_KEY and LINEAR_TEAM_KEY/)
 })
@@ -310,7 +324,7 @@ printf '%s\n' "$*"
 `, "utf8")
     fs.chmodSync(fakeBdPath, 0o755)
 
-    const env = { ...process.env, PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}` }
+    const env = { ...process.env, TM_BACKEND: "bd", PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}` }
     const tmResult = runTm(["list", "--status", "open"], { env })
     const bdResult = spawnSync("bd", ["list", "--status", "open"], {
       cwd: repoRoot,
@@ -339,7 +353,7 @@ printf '%s\n' "$*"
 `, "utf8")
     fs.chmodSync(fakeBdPath, 0o755)
 
-    const env = { ...process.env, LINEAR_API_KEY: "", PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}` }
+    const env = { ...process.env, TM_BACKEND: "bd", LINEAR_API_KEY: "", PATH: `${tmpBinDir}${path.delimiter}${process.env.PATH || ""}` }
     const tmResult = runTm(["sync", "--help"], { env })
     const bdResult = spawnSync("bd", ["sync", "--help"], {
       cwd: repoRoot,
