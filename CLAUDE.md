@@ -148,7 +148,7 @@ tm update bd-3 --status in_progress      # Update task status
 3. **knowledge-aggregator** (sonnet) - Aggregates context from docs, issue trackers, and team communications via MCP
 
 **Plan (1):**
-4. **planner** (opus) - Decomposes goals into architecture diagrams, file change maps, and task dependency graphs
+4. **planner** (inherit) - Decomposes goals into architecture diagrams, file change maps, and task dependency graphs
 
 **Execute (1):**
 5. **ralph** (inherit) - YOLO mode autonomous executor using smart triage for task selection
@@ -159,16 +159,16 @@ tm update bd-3 --status in_progress      # Update task status
 
 **Review (7):**
 8. **code-reviewer** (sonnet) - Human-facing reviews with detailed explanations
-9. **autonomous-reviewer** (opus) - Machine-facing verdict-only reviews for automated pipelines
+9. **autonomous-reviewer** (inherit) - Machine-facing verdict-only reviews for automated pipelines
 10. **review-implementation** (sonnet) - Spec-focused requirements alignment verification
 11. **review-testing** (sonnet) - Test coverage and quality evaluation
 12. **review-quality** (sonnet) - Bug detection, race conditions, error handling gaps
 13. **review-simplification** (sonnet) - Over-engineering and unnecessary complexity detection
-14. **review-documentation** (sonnet) - Documentation completeness checks
+14. **review-documentation** (haiku) - Documentation completeness checks
 
 **Worker (2):**
 15. **test-runner** (haiku) - Runs tests/hooks/commits, returns only summary + failures to keep context clean
-16. **test-effectiveness-analyst** (sonnet) - Audits test quality with SRE scrutiny
+16. **test-effectiveness-analyst** (inherit) - Audits test quality with SRE scrutiny
 
 **Critical pattern:** Agents keep verbose output (test results, formatting diffs) in their own context, returning only essential info to the main conversation.
 

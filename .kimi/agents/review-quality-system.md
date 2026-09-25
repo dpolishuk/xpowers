@@ -1,6 +1,8 @@
 ---
 name: review-quality
 description: Quality reviewer - finds bugs, race conditions, error handling gaps, resource leaks. Returns PASS or ISSUES_FOUND with severity.
+# Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
+model: sonnet
 tools:
   Read: true
   Grep: true

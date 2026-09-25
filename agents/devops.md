@@ -1,6 +1,8 @@
 ---
 name: devops
 description: DevOps reviewer - analyzes CI/CD pipelines, pre-commit hooks, build configurations, and diagnoses pipeline failures. Returns PASS or ISSUES_FOUND.
+# Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
+model: sonnet
 tools:
   Read: true
   Grep: true

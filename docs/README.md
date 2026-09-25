@@ -60,15 +60,17 @@ Example configuration files for **OpenCode** and **Claude Code** with different 
 Anthropic Claude models with optimized agent assignments:
 
 - **Main model:** Sonnet 4.5 (balanced speed/capability)
-- **Fast agents** (test-runner, investigator, researcher): Haiku 4.5
-- **Capable agents** (code-reviewer, test-analyst): Sonnet 4.5
+- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): pinned to Haiku 4.5
+- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): pinned to Sonnet 4.5
+- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): unpinned — native session inheritance (they follow the top-level `model`)
 
 #### `opencode.example.glm.json`
 GLM models with optimized agent assignments:
 
 - **Main model:** GLM-4.7 (capable)
-- **Fast agents** (test-runner, investigator, researcher): GLM-4.5
-- **Capable agents** (code-reviewer, test-analyst): GLM-4.7
+- **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation): pinned to GLM-4.5
+- **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification): pinned to GLM-4.7
+- **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph): unpinned — native session inheritance (they follow the top-level `model`)
 
 #### `opencode.example.multi-provider.json`
 **Advanced:** Multiple providers with same model names. Shows how to:
@@ -245,11 +247,12 @@ Agents in Claude Code inherit models through environment variable mappings:
 | `model: haiku` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `glm-4.5-air` |
 | `model: sonnet` | `ANTHROPIC_DEFAULT_SONNET_MODEL` | `glm-4.7` |
 | `model: opus` | `ANTHROPIC_DEFAULT_OPUS_MODEL` | `glm-4.7` |
+| `model: fable` | `ANTHROPIC_DEFAULT_FABLE_MODEL` | `glm-4.7` |
 | `model: inherit` | User's current model selection | Your choice |
 
-**Important:** XPowers agents use `model: inherit`, so they follow your current model selection. To customize, either:
+**Important:** XPowers agents use mixed model tiers: complex-work agents (`planner`, `autonomous-reviewer`, `test-effectiveness-analyst`, `ralph`) use `model: inherit` so they follow your current model selection, mid-complexity agents use `sonnet`, and mechanical agents use `haiku`. To customize, either:
 - Change your current model in Claude Code settings
-- Set env mappings to redirect haiku/sonnet/opus to your preferred models
+- Set env mappings to redirect haiku/sonnet/opus/fable to your preferred models
 
 ---
 
@@ -269,7 +272,7 @@ No setup required. Just install and run.
 **Via Claude Code:**
 1. Add env mappings to `settings.json` (see `claude-code.example.glm.json`)
 2. Restart Claude Code
-3. Models are now available via haiku/sonnet/opus aliases
+3. Models are now available via haiku/sonnet/opus/fable aliases
 
 ### Local Models (Ollama, llama.cpp)
 
@@ -306,8 +309,9 @@ No setup required. Just install and run.
 
 | Agent Type | Recommended Models | Why |
 |------------|-------------------|-----|
-| **Fast agents** (test-runner, codebase-investigator, internet-researcher) | Haiku 4.5, GLM-4.5, local models | High-volume, low-complexity tasks benefit from speed |
-| **Capable agents** (code-reviewer, test-effectiveness-analyst) | Sonnet 4.5, GLM-4.7, Opus 4 | Complex reasoning requires capable models |
+| **Inherit agents** (planner, autonomous-reviewer, test-effectiveness-analyst, ralph) | Follow the parent/session model (fable-class parents keep full capability) | Complex work is never capped by a cheaper tier |
+| **Fast agents** (test-runner, codebase-investigator, internet-researcher, review-documentation) | Haiku 4.5, GLM-4.5, local models | High-volume, low-complexity tasks benefit from speed |
+| **Capable agents** (code-reviewer, security-scanner, devops, knowledge-aggregator, review-quality, review-implementation, review-testing, review-simplification) | Sonnet 4.5, GLM-4.7 | Mid-complexity analysis; sufficient capability at lower cost/latency than parent |
 
 ### By Cost Optimization
 
