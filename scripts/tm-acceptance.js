@@ -9,6 +9,7 @@ const { execFileSync, spawn } = require("node:child_process")
 
 const RUNTIME_VERSION = 1
 const POLICY_RELATIVE_PATH = path.join(".xpowers", "acceptance.json")
+const TASK_SELECTOR_PATHS = [".beads/config.yaml", ".beads/metadata.json"]
 const MAX_POLICY_BYTES = 256 * 1024
 const MAX_RECEIPT_BYTES = 512 * 1024
 const MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -18,10 +19,11 @@ const MAX_ARGUMENT_BYTES = 4096
 const MAX_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_CHECK_OUTPUT_BYTES = 64 * 1024
 const MAX_STORED_STREAM_BYTES = 4096
+const HASH_CHUNK_BYTES = 64 * 1024
 const TASK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const FORBIDDEN_GIT_ENV = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"]
-const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BEADS_DIR"]
+const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BEADS_DIR", "BEADS_DB"]
 
 class AcceptanceError extends Error {
   constructor(message, exitCode = 1) {
@@ -107,10 +109,58 @@ function readRegularFileNoFollow(file, maxBytes, label, validateCanonical) {
     if (validateCanonical) validateCanonical(canonical)
     const current = fs.statSync(canonical)
     if (current.dev !== stat.dev || current.ino !== stat.ino) fail(`${label} changed while it was being inspected`)
-    return { bytes: fs.readFileSync(descriptor), stat, canonical }
+    const bytes = fs.readFileSync(descriptor)
+    if (bytes.length > maxBytes) fail(`${label} exceeds size limit`)
+    assertFileUnchanged(file, descriptor, stat, canonical, label)
+    return { bytes, stat, canonical }
   } catch (error) {
     if (error instanceof AcceptanceError) throw error
     fail(`${label} could not be read safely: ${error.message}`)
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor)
+  }
+}
+
+function sameFileState(before, after) {
+  return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+    before.mode === after.mode && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs
+}
+
+function assertFileUnchanged(file, descriptor, before, canonical, label) {
+  const after = fs.fstatSync(descriptor)
+  if (!sameFileState(before, after)) fail(`${label} changed while it was being read`)
+  const currentCanonical = fs.realpathSync(file)
+  if (currentCanonical !== canonical) fail(`${label} path changed while it was being read`)
+  const current = fs.statSync(currentCanonical)
+  if (current.dev !== after.dev || current.ino !== after.ino) fail(`${label} path changed while it was being read`)
+}
+
+function hashRegularFileNoFollow(file, label, validateCanonical) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)
+  let descriptor
+  try {
+    descriptor = fs.openSync(file, flags)
+    const stat = fs.fstatSync(descriptor)
+    if (!stat.isFile()) fail(`${label} must be a regular file`)
+    const canonical = fs.realpathSync(file)
+    if (validateCanonical) validateCanonical(canonical)
+    const current = fs.statSync(canonical)
+    if (current.dev !== stat.dev || current.ino !== stat.ino) fail(`${label} changed while it was being inspected`)
+
+    const hash = crypto.createHash("sha256")
+    const buffer = Buffer.allocUnsafe(HASH_CHUNK_BYTES)
+    let total = 0
+    let bytesRead
+    while ((bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, bytesRead))
+      total += bytesRead
+    }
+    if (total !== stat.size) fail(`${label} changed while it was being read`)
+    assertFileUnchanged(file, descriptor, stat, canonical, label)
+    return { digest: hash.digest("hex"), stat, canonical }
+  } catch (error) {
+    if (error instanceof AcceptanceError) throw error
+    fail(`${label} could not be hashed safely: ${error.message}`)
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor)
   }
@@ -301,6 +351,10 @@ function isExcluded(relative) {
   return relative === ".beads" || relative.startsWith(".beads/")
 }
 
+function isTaskSelector(relative) {
+  return TASK_SELECTOR_PATHS.includes(relative)
+}
+
 function isInside(root, target) {
   const relative = path.relative(root, target)
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative))
@@ -332,19 +386,28 @@ function assertCanonicalTargetAllowed(context, target, label) {
   return relative
 }
 
+function assertTaskSelectorCanonical(context, target, expectedRelative) {
+  if (!isInside(context.root, target)) fail(`task-store selector ${expectedRelative} resolves outside the worktree`)
+  if (isInside(context.gitDir, target) || isInside(context.commonDir, target)) {
+    fail(`task-store selector ${expectedRelative} resolves into Git metadata`)
+  }
+  const relative = relativeFromRoot(context.root, target)
+  if (relative !== expectedRelative) fail(`task-store selector ${expectedRelative} resolves to an unsupported path`)
+}
+
 function fingerprintResolvedTarget(context, target, label) {
   const relative = assertCanonicalTargetAllowed(context, target, label)
   const stat = fs.lstatSync(target)
   if (stat.isFile()) {
-    const opened = readRegularFileNoFollow(target, Number.MAX_SAFE_INTEGER, label, (canonical) => {
+    const opened = hashRegularFileNoFollow(target, label, (canonical) => {
       assertCanonicalTargetAllowed(context, canonical, label)
     })
     return {
       path: relative,
       type: "file",
-      executable: (opened.stat.mode & 0o111) !== 0,
+      mode: opened.stat.mode & 0o7777,
       size: opened.stat.size,
-      digest: sha256(opened.bytes),
+      digest: opened.digest,
     }
   }
   if (stat.isDirectory()) {
@@ -377,6 +440,7 @@ function createSnapshot(context, policyFingerprint) {
     if (!isExcluded(relative)) paths.add(relative)
   }
   paths.add(POLICY_RELATIVE_PATH.split(path.sep).join("/"))
+  for (const selector of TASK_SELECTOR_PATHS) paths.add(selector)
 
   const files = []
   for (const relative of [...paths].sort()) {
@@ -388,7 +452,9 @@ function createSnapshot(context, policyFingerprint) {
       files.push({ path: relative, type: "missing" })
       continue
     }
+    const taskSelector = isTaskSelector(relative)
     if (stat.isSymbolicLink()) {
+      if (taskSelector) fail(`task-store selector ${relative} must be a regular file, not a symlink`)
       const link = fs.readlinkSync(absolute)
       const resolved = path.resolve(path.dirname(absolute), link)
       let realTarget
@@ -397,16 +463,20 @@ function createSnapshot(context, policyFingerprint) {
       files.push({ path: relative, type: "symlink", target: link, resolvedTarget: target })
       continue
     }
-    if (!stat.isFile()) fail(`special file is unsupported by acceptance snapshots: ${relative}`)
-    const opened = readRegularFileNoFollow(absolute, Number.MAX_SAFE_INTEGER, `file ${relative}`, (canonical) => {
-      assertCanonicalTargetAllowed(context, canonical, `file ${relative}`)
+    if (!stat.isFile()) {
+      if (taskSelector) fail(`task-store selector ${relative} must be a regular file`)
+      fail(`special file is unsupported by acceptance snapshots: ${relative}`)
+    }
+    const opened = hashRegularFileNoFollow(absolute, `file ${relative}`, (canonical) => {
+      if (taskSelector) assertTaskSelectorCanonical(context, canonical, relative)
+      else assertCanonicalTargetAllowed(context, canonical, `file ${relative}`)
     })
     files.push({
       path: relative,
       type: "file",
-      executable: (opened.stat.mode & 0o111) !== 0,
+      mode: opened.stat.mode & 0o7777,
       size: opened.stat.size,
-      digest: sha256(opened.bytes),
+      digest: opened.digest,
     })
   }
 

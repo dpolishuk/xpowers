@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require("node:child_process")
 
 const repoRoot = path.resolve(__dirname, "..")
 const tmPath = path.join(repoRoot, "scripts", "tm")
+const acceptancePath = path.join(repoRoot, "scripts", "tm-acceptance.js")
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -273,6 +274,105 @@ test("index-only changes and ignored former tracked files make evidence stale", 
   }
 })
 
+test("task-store selector files are fingerprinted while task records stay excluded", () => {
+  const fixture = makeFixture()
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-selector-missing"]).status, 0)
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "metadata.json"), '{"database":"beads.db"}\n')
+    fs.writeFileSync(fixture.backendLog, "")
+    const created = runTm(fixture, ["close", "bd-selector-missing"])
+    assert.equal(created.status, 1)
+    assert.match(created.stderr, /evidence is stale/i)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-selector-content"]).status, 0)
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "config.yaml"), "tm.backend: br\nselector: changed\n")
+    const changed = runTm(fixture, ["close", "bd-selector-content"])
+    assert.equal(changed.status, 1)
+    assert.match(changed.stderr, /evidence is stale/i)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-task-record"]).status, 0)
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "issues.jsonl"), '{"id":"one"}\n')
+    fs.appendFileSync(path.join(fixture.repo, ".beads", "issues.jsonl"), '{"id":"two"}\n')
+    const ordinary = runTm(fixture, ["close", "bd-task-record"])
+    assert.equal(ordinary.status, 0, ordinary.stderr)
+    assert.deepEqual(backendCalls(fixture), [["close", "bd-task-record"]])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("unsafe task-store selector nodes fail closed", () => {
+  const fixture = makeFixture()
+  try {
+    const metadata = path.join(fixture.repo, ".beads", "metadata.json")
+    fs.symlinkSync(path.join(fixture.root, "outside-metadata.json"), metadata)
+    fs.writeFileSync(path.join(fixture.root, "outside-metadata.json"), "{}\n")
+    const accepted = runTm(fixture, ["acceptance", "run", "bd-selector-symlink"])
+    assert.equal(accepted.status, 1)
+    assert.match(accepted.stderr, /task-store selector.*regular file|symlink.*unsupported/i)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("POSIX permission changes invalidate acceptance evidence", () => {
+  const fixture = makeFixture()
+  try {
+    const source = path.join(fixture.repo, "app.txt")
+    fs.chmodSync(source, 0o644)
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-mode"]).status, 0)
+    fs.chmodSync(source, 0o600)
+    fs.writeFileSync(fixture.backendLog, "")
+
+    const closed = runTm(fixture, ["close", "bd-mode"])
+    assert.equal(closed.status, 1)
+    assert.match(closed.stderr, /evidence is stale/i)
+    assert.deepEqual(backendCalls(fixture), [])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("large source files are chunk-hashed through the tail without whole-file reads", () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "reject-large-read-file-sync.cjs")
+  try {
+    const large = path.join(fixture.repo, "large-source.bin")
+    fs.writeFileSync(large, Buffer.alloc(2 * 1024 * 1024 + 17, 0x61))
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const originalReadFileSync = fs.readFileSync",
+      "fs.readFileSync = function(target) {",
+      "  if (typeof target === 'number' && fs.fstatSync(target).size > 1024 * 1024) {",
+      "    throw new Error('whole-file source read forbidden')",
+      "  }",
+      "  return originalReadFileSync.apply(this, arguments)",
+      "}",
+      "",
+    ].join("\n"))
+    const accepted = runTm(fixture, ["acceptance", "run", "bd-large"], {
+      env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim() },
+    })
+    assert.equal(accepted.status, 0, accepted.stderr)
+
+    const descriptor = fs.openSync(large, "r+")
+    try {
+      fs.writeSync(descriptor, Buffer.from([0x62]), 0, 1, fs.statSync(large).size - 1)
+    } finally {
+      fs.closeSync(descriptor)
+    }
+    fs.writeFileSync(fixture.backendLog, "")
+    const closed = runTm(fixture, ["close", "bd-large"])
+    assert.equal(closed.status, 1)
+    assert.match(closed.stderr, /evidence is stale/i)
+    assert.deepEqual(backendCalls(fixture), [])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("external symlinks and corrupt receipts fail closed", () => {
   const fixture = makeFixture()
   try {
@@ -470,6 +570,13 @@ test("malformed policy nodes, backend mismatch, and Git overrides fail closed", 
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BD_DB: path.join(fixture.root, "other.db") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BD_DATABASE: path.join(fixture.root, "other.db") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BEADS_DIR: path.join(fixture.root, "other-beads") } }).status, 1)
+    assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BEADS_DB: path.join(fixture.root, "other.db") } }).status, 1)
+    const directOverride = run(process.execPath, [acceptancePath, "check", "bd-node"], {
+      cwd: fixture.repo,
+      env: { ...fixture.env, BEADS_DB: path.join(fixture.root, "other.db") },
+    })
+    assert.equal(directOverride.status, 1)
+    assert.match(directOverride.stderr, /BEADS_DB is unsupported/i)
     assert.deepEqual(backendCalls(fixture), [])
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
