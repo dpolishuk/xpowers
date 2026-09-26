@@ -1916,12 +1916,14 @@ install_tm_cli() {
   cp "${REPO_ROOT}/scripts/tm-linear-backend.js" "${TM_LIB_DIR}/tm-linear-backend.js"
   cp "${REPO_ROOT}/scripts/tm-linear-sync.js" "${TM_LIB_DIR}/tm-linear-sync.js"
   cp "${REPO_ROOT}/scripts/tm-linear-sync-config.js" "${TM_LIB_DIR}/tm-linear-sync-config.js"
+  cp "${REPO_ROOT}/scripts/tm-acceptance.js" "${TM_LIB_DIR}/tm-acceptance.js"
 
   # Create symlinks so tm can find its companion scripts
   ln -sfn "${TM_LIB_DIR}/tm-backends.sh" "${TM_BIN_DIR}/tm-backends.sh"
   ln -sfn "${TM_LIB_DIR}/tm-linear-backend.js" "${TM_BIN_DIR}/tm-linear-backend.js"
   ln -sfn "${TM_LIB_DIR}/tm-linear-sync.js" "${TM_BIN_DIR}/tm-linear-sync.js"
   ln -sfn "${TM_LIB_DIR}/tm-linear-sync-config.js" "${TM_BIN_DIR}/tm-linear-sync-config.js"
+  ln -sfn "${TM_LIB_DIR}/tm-acceptance.js" "${TM_BIN_DIR}/tm-acceptance.js"
 
   # Install @linear/sdk if node/npm available and package.json exists
   if command -v npm &>/dev/null && [[ -f "${REPO_ROOT}/package.json" ]]; then
@@ -1962,6 +1964,7 @@ uninstall_tm_cli() {
   rm -f "${TM_BIN_DIR}/tm-linear-backend.js"
   rm -f "${TM_BIN_DIR}/tm-linear-sync.js"
   rm -f "${TM_BIN_DIR}/tm-linear-sync-config.js"
+  rm -f "${TM_BIN_DIR}/tm-acceptance.js"
 
   local managed_node_modules_target="${TM_LIB_DIR}/node_modules"
   if [[ -L "${TM_BIN_DIR}/node_modules" ]]; then

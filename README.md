@@ -120,6 +120,8 @@ XPowers is **tm-first**. `tm` is the canonical user-facing task-management inter
 
 On this repo today, `br` remains the active backend.
 
+Projects using `br` can opt into an acceptance gate that requires a fresh, successful local verification run before `tm close` is dispatched. See [Acceptance gate](docs/ACCEPTANCE.md) for setup, commands, and its technical boundaries.
+
 ### tm Backend Interoperability
 
 While `tm` provides a unified interface, some backends use different flag names or behaviors. `tm` translates these when possible.
