@@ -8,6 +8,7 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 
 - [../README.md](../README.md) — canonical front door for installation, usage, and the tm-first model
 - [QUICKSTART.md](QUICKSTART.md) — shortest path to the tm-first workflow in this repo
+- [ACCEPTANCE.md](ACCEPTANCE.md) — opt-in current-code verification before `tm close` with the `br` backend
 - [linear-mcp-setup.md](linear-mcp-setup.md) — canonical Linear setup and `tm sync` guide
 - [model-configuration.md](model-configuration.md) — model/provider configuration guide for supported hosts
 
