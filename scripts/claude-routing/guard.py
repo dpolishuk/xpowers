@@ -172,8 +172,14 @@ def _readonly_command(arguments):
     if command not in READ_COMMANDS:
         return False
     if command == "rg":
+        if not options or options[0] != "--no-config":
+            return False
         executing = {"--pre", "--pre-glob", "--hostname-bin"}
-        if any(option.split("=", 1)[0] in executing for option in options):
+        if any(
+            option.startswith("--") and option != "--"
+            and any(flag.startswith(option.split("=", 1)[0]) for flag in executing)
+            for option in options[1:]
+        ):
             return False
     return True
 

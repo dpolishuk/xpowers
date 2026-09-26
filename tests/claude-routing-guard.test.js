@@ -226,7 +226,7 @@ test("independent verifier and reviewer cannot resume, fork or override configur
 test("readonly shell commands and the bounded Git query subset are allowed", (t) => {
   const f = fixture(t)
   for (const command of [
-    "pwd", "ls -la", "cat README.md", "rg --files", "rg -n pattern src | head -20", "grep -R pattern src", "tail -30 file.log",
+    "pwd", "ls -la", "cat README.md", "rg --no-config --files", "rg --no-config -n pattern src | head -20", "grep -R pattern src", "tail -30 file.log",
     "git --no-pager --no-lazy-fetch rev-parse --show-toplevel", "git --no-pager --no-lazy-fetch merge-base HEAD main",
     "git --no-pager --no-lazy-fetch ls-tree HEAD", "git --no-pager --no-lazy-fetch branch --show-current",
     "git --no-optional-locks --no-pager -C subdir --no-lazy-fetch rev-parse --show-toplevel",
@@ -259,7 +259,10 @@ test("coordinator shell rejects mutation, evaluation, write flags and command in
     "cat README.md > src.js", "cat README.md >> src.js", "cat README.md | tee src.js", "git status && touch src.js",
     "git status; touch src.js", "git status\ntouch src.js", "git show $(touch src.js)", "cat `touch src.js`", "cat <(touch src.js)",
     "python3 -c 'open(\"src.js\",\"w\").write(\"bad\")'", "node -e 'require(\"fs\").writeFileSync(\"src.js\",\"bad\")'",
-    "bash -c 'git status'", "env git status", "GIT_EXTERNAL_DIFF=bad git diff", "rg --pre=bad pattern", "rg --hostname-bin bad pattern",
+    "bash -c 'git status'", "env git status", "GIT_EXTERNAL_DIFF=bad git diff", "rg --files", "rg pattern .",
+    "rg -e --no-config .", "rg -g --no-config pattern .", "rg -- --no-config", "rg -n --no-config pattern .",
+    "rg --no-config --pre=bad pattern", "rg --no-config --pre-glob='*.pdf' pattern", "rg --no-config --hostname-bin bad pattern",
+    "rg --no-config --pr=bad pattern", "rg --no-config --pre-g='*.pdf' pattern", "rg --no-config --hostname-b=bad pattern",
     "find . -exec touch src.js \\;", "sed -i '' s/a/b/ src.js", "npm test", "echo harmless", "git diff | sh",
   ]) denied(f.run("Bash", { command }), command)
 })
@@ -293,8 +296,8 @@ for (const [name, flag] of [
 test("shell expansion screening preserves quoted literal search patterns", (t) => {
   const f = fixture(t)
   for (const command of [
-    "rg 'foo.*bar' src", "rg \"[a-z]?\" src", "rg 'config{value}' src",
-    "rg 'it'\\''s.*quoted' src",
+    "rg --no-config 'foo.*bar' src", "rg --no-config \"[a-z]?\" src", "rg --no-config 'config{value}' src",
+    "rg --no-config 'it'\\''s.*quoted' src",
   ]) allowed(f.run("Bash", { command }), command)
   for (const command of [
     "git diff --out\"p\"* /dev/null input.txt", "git diff --out[pu]* /dev/null input.txt",
@@ -305,14 +308,52 @@ test("shell expansion screening preserves quoted literal search patterns", (t) =
 test("shell queries preserve literal dollars and backticks without allowing substitution", (t) => {
   const f = fixture(t)
   for (const command of [
-    "rg '^foo$' src", "rg '`literal`' src", "rg '$(literal)' src",
-    "rg \\$literal src", "rg \\`literal\\` src", "rg \"\\$literal\" src", "rg \"\\`literal\\`\" src",
+    "rg --no-config '^foo$' src", "rg --no-config '`literal`' src", "rg --no-config '$(literal)' src",
+    "rg --no-config \\$literal src", "rg --no-config \\`literal\\` src", "rg --no-config \"\\$literal\" src", "rg --no-config \"\\`literal\\`\" src",
   ]) allowed(f.run("Bash", { command }), command)
   for (const command of [
     "rg $(touch victim.txt) src", "rg \"$(touch victim.txt)\" src",
     "rg `touch victim.txt` src", "rg \"`touch victim.txt`\" src",
     "rg $PATTERN src", "rg \"$PATTERN\" src", "rg \"\\\\$PATTERN\" src",
   ]) denied(f.run("Bash", { command }), command)
+})
+
+test("read-only roles require rg --no-config before every search", (t) => {
+  const f = fixture(t)
+  const input = path.join(f.project, "input.txt")
+  const helper = path.join(f.root, "rg-preprocessor.sh")
+  const config = path.join(f.root, "ripgreprc")
+  const sentinel = path.join(f.root, "rg-helper-ran")
+  fs.writeFileSync(input, "needle\n")
+  fs.writeFileSync(helper, "#!/bin/sh\nprintf invoked > \"$RG_HELPER_SENTINEL\"\ncat \"$1\"\n", { mode: 0o700 })
+  fs.writeFileSync(config, `--pre=${helper}\n`)
+  const environment = { RIPGREP_CONFIG_PATH: config, RG_HELPER_SENTINEL: sentinel }
+
+  const probe = spawnSync("rg", ["needle", f.project], {
+    env: { ...process.env, ...environment }, encoding: "utf8", timeout: 10000,
+  })
+  assert.equal(probe.status, 0, probe.stderr)
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "invoked", "fixture did not execute the configured rg preprocessor")
+  fs.rmSync(sentinel)
+  const safeProbe = spawnSync("rg", ["--no-config", "needle", f.project], {
+    env: { ...process.env, ...environment }, encoding: "utf8", timeout: 10000,
+  })
+  assert.equal(safeProbe.status, 0, safeProbe.stderr)
+  assert.match(safeProbe.stdout, /needle/)
+  assert.equal(fs.existsSync(sentinel), false, "--no-config still executed the configured rg preprocessor")
+
+  for (const role of ["coordinator", "explorer", "reviewer"]) {
+    const identity = role === "coordinator" ? {} : { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }
+    denied(f.run("Bash", { command: "rg needle ." }, identity, { env: environment }), `${role} raw rg`)
+    allowed(f.run("Bash", { command: "rg --no-config needle ." }, identity, { env: environment }), `${role} safe rg`)
+  }
+  assert.equal(fs.existsSync(sentinel), false, "guard evaluation executed the configured rg helper")
+
+  for (const role of ["worker", "senior", "verifier"]) {
+    allowed(f.run("Bash", { command: "rg needle ." }, {
+      agent_id: "agent-123", agent_type: `xpowers-routing-${role}`,
+    }, { env: environment }), role)
+  }
 })
 
 test("only exact session control commands bypass coordinator shell restrictions", (t) => {

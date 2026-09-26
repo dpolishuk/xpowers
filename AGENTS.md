@@ -30,6 +30,7 @@ This document provides essential information for AI coding agents working with t
 - Install **tm** support via this repo’s setup flow; note that the current backend in this repo is `br`
 - Install **Bun** for OpenCode plugin development
 - Node.js for running tests
+- ripgrep for the Claude routing guard's real helper-isolation regression
 
 ### Available Commands
 

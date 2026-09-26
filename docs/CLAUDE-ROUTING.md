@@ -147,6 +147,13 @@ override, redirection, arbitrary interpreter, and executable read-command
 options are also rejected. Delegate builds, Docker checks, Git mutations, and
 unsupported shell queries to the appropriate agent.
 
+Every coordinator, explorer, or reviewer ripgrep query must use exact
+`--no-config` as its first argument. For example, use
+`rg --no-config -n pattern src`. This prevents an inherited
+`RIPGREP_CONFIG_PATH` from starting a configured
+preprocessor. Explicit preprocessor and hostname-program options remain denied.
+Delegate unsupported searches rather than moving or removing `--no-config`.
+
 Subagents are identified by Claude's `agent_id`, not just `agent_type`. A main
 session started with `--agent` therefore cannot acquire worker write access.
 Workers and seniors can edit source; verifiers run checks and report defects;
