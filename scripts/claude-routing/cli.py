@@ -23,12 +23,24 @@ import common
 def check_profile(project, config):
     """Check native files too: a snapshot alone cannot prove routing is installed."""
     import install
+    claude = project / ".claude"
+    profile_files = [
+        claude / "routing.json", claude / "settings.json",
+        claude / "xpowers-routing/generated-config.json", claude / install.ORIGIN_FILE,
+        *(claude / "agents" / f"xpowers-routing-{role}.md" for role in install.ROLES),
+        *(claude / "commands" / filename for filename in ("routing-on.md", "routing-off.md", "routing-smoke-test.md")),
+    ]
+    # This runs before semantic reads below.  In particular, a FIFO must not
+    # turn activation or smoke into a blocking read.
+    for target in profile_files:
+        install._safe_target(target, project)
+        install._regular_file(target)
     common.check_generated(project, config)
     for role in install.ROLES:
-        target = project / ".claude" / "agents" / f"xpowers-routing-{role}.md"
+        target = claude / "agents" / f"xpowers-routing-{role}.md"
         if target.read_bytes() != install._agent(role, config):
             raise ValueError(f"Generated {role} agent changed; resolve local edits and rerun setup-claude-routing.sh")
-    settings = json.loads((project / ".claude/settings.json").read_text())
+    settings = json.loads((claude / "settings.json").read_text())
     if not isinstance(settings, dict) or settings.get("disableAllHooks"):
         raise ValueError("Routing hooks are disabled in project settings")
     if not isinstance(settings.get("hooks"), dict):
@@ -68,6 +80,21 @@ def check_profile(project, config):
     unexpected = {str(target.relative_to(project / ".claude")) for target in runtime_dir.rglob("*.py")} - set(runtime_files)
     if unexpected:
         raise ValueError("Installed routing runtime changed: unowned Python files: " + ", ".join(sorted(unexpected)))
+    immutable_files = [
+        "xpowers-routing/generated-config.json", install.ORIGIN_FILE,
+        *(f"agents/xpowers-routing-{role}.md" for role in install.ROLES),
+        *("commands/" + filename for filename in ("routing-on.md", "routing-off.md", "routing-smoke-test.md")),
+    ]
+    for name in immutable_files:
+        snapshots = files.get(name)
+        snapshot = snapshots.get("installed") if isinstance(snapshots, dict) else None
+        filename = Path(name).name
+        if not isinstance(snapshot, dict):
+            raise ValueError(f"Routing ownership snapshot is missing for {filename}; recover the installation backup")
+        target = project / ".claude" / name
+        install._safe_target(target, project)
+        if install._snapshot(target) != snapshot:
+            raise ValueError(f"Installed routing artifact changed or is missing: {filename}; resolve local edits and rerun setup-claude-routing.sh")
     return manifest
 
 

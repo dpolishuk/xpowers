@@ -60,6 +60,18 @@ def _snapshot(path):
             "mode": stat.S_IMODE(path.stat().st_mode)}
 
 
+def _regular_file(path):
+    """Require a present regular file without opening it for reading."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError(f"Routing target is missing: {path}") from error
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"Refusing symlinked routing target: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"Routing target is not a regular file: {path}")
+
+
 def _content(data, mode=0o644):
     return {"data": base64.b64encode(data).decode("ascii"), "mode": mode}
 

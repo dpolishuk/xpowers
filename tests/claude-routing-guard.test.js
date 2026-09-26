@@ -601,11 +601,12 @@ test("generated Git queries neutralize inherited trace destinations", t => {
   const command = "git --no-pager --no-lazy-fetch rev-parse --show-toplevel | cat"
   const environment = { HOME: f.home, GIT_TRACE: trace, GIT_TRACE2_EVENT: event }
   const git = path.join(f.trusted, "git")
+  const traceBaselineArgs = ["--no-pager", "rev-parse", "--show-toplevel"]
   const gitArgs = ["--no-pager", "--no-lazy-fetch", "rev-parse", "--show-toplevel"]
-  const baseline = spawnSync(git, gitArgs, { cwd: f.project, env: { ...process.env, ...environment }, encoding: "utf8" })
+  const baseline = spawnSync(git, traceBaselineArgs, { cwd: f.project, env: { ...process.env, ...environment }, encoding: "utf8" })
   assert.notEqual(baseline.status, null, baseline.error?.message)
   for (const target of [trace, event]) assert.equal(fs.existsSync(target), true, `baseline did not write ${path.basename(target)}`)
-  const configBaseline = spawnSync(git, gitArgs, { cwd: f.project, env: { ...process.env, HOME: f.home }, encoding: "utf8" })
+  const configBaseline = spawnSync(git, traceBaselineArgs, { cwd: f.project, env: { ...process.env, HOME: f.home }, encoding: "utf8" })
   assert.notEqual(configBaseline.status, null, configBaseline.error?.message)
   assert.equal(fs.existsSync(configTarget), true, "baseline did not write the global Trace2 target")
   for (const target of [trace, event, configTarget]) fs.rmSync(target)

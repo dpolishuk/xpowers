@@ -451,6 +451,124 @@ test("activation and smoke reject changed or missing installed runtime modules",
   assertSuccess(f.run(["smoke", "--session", "already-active"], true))
 })
 
+test("activation and smoke reject changed, missing or symlinked installed commands", t => {
+  const f = installedFixture(t)
+  const outside = path.join(f.dir, "outside-command.md")
+  fs.writeFileSync(outside, "outside\n")
+  for (const name of ["routing-on.md", "routing-off.md", "routing-smoke-test.md"]) {
+    const target = path.join(f.project, ".claude", "commands", name)
+    const original = fs.readFileSync(target)
+    const mode = fs.statSync(target).mode & 0o777
+    for (const action of ["malformed", "missing", "symlink"]) {
+      const proof = observeActivation(f, `command-${name}-${action}`)
+      if (action === "malformed") fs.writeFileSync(target, "not a generated routing command\n")
+      else if (action === "missing") fs.unlinkSync(target)
+      else {
+        fs.unlinkSync(target)
+        fs.symlinkSync(outside, target)
+      }
+      const on = executeObserved(f, proof)
+      assert.equal(on.status, 1, `${name} ${action} must block activation`)
+      assert.match(on.stderr, /(command|artifact).*(changed|missing|modified)|routing.*(command|artifact)/i)
+      assert.equal(f.run(["status", "--session", `command-${name}-${action}`]).stdout.trim(), "OFF")
+      assertSuccess(f.run(["off", "--session", `command-${name}-${action}`], true))
+      const smoke = f.run(["smoke", "--session", "command-smoke"])
+      assert.equal(smoke.status, 1, `${name} ${action} must fail smoke`)
+      assert.match(smoke.stderr, /(command|artifact).*(changed|missing|modified)|routing.*(command|artifact)/i)
+      fs.rmSync(target, { force: true })
+      fs.writeFileSync(target, original)
+      fs.chmodSync(target, mode)
+    }
+  }
+  assertSuccess(executeObserved(f, observeActivation(f, "commands-restored")))
+})
+
+test("activation and smoke reject changed immutable routing metadata snapshots", t => {
+  const f = installedFixture(t)
+  const outside = path.join(f.dir, "outside-agent.md")
+  const agent = path.join(f.project, ".claude", "agents", "xpowers-routing-worker.md")
+  fs.writeFileSync(outside, fs.readFileSync(agent))
+  const symlinkCopy = (target, name) => {
+    const external = path.join(f.dir, name)
+    fs.copyFileSync(target, external)
+    fs.unlinkSync(target)
+    fs.symlinkSync(external, target)
+  }
+  const fifo = target => {
+    fs.unlinkSync(target)
+    const result = spawnSync("mkfifo", [target], { encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr)
+  }
+  const cases = [
+    ["routing.json", "routing config symlink", target => symlinkCopy(target, "outside-routing.json")],
+    ["settings.json", "settings symlink", target => symlinkCopy(target, "outside-settings.json")],
+    ["routing.json", "routing config FIFO", fifo],
+    ["settings.json", "settings FIFO", fifo],
+    ["xpowers-routing/generated-config.json", "generated config FIFO", fifo],
+    ["agents/xpowers-routing-worker.md", "agent FIFO", fifo],
+    ["xpowers-routing/install-origin.json", "origin replacement", target => fs.writeFileSync(target, "{}\n")],
+    ["xpowers-routing/generated-config.json", "config whitespace", target => fs.appendFileSync(target, "\n")],
+    ["xpowers-routing/generated-config.json", "config mode", target => fs.chmodSync(target, 0o600)],
+    ["agents/xpowers-routing-worker.md", "agent symlink", target => {
+      fs.unlinkSync(target)
+      fs.symlinkSync(outside, target)
+    }],
+  ]
+  for (const [relative, action, mutate] of cases) {
+    const target = path.join(f.project, ".claude", relative)
+    const original = fs.readFileSync(target)
+    const mode = fs.statSync(target).mode & 0o777
+    const proof = observeActivation(f, `metadata-${action}`)
+    mutate(target)
+    const on = executeObserved(f, proof)
+    assert.equal(on.status, 1, `${action} must block activation`)
+    assert.match(on.stderr, /routing.*(origin|config|agent|snapshot|changed|missing)|ownership|symlink|regular file/i)
+    if (action.includes("FIFO")) assert.match(on.stderr, /not a regular file/i)
+    assert.equal(f.run(["status", "--session", `metadata-${action}`]).stdout.trim(), "OFF")
+    const smoke = f.run(["smoke", "--session", "metadata-smoke"])
+    assert.equal(smoke.status, 1, `${action} must fail smoke`)
+    if (action.includes("FIFO")) assert.match(smoke.stderr, /not a regular file/i)
+    fs.rmSync(target, { force: true })
+    fs.writeFileSync(target, original)
+    fs.chmodSync(target, mode)
+  }
+  assertSuccess(executeObserved(f, observeActivation(f, "metadata-restored")))
+})
+
+test("active live guard rejects a generated config FIFO while routing-off remains available", t => {
+  const f = installedFixture(t)
+  const session = "active-config-fifo"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const generated = path.join(f.runtime, "generated-config.json")
+  fs.unlinkSync(generated)
+  const fifoResult = spawnSync("mkfifo", [generated], { encoding: "utf8" })
+  assert.equal(fifoResult.status, 0, fifoResult.stderr)
+  const cli = path.join(f.runtime, "cli.py")
+  const ordinary = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "fifo-ordinary",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(ordinary)
+  const denied = JSON.parse(ordinary.stdout).hookSpecificOutput
+  assert.equal(denied.permissionDecision, "deny")
+  assert.match(denied.permissionDecisionReason, /cannot validate active routing/i)
+  const off = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "fifo-off",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: routingCommand(f.project, session, "routing-off") },
+    }),
+  })
+  assertSuccess(off)
+  const rewritten = JSON.parse(off.stdout).hookSpecificOutput.updatedInput.command
+  assert.equal(typeof rewritten, "string")
+  assertSuccess(spawnSync("bash", ["-c", rewritten], { env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000 }))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+})
+
 test("installed activation rejects a guard that silently allows project writes", t => {
   const f = installedFixture(t)
   fs.writeFileSync(path.join(f.runtime, "guard.py"), "def handle(data, project): return {}\n")

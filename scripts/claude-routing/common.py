@@ -141,7 +141,31 @@ def validate_config(config):
 
 
 def load_config(project):
-    return validate_config(json.loads((Path(project) / ".claude/routing.json").read_text()))
+    project = Path(project)
+    path = project / ".claude/routing.json"
+    _safe_regular_file(path, project)
+    return validate_config(json.loads(path.read_text()))
+
+
+def _safe_regular_file(path, root):
+    """Reject unsafe path nodes without opening the target for reading."""
+    path = Path(path)
+    root = Path(root)
+    relative = path.relative_to(root)
+    current = root
+    for part in (None, *relative.parts):
+        if part is not None:
+            current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError as error:
+            raise ValueError(f"Routing target is missing: {current}") from error
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"Refusing symlinked routing target: {current}")
+        if current != path and not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"Routing target ancestor is not a directory: {current}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"Routing target is not a regular file: {path}")
 
 
 def control_dir(project):
@@ -178,7 +202,9 @@ def atomic_json(path, value):
 
 
 def check_generated(project, config):
-    generated = Path(project) / ".claude/xpowers-routing/generated-config.json"
+    project = Path(project)
+    generated = project / ".claude/xpowers-routing/generated-config.json"
+    _safe_regular_file(generated, project)
     try:
         snapshot = json.loads(generated.read_text())
     except (OSError, ValueError) as error:
