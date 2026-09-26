@@ -250,22 +250,23 @@ def _disable(project, session_id, raw=False):
 
 
 def active(project, session):
+    import install
     try:
         identity = common.resolve_project(project, require_origin=True)
     except (OSError, ValueError) as identity_error:
-        state = common.raw_session_path(project, session)
-        if not state.exists():
+        control = common.raw_control_dir(project)
+        data = install._read_session_state(common.raw_session_path(project, session), control)
+        if data is None:
             return False
-        data = json.loads(state.read_text())
         if not isinstance(data, dict) or type(data.get("enabled")) is not bool:
             raise ValueError("Invalid routing session state; run /routing-off to reset it")
         if not data["enabled"]:
             return False
         raise identity_error
-    state = common.session_path(identity, session)
-    if not state.exists():
+    control = common.control_dir(identity)
+    data = install._read_session_state(common.session_path(identity, session), control)
+    if data is None:
         return False
-    data = json.loads(state.read_text())
     if not isinstance(data, dict) or type(data.get("enabled")) is not bool:
         raise ValueError("Invalid routing session state; run /routing-off to reset it")
     return data["enabled"]

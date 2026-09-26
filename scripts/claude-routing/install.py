@@ -60,16 +60,31 @@ def _snapshot(path):
             "mode": stat.S_IMODE(path.stat().st_mode)}
 
 
-def _regular_file(path):
+def _regular_file(path, missing_ok=False):
     """Require a present regular file without opening it for reading."""
     try:
         info = path.lstat()
     except FileNotFoundError as error:
+        if missing_ok:
+            return False
         raise ValueError(f"Routing target is missing: {path}") from error
     if stat.S_ISLNK(info.st_mode):
         raise ValueError(f"Refusing symlinked routing target: {path}")
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"Routing target is not a regular file: {path}")
+    return True
+
+
+def _read_session_state(path, control):
+    """Read one external session state only after metadata safety checks."""
+    _safe_target(control, Path.home())
+    _safe_target(path, control)
+    if not _regular_file(path, missing_ok=True):
+        return None
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"Routing session state is not a JSON object: {path}")
+    return data
 
 
 def _content(data, mode=0o644):
@@ -132,10 +147,23 @@ def _missing_node(path):
     return False
 
 
+def _routing_state_entries(directory, label):
+    """List managed metadata entries without masking unreadable directories."""
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return ()
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"Refusing symlinked routing target: {directory}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"Routing {label} directory is not a directory: {directory}")
+    return tuple(sorted(entry for entry in directory.iterdir() if entry.name.endswith(".json")))
+
+
 def _disable_sessions(control, plan):
     sessions = control / "sessions"
     _safe_target(sessions, control)
-    for state_path in sorted(sessions.glob("*.json")):
+    for state_path in _routing_state_entries(sessions, "session state"):
         _safe_target(state_path, control)
         state = _read_json(state_path)
         if type(state.get("enabled")) is not bool:
@@ -148,7 +176,7 @@ def _disable_sessions(control, plan):
 def _invalidate_activation_proofs(control, plan):
     proofs = control / "activation-proofs"
     _safe_target(proofs, control)
-    for proof_path in sorted(proofs.glob("*.json")):
+    for proof_path in _routing_state_entries(proofs, "activation proof"):
         _safe_target(proof_path, control)
         plan[proof_path] = None
 

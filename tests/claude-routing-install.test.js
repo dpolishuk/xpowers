@@ -382,6 +382,62 @@ install.install(Path(sys.argv[1]))
   assert.equal(fs.readFileSync(state, "utf8"), '{\n  "enabled": false\n}\n')
 })
 
+test("routing reinstall rejects non-directory external state nodes before mutation", t => {
+  for (const name of ["sessions", "activation-proofs"]) {
+    const f = fixture(t)
+    success(invoke(f))
+    const control = path.dirname(manifestPath(f))
+    const target = path.join(control, name)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, "unsafe\n")
+    const before = read(f, "routing.json")
+    const result = invoke(f)
+    assert.notEqual(result.status, 0, name)
+    assert.match(result.stderr, /not a directory/i, name)
+    assert.equal(read(f, "routing.json"), before, name)
+  }
+})
+
+test("routing reinstall refuses unreadable external state directories before mutation", t => {
+  for (const name of ["sessions", "activation-proofs"]) {
+    const f = fixture(t)
+    success(invoke(f))
+    const control = path.dirname(manifestPath(f))
+    const state = sessionPath(f, `blocked-${name}`)
+    const proof = activationProofPath(f, `blocked-${name}`)
+    fs.mkdirSync(path.dirname(state), { recursive: true })
+    fs.mkdirSync(path.dirname(proof), { recursive: true })
+    fs.writeFileSync(state, JSON.stringify({ enabled: true }) + "\n")
+    fs.writeFileSync(proof, "{}\n")
+    const target = path.join(control, name)
+    const before = {
+      routing: read(f, "routing.json"),
+      manifest: fs.readFileSync(manifestPath(f), "utf8"),
+      state: fs.readFileSync(state, "utf8"),
+      proof: fs.readFileSync(proof, "utf8"),
+    }
+    fs.chmodSync(target, 0)
+    const probe = spawnSync("python3", ["-c", "from pathlib import Path; import sys; list(Path(sys.argv[1]).iterdir())", target], { encoding: "utf8" })
+    if (probe.status === 0) {
+      fs.chmodSync(target, 0o700)
+      t.skip("filesystem does not enforce directory permissions for this user")
+      return
+    }
+    let result
+    try {
+      result = invoke(f)
+    } finally {
+      fs.chmodSync(target, 0o700)
+    }
+    assert.notEqual(result.status, 0, name)
+    assert.match(result.stderr, /permission denied/i, name)
+    assert.equal(read(f, "routing.json"), before.routing, name)
+    assert.equal(fs.readFileSync(manifestPath(f), "utf8"), before.manifest, name)
+    assert.equal(fs.readFileSync(state, "utf8"), before.state, name)
+    assert.equal(fs.readFileSync(proof, "utf8"), before.proof, name)
+  }
+})
+
 test("routing restore rejects a managed file replaced by a symlink without touching its target", t => {
   const f = fixture(t)
   success(invoke(f))

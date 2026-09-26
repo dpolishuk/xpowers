@@ -742,6 +742,81 @@ test("origin failure consumes a minted activation proof and disables its raw ses
   assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
 })
 
+test("installed hooks reject unsafe session state nodes before reading them", t => {
+  const f = installedFixture(t)
+  const session = "unsafe-session-state"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const state = path.join(path.dirname(f.manifest), "sessions", `${crypto.createHash("sha256").update(session).digest("hex")}.json`)
+  const hook = JSON.parse(fs.readFileSync(path.join(f.project, ".claude/settings.json"), "utf8")).hooks.PreToolUse[0].hooks[0].command
+  const origin = path.join(f.runtime, "install-origin.json")
+  const originBytes = fs.readFileSync(origin)
+  const invoke = () => spawnSync("bash", ["-c", hook], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: session, tool_use_id: "unsafe-state", cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" } }),
+  })
+  for (const action of ["fifo", "symlink-fifo"]) {
+    const original = fs.readFileSync(state)
+    fs.unlinkSync(state)
+    const fifo = path.join(f.dir, `${action}.fifo`)
+    assert.equal(spawnSync("mkfifo", [fifo]).status, 0)
+    if (action === "fifo") fs.renameSync(fifo, state)
+    else fs.symlinkSync(fifo, state)
+    const result = invoke()
+    assertSuccess(result)
+    const output = JSON.parse(result.stdout).hookSpecificOutput
+    assert.equal(output.permissionDecision, "deny")
+    assert.equal(output.permissionDecisionReason, "XPowers routing: Cannot validate active routing configuration or state; repair it with the routing CLI")
+    if (action === "fifo") {
+      fs.writeFileSync(origin, "{}\n")
+      const raw = invoke()
+      assertSuccess(raw)
+      assert.equal(JSON.parse(raw.stdout).hookSpecificOutput.permissionDecision, "deny")
+      const status = f.run(["status", "--session", session])
+      assert.equal(status.status, 1)
+      assert.match(status.stderr, /regular file/i)
+      const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+        env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+        input: JSON.stringify({ session_id: session, cwd: f.project }),
+      })
+      assert.equal(sessionStart.status, 1)
+      assert.match(sessionStart.stderr, /regular file/i)
+      fs.writeFileSync(origin, originBytes)
+    }
+    fs.rmSync(state, { force: true })
+    fs.writeFileSync(state, original)
+  }
+  const assertNullStateRejected = () => {
+    const hookResult = invoke()
+    assertSuccess(hookResult)
+    assert.equal(JSON.parse(hookResult.stdout).hookSpecificOutput.permissionDecision, "deny")
+    const status = f.run(["status", "--session", session], true)
+    assert.equal(status.status, 1)
+    assert.match(status.stderr, /not a JSON object/i)
+    const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+      env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+      input: JSON.stringify({ session_id: session, cwd: f.project }),
+    })
+    assert.equal(sessionStart.status, 1)
+    assert.match(sessionStart.stderr, /not a JSON object/i)
+  }
+  const original = fs.readFileSync(state)
+  fs.writeFileSync(state, "null\n")
+  assertNullStateRejected()
+  fs.writeFileSync(origin, "{}\n")
+  assertNullStateRejected()
+  fs.writeFileSync(origin, originBytes)
+  fs.writeFileSync(state, original)
+  const sessions = path.dirname(state)
+  const externalSessions = path.join(f.dir, "external-sessions")
+  fs.renameSync(sessions, externalSessions)
+  fs.symlinkSync(externalSessions, sessions, "dir")
+  const ancestor = invoke()
+  assertSuccess(ancestor)
+  assert.equal(JSON.parse(ancestor.stdout).hookSpecificOutput.permissionDecision, "deny")
+  fs.unlinkSync(sessions)
+  fs.renameSync(externalSessions, sessions)
+})
+
 test("ordinary active guard commands do not enter activation attestation", t => {
   const f = installedFixture(t)
   const session = "ordinary-guard"
