@@ -47,7 +47,7 @@ function makeFixture() {
     `fs.appendFileSync(${JSON.stringify(backendLog)}, JSON.stringify(process.argv.slice(2)) + '\\n')`,
     "if (process.env.BR_SIGNAL_MARKER) {",
     "  let handling = false",
-    "  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {",
+    "  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {",
     "    if (handling) return",
     "    handling = true",
     "    fs.writeFileSync(process.env.BR_SIGNAL_MARKER, signal)",
@@ -723,7 +723,7 @@ test("guarded close holds the acceptance lock until br exits", async () => {
 })
 
 test("guarded close forwards graceful signals and holds the lock through backend cleanup", async () => {
-  for (const [signal, expectedStatus] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  for (const [signal, expectedStatus] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
     const fixture = makeFixture()
     const ready = path.join(fixture.root, `br-${signal}-ready`)
     const received = path.join(fixture.root, `br-${signal}-received`)
@@ -768,34 +768,38 @@ test("guarded close forwards graceful signals and holds the lock through backend
 })
 
 test("an interrupted run leaves the latest receipt ineligible", async () => {
-  const fixture = makeFixture()
-  const marker = path.join(fixture.root, "long-check-started")
-  try {
-    writePolicy(fixture, [{
-      id: "long",
-      command: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`],
-      timeoutMs: 10000,
-    }])
-    const child = spawn(tmPath, ["acceptance", "run", "bd-interrupted"], {
-      cwd: fixture.repo,
-      env: fixture.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    let stderr = ""
-    child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk) => { stderr += chunk })
-    await waitFor(() => fs.existsSync(marker))
-    child.kill("SIGTERM")
-    const result = await waitForExit(child)
-    assert.notEqual(result.status, 0, stderr)
-    fs.writeFileSync(fixture.backendLog, "")
+  for (const [signal, expectedStatus] of [["SIGTERM", 143], ["SIGHUP", 129]]) {
+    const fixture = makeFixture()
+    const marker = path.join(fixture.root, `long-check-${signal}-started`)
+    const task = `bd-interrupted-${signal.toLowerCase()}`
+    try {
+      writePolicy(fixture, [{
+        id: "long",
+        command: [process.execPath, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setInterval(() => {}, 1000)`],
+        timeoutMs: 10000,
+      }])
+      const child = spawn(tmPath, ["acceptance", "run", task], {
+        cwd: fixture.repo,
+        env: fixture.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      let stderr = ""
+      child.stderr.setEncoding("utf8")
+      child.stderr.on("data", (chunk) => { stderr += chunk })
+      await waitFor(() => fs.existsSync(marker))
+      child.kill(signal)
+      const result = await waitForExit(child)
+      assert.equal(result.status, expectedStatus, stderr)
+      assert.equal(result.signal, null)
+      fs.writeFileSync(fixture.backendLog, "")
 
-    const closed = runTm(fixture, ["close", "bd-interrupted"])
-    assert.equal(closed.status, 1)
-    assert.match(closed.stderr, /latest acceptance run is interrupted/i)
-    assert.deepEqual(backendCalls(fixture), [])
-  } finally {
-    fs.rmSync(fixture.root, { recursive: true, force: true })
+      const closed = runTm(fixture, ["close", task])
+      assert.equal(closed.status, 1)
+      assert.match(closed.stderr, /latest acceptance run is interrupted/i)
+      assert.deepEqual(backendCalls(fixture), [])
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
   }
 })
 
@@ -824,7 +828,7 @@ test("signals during synchronous snapshot work release the lock and cannot reviv
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim(),
       SNAPSHOT_SIGNAL_MARKER: marker,
     })
-    const runAndSignal = async (args, marker) => {
+    const runAndSignal = async (args, marker, signal = "SIGTERM", expectedStatus = 143) => {
       const child = spawn(tmPath, args, {
         cwd: fixture.repo,
         env: preloadEnv(marker),
@@ -834,9 +838,9 @@ test("signals during synchronous snapshot work release the lock and cannot reviv
       child.stderr.setEncoding("utf8")
       child.stderr.on("data", (chunk) => { stderr += chunk })
       await waitFor(() => fs.existsSync(marker))
-      child.kill("SIGTERM")
+      child.kill(signal)
       const outcome = await waitForExit(child)
-      assert.equal(outcome.status, 143, stderr)
+      assert.equal(outcome.status, expectedStatus, stderr)
       assert.equal(outcome.signal, null)
     }
 
@@ -859,6 +863,14 @@ test("signals during synchronous snapshot work release the lock and cannot reviv
       path.join(fixture.root, "close-snapshot-ready"),
     )
     assert.deepEqual(backendCalls(fixture), [])
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-snapshot-signal"]).status, 0)
+
+    await runAndSignal(
+      ["acceptance", "check", "bd-snapshot-signal"],
+      path.join(fixture.root, "check-snapshot-ready"),
+      "SIGHUP",
+      129,
+    )
     assert.equal(runTm(fixture, ["acceptance", "check", "bd-snapshot-signal"]).status, 0)
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })

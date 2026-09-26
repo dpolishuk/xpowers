@@ -36,6 +36,8 @@ const FORBIDDEN_GIT_ENV = [
   "GIT_NAMESPACE",
 ]
 const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BD_NO_DB", "BEADS_DIR", "BEADS_DB", "BEADS_JSONL"]
+const HANDLED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"]
+const SIGNAL_EXIT_CODES = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }
 
 class AcceptanceError extends Error {
   constructor(message, exitCode = 1) {
@@ -569,13 +571,11 @@ function installOperationHandlers(operation) {
   }
   const stdoutErrorHandler = (error) => recordOperationStreamFailure(operation, "stdout", error)
   const stderrErrorHandler = (error) => recordOperationStreamFailure(operation, "stderr", error)
-  process.on("SIGINT", signalHandler)
-  process.on("SIGTERM", signalHandler)
+  for (const signal of HANDLED_SIGNALS) process.on(signal, signalHandler)
   process.stdout.on("error", stdoutErrorHandler)
   process.stderr.on("error", stderrErrorHandler)
   return () => {
-    process.off("SIGINT", signalHandler)
-    process.off("SIGTERM", signalHandler)
+    for (const signal of HANDLED_SIGNALS) process.off(signal, signalHandler)
     process.stdout.off("error", stdoutErrorHandler)
     process.stderr.off("error", stderrErrorHandler)
   }
@@ -588,7 +588,7 @@ function forwardBackendSignal(child, signal) {
 
 function failIfInterrupted(operation) {
   if (!interruptedSignal) return
-  const exitCode = interruptedSignal === "SIGINT" ? 130 : interruptedSignal === "SIGTERM" ? 143 : 1
+  const exitCode = SIGNAL_EXIT_CODES[interruptedSignal] || 1
   fail(`${operation} interrupted by ${interruptedSignal}`, exitCode)
 }
 
@@ -815,8 +815,8 @@ function spawnBackendClose(tasks, context) {
     })
     child.on("close", (code, signal) => {
       activeChild = null
-      if (interruptedSignal === "SIGINT" || signal === "SIGINT") resolve(130)
-      else if (interruptedSignal === "SIGTERM" || signal === "SIGTERM") resolve(143)
+      const signalExitCode = SIGNAL_EXIT_CODES[interruptedSignal] || SIGNAL_EXIT_CODES[signal]
+      if (signalExitCode) resolve(signalExitCode)
       else if (signal) resolve(1)
       else resolve(code ?? 1)
     })
