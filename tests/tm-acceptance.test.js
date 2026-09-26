@@ -850,6 +850,103 @@ test("signals during synchronous snapshot work release the lock and cannot reviv
   }
 })
 
+test("closed stdout and stderr fail a run without leaking the lock or reviving prior evidence", async () => {
+  for (const streamName of ["stdout", "stderr"]) {
+    const fixture = makeFixture()
+    const task = `bd-${streamName}-closed`
+    const marker = path.join(fixture.root, `${streamName}-check-ready`)
+    try {
+      const originalPolicy = fs.readFileSync(path.join(fixture.repo, ".xpowers", "acceptance.json"), "utf8")
+      assert.equal(runTm(fixture, ["acceptance", "run", task]).status, 0)
+      writePolicy(fixture, [{
+        id: `${streamName}-output`,
+        command: [
+          process.execPath,
+          "-e",
+          [
+            "const fs=require('node:fs')",
+            `fs.writeFileSync(${JSON.stringify(marker)}, 'ready')`,
+            `setTimeout(() => console.${streamName === "stdout" ? "log" : "error"}('check ${streamName}'), 500)`,
+          ].join(";"),
+        ],
+        timeoutMs: 5000,
+      }])
+      const child = spawn(tmPath, ["acceptance", "run", task], {
+        cwd: fixture.repo,
+        env: fixture.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      child.stdout.on("data", () => {})
+      child.stderr.on("data", () => {})
+      await waitFor(() => fs.existsSync(marker))
+      child[streamName].destroy()
+      const outcome = await waitForExit(child)
+      assert.notEqual(outcome.status, 0)
+      assert.equal(outcome.signal, null)
+
+      fs.writeFileSync(path.join(fixture.repo, ".xpowers", "acceptance.json"), originalPolicy)
+      const checked = runTm(fixture, ["acceptance", "check", task])
+      assert.equal(checked.status, 1)
+      assert.doesNotMatch(checked.stderr, /acceptance state is locked/i)
+      assert.match(checked.stderr, /latest acceptance run is failed/i)
+      fs.writeFileSync(fixture.backendLog, "")
+      assert.equal(runTm(fixture, ["close", task]).status, 1)
+      assert.deepEqual(backendCalls(fixture), [])
+
+      assert.equal(runTm(fixture, ["acceptance", "run", task]).status, 0)
+      assert.equal(runTm(fixture, ["acceptance", "check", task]).status, 0)
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("a broken guarded-close stdout fails before backend dispatch and releases the lock", async () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "pause-close-snapshot.cjs")
+  const marker = path.join(fixture.root, "close-snapshot-ready-for-broken-pipe")
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-close-pipe"]).status, 0)
+    fs.writeFileSync(fixture.backendLog, "")
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const originalLstatSync = fs.lstatSync",
+      "let paused = false",
+      "fs.lstatSync = function(target) {",
+      "  if (!paused && process.env.CLOSE_PIPE_MARKER && String(target).endsWith(`${path.sep}app.txt`)) {",
+      "    paused = true",
+      "    fs.writeFileSync(process.env.CLOSE_PIPE_MARKER, 'snapshot')",
+      "    const deadline = Date.now() + 800",
+      "    while (Date.now() < deadline) {}",
+      "  }",
+      "  return originalLstatSync.apply(this, arguments)",
+      "}",
+      "",
+    ].join("\n"))
+    const child = spawn(tmPath, ["close", "bd-close-pipe"], {
+      cwd: fixture.repo,
+      env: {
+        ...fixture.env,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim(),
+        CLOSE_PIPE_MARKER: marker,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    child.stdout.on("data", () => {})
+    child.stderr.on("data", () => {})
+    await waitFor(() => fs.existsSync(marker))
+    child.stdout.destroy()
+    const outcome = await waitForExit(child)
+    assert.notEqual(outcome.status, 0)
+    assert.equal(outcome.signal, null)
+    assert.deepEqual(backendCalls(fixture), [])
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-close-pipe"]).status, 0)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("a spawn failure supersedes an older passing receipt", () => {
   const fixture = makeFixture()
   try {

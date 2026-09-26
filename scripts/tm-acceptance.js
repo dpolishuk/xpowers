@@ -20,6 +20,7 @@ const MAX_ARGUMENT_BYTES = 4096
 const MAX_TIMEOUT_MS = 10 * 60 * 1000
 const MAX_CHECK_OUTPUT_BYTES = 64 * 1024
 const MAX_STORED_STREAM_BYTES = 4096
+const OUTPUT_WRITE_TIMEOUT_MS = 5000
 const HASH_CHUNK_BYTES = 64 * 1024
 const TASK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -534,6 +535,8 @@ function boundedText(buffer) {
 
 let activeChild = null
 let interruptedSignal = null
+let operationStreamFailure = null
+const failedOutputStreams = new Set()
 
 function killCheckProcessGroup(child) {
   if (!child?.pid) return
@@ -543,17 +546,30 @@ function killCheckProcessGroup(child) {
   } catch { /* already exited */ }
 }
 
-function installOperationSignalHandlers(operation) {
-  const handler = (signal) => {
+function recordOperationStreamFailure(operation, streamName, error) {
+  failedOutputStreams.add(streamName)
+  if (!operationStreamFailure) operationStreamFailure = { streamName, error }
+  if (operation === "guard-close") forwardBackendSignal(activeChild, "SIGTERM")
+  else killCheckProcessGroup(activeChild)
+}
+
+function installOperationHandlers(operation) {
+  const signalHandler = (signal) => {
     if (!interruptedSignal) interruptedSignal = signal
     if (operation === "guard-close") forwardBackendSignal(activeChild, signal)
     else killCheckProcessGroup(activeChild)
   }
-  process.on("SIGINT", handler)
-  process.on("SIGTERM", handler)
+  const stdoutErrorHandler = (error) => recordOperationStreamFailure(operation, "stdout", error)
+  const stderrErrorHandler = (error) => recordOperationStreamFailure(operation, "stderr", error)
+  process.on("SIGINT", signalHandler)
+  process.on("SIGTERM", signalHandler)
+  process.stdout.on("error", stdoutErrorHandler)
+  process.stderr.on("error", stderrErrorHandler)
   return () => {
-    process.off("SIGINT", handler)
-    process.off("SIGTERM", handler)
+    process.off("SIGINT", signalHandler)
+    process.off("SIGTERM", signalHandler)
+    process.stdout.off("error", stdoutErrorHandler)
+    process.stderr.off("error", stderrErrorHandler)
   }
 }
 
@@ -568,9 +584,43 @@ function failIfInterrupted(operation) {
   fail(`${operation} interrupted by ${interruptedSignal}`, exitCode)
 }
 
-async function observeSignals(operation) {
-  await new Promise((resolve) => setImmediate(resolve))
+function failIfOperationFailed(operation) {
   failIfInterrupted(operation)
+  if (!operationStreamFailure) return
+  const detail = operationStreamFailure.error?.code || operationStreamFailure.error?.message || "unknown stream error"
+  fail(`${operation} ${operationStreamFailure.streamName} failed: ${String(detail).slice(0, 512)}`)
+}
+
+async function writeOperationOutput(operation, streamName, text) {
+  const stream = streamName === "stdout" ? process.stdout : process.stderr
+  await new Promise((resolve) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (error) recordOperationStreamFailure(operation, streamName, error)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      const error = new Error(`${streamName} write timed out`)
+      error.code = "ETIMEDOUT"
+      recordOperationStreamFailure(operation, streamName, error)
+      try { stream.destroy() } catch { /* stream is already unavailable */ }
+      finish()
+    }, OUTPUT_WRITE_TIMEOUT_MS)
+    try {
+      stream.write(text, finish)
+    } catch (error) {
+      finish(error)
+    }
+  })
+  failIfOperationFailed(operation)
+}
+
+async function observeOperation(operation) {
+  await new Promise((resolve) => setImmediate(resolve))
+  failIfOperationFailed(operation)
 }
 
 function runCheck(check, root) {
@@ -658,22 +708,24 @@ async function runAcceptance(task, context, storage) {
   }
   let checks = []
   try {
-    await observeSignals("acceptance run")
+    await observeOperation("acceptance run")
     const loaded = loadPolicy(context)
     const before = createSnapshot(context, loaded.fingerprint)
-    await observeSignals("acceptance run")
+    await observeOperation("acceptance run")
     for (const check of loaded.policy.checks) {
-      failIfInterrupted("acceptance run")
-      process.stdout.write(`tm acceptance: running ${check.id}\n`)
+      failIfOperationFailed("acceptance run")
+      await writeOperationOutput("acceptance run", "stdout", `tm acceptance: running ${check.id}\n`)
       const result = await runCheck(check, context.root)
       checks.push(result)
-      if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`)
-      if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`)
+      failIfOperationFailed("acceptance run")
+      if (result.stdout) await writeOperationOutput("acceptance run", "stdout", result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`)
+      if (result.stderr) await writeOperationOutput("acceptance run", "stderr", result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`)
       if (result.status !== "passed") fail(`acceptance check ${check.id} ${result.status}`)
-      process.stdout.write(`tm acceptance: ${check.id} passed\n`)
+      await writeOperationOutput("acceptance run", "stdout", `tm acceptance: ${check.id} passed\n`)
+      await observeOperation("acceptance run")
     }
     const after = createSnapshot(context, loaded.fingerprint)
-    await observeSignals("acceptance run")
+    await observeOperation("acceptance run")
     if (before.fingerprint !== after.fingerprint) fail("worktree or policy changed while acceptance checks ran")
     writeReceipt(storage, task, {
       status: "passed",
@@ -684,8 +736,9 @@ async function runAcceptance(task, context, storage) {
       snapshot: after,
       checks,
     })
-    await observeSignals("acceptance run")
-    process.stdout.write(`tm acceptance: ${task} is eligible (${after.fingerprint})\n`)
+    await observeOperation("acceptance run")
+    await writeOperationOutput("acceptance run", "stdout", `tm acceptance: ${task} is eligible (${after.fingerprint})\n`)
+    await observeOperation("acceptance run")
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     writeReceipt(storage, task, failedRecord(context, "run", reason, checks))
@@ -768,29 +821,33 @@ async function main() {
 
   const context = resolveGitContext(process.env.TM_REPO_ROOT || process.cwd())
   const storage = storageFor(context)
-  const removeSignals = installOperationSignalHandlers(operation)
+  const removeHandlers = installOperationHandlers(operation)
   let release = null
   let releaseLock = true
   try {
     release = acquireLock(storage, operation, args)
-    await observeSignals(operation)
+    await observeOperation(operation)
     if (operation === "run") {
       await runAcceptance(args[0], context, storage)
       return 0
     }
     if (operation === "check") {
       const snapshot = checkEligibility(args[0], context, storage)
-      await observeSignals("acceptance check")
-      process.stdout.write(`tm acceptance: ${args[0]} is eligible (${snapshot.fingerprint})\n`)
+      await observeOperation("acceptance check")
+      await writeOperationOutput("acceptance check", "stdout", `tm acceptance: ${args[0]} is eligible (${snapshot.fingerprint})\n`)
+      await observeOperation("acceptance check")
       return 0
     }
     for (const task of args) {
       const snapshot = checkEligibility(task, context, storage)
-      await observeSignals("guarded close")
-      process.stdout.write(`tm acceptance: ${task} is eligible (${snapshot.fingerprint})\n`)
+      await observeOperation("guarded close")
+      await writeOperationOutput("guarded close", "stdout", `tm acceptance: ${task} is eligible (${snapshot.fingerprint})\n`)
+      await observeOperation("guarded close")
     }
-    failIfInterrupted("guarded close")
-    return await spawnBackendClose(args, context)
+    failIfOperationFailed("guarded close")
+    const exitCode = await spawnBackendClose(args, context)
+    await observeOperation("guarded close")
+    return exitCode
   } catch (error) {
     if (error instanceof PendingReceiptWriteError) releaseLock = false
     throw error
@@ -798,7 +855,7 @@ async function main() {
     try {
       if (release && releaseLock) release()
     } finally {
-      removeSignals()
+      removeHandlers()
     }
   }
 }
@@ -807,7 +864,9 @@ main().then(
   (code) => { process.exitCode = code },
   (error) => {
     const message = error instanceof Error ? error.message : String(error)
-    process.stderr.write(`tm acceptance: ${message}\n`)
+    if (!failedOutputStreams.has("stderr")) {
+      try { process.stderr.write(`tm acceptance: ${message}\n`) } catch { /* stderr is already unavailable */ }
+    }
     process.exitCode = error instanceof AcceptanceError ? error.exitCode : 1
   },
 )
