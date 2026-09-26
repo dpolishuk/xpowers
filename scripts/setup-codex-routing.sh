@@ -34,8 +34,10 @@ import tempfile
 import urllib.parse
 import urllib.request
 
-VERSION = '1.2.0'
-MANIFEST_FORMAT = 1
+VERSION = '1.3.0'
+MANIFEST_FORMAT = 2
+LEGACY_MANIFEST_FORMAT = 1
+IDENTITY_FILE = 'codex-routing-identity'
 READ_LIMIT = 8_000_000
 ROLE_NAMES = ('default', 'explorer', 'worker', 'verifier', 'senior', 'reviewer')
 OWNER = '# Managed by setup-codex-routing.sh v1'
@@ -429,6 +431,10 @@ Existing developer instructions are preserved, not semantically rewritten. Revie
 instruction conflicts, especially with a previously installed orchestration workflow.
 
 Backups: Git metadata directory / `codex-routing-backups/<timestamp>/` (not tracked).
+New manifests bind to the mode-0600 `codex-routing-identity` beside that directory,
+so restore survives a repository rename or `git worktree move` but rejects backups
+copied from another worktree. Restore and dry-run never repair a missing identity.
+Installer 1.0 and manifest-format-1 backups remain exact-recorded-path only.
 Restore using this or a compatible newer script: `bash setup-codex-routing.sh --repo PATH --restore latest`.
 Restore refuses content OR permission changes since setup; it does not overwrite
 subsequent user work. Both installation and restore attempt rollback after a caught
@@ -748,6 +754,25 @@ def atomic_write(path, data, mode):
                 pass
 
 
+def read_worktree_identity(gitdir):
+    path = safe_path(gitdir, IDENTITY_FILE)
+    data = read_regular(path)
+    require(data is not None, 'Missing worktree identity; restore refuses this backup.')
+    require(file_mode(path) == 0o600, 'Unsafe worktree identity permissions.')
+    text = decode(data, IDENTITY_FILE)
+    require(bool(re.fullmatch(r'[0-9a-f]{64}\n', text)),
+            'Malformed worktree identity; restore refuses this backup.')
+    return text[:-1]
+
+
+def ensure_worktree_identity(gitdir):
+    path = safe_path(gitdir, IDENTITY_FILE)
+    if read_regular(path) is None:
+        identity = secrets.token_hex(32)
+        atomic_write(path, (identity + '\n').encode(), 0o600)
+    return read_worktree_identity(gitdir)
+
+
 def write_state(backup, state):
     require(state in ('PREPARED', 'COMMITTED', 'ROLLED_BACK', 'RECOVERY_REQUIRED',
                       'RESTORING', 'RESTORED'), 'Invalid transaction state.')
@@ -808,6 +833,7 @@ def apply_changes(root, gitdir, originals, changes):
     if not changes:
         print('ALREADY_CONFIGURED: no file changes and no new backup.')
         return
+    worktree_identity = ensure_worktree_identity(gitdir)
     modes = {rel: file_mode(safe_path(root, rel)) if originals[rel] is not None
              else 0o644 for rel in changes}
     store = safe_path(gitdir, 'codex-routing-backups')
@@ -823,7 +849,8 @@ def apply_changes(root, gitdir, originals, changes):
         if before is not None:
             atomic_write(backup / 'files' / rel, before, 0o600)
     manifest = dict(version=VERSION, manifest_format=MANIFEST_FORMAT,
-                    repository=str(root), files=entries)
+                    repository=str(root), worktree_identity=worktree_identity,
+                    files=entries)
     atomic_write(backup / 'manifest.json',
                  (json.dumps(manifest, indent=2) + '\n').encode(), 0o600)
     write_state(backup, 'PREPARED')
@@ -879,12 +906,26 @@ def restore(root, gitdir, selected, dry_run):
     manifest = json.loads(read_regular(safe_path(backup, 'manifest.json')) or b'{}')
     require(isinstance(manifest, dict), 'Malformed backup manifest.')
     version = manifest.get('version')
-    compatible = (version == '1.0.0' and 'manifest_format' not in manifest) or (
-        isinstance(version, str) and version.startswith('1.') and
-        type(manifest.get('manifest_format')) is int and
-        manifest['manifest_format'] == MANIFEST_FORMAT)
-    require(compatible and manifest.get('repository') == str(root),
-            'Backup format/repository mismatch.')
+    legacy = version == '1.0.0' and 'manifest_format' not in manifest
+    manifest_format = manifest.get('manifest_format')
+    format_one = (isinstance(version, str) and version.startswith('1.') and
+                  type(manifest_format) is int and
+                  manifest_format == LEGACY_MANIFEST_FORMAT)
+    current = (isinstance(version, str) and version.startswith('1.') and
+               type(manifest_format) is int and manifest_format == MANIFEST_FORMAT)
+    require(legacy or format_one or current, 'Backup format/repository mismatch.')
+    repository = manifest.get('repository')
+    require(isinstance(repository, str) and bool(repository) and Path(repository).is_absolute(),
+            'Malformed backup repository.')
+    if current:
+        backup_identity = manifest.get('worktree_identity')
+        require(isinstance(backup_identity, str) and
+                bool(re.fullmatch(r'[0-9a-f]{64}', backup_identity)),
+                'Malformed backup worktree identity.')
+        require(read_worktree_identity(gitdir) == backup_identity,
+                'Backup worktree identity mismatch.')
+    else:
+        require(repository == str(root), 'Backup format/repository mismatch.')
     state = get_state(backup)
     jobs, seen = [], set()
     entries = manifest.get('files')

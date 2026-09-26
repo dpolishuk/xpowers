@@ -2,8 +2,8 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { execFileSync, spawnSync } = require('node:child_process')
 const {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } = require('node:fs')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
@@ -181,6 +181,37 @@ function backups(repo) {
   return existsSync(directory) ? readdirSync(directory).sort() : []
 }
 
+function backupPath(repo, name = backups(repo)[0]) {
+  return path.join(gitDir(repo), 'codex-routing-backups', name)
+}
+
+function identityPath(repo) {
+  return path.join(gitDir(repo), 'codex-routing-identity')
+}
+
+function readManifest(repo, name) {
+  return JSON.parse(readFileSync(path.join(backupPath(repo, name), 'manifest.json'), 'utf8'))
+}
+
+function writeManifest(repo, manifest, name) {
+  writeFileSync(path.join(backupPath(repo, name), 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+}
+
+function commitBase(repo) {
+  if (!existsSync(path.join(repo, 'tracked.txt'))) write(repo, 'tracked.txt', 'base\n')
+  execFileSync('git', ['-C', repo, 'add', '-A'])
+  execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+    'commit', '-qm', 'base'])
+}
+
+function addWorktree(t, main, branch) {
+  const parent = mkdtempSync(path.join(tmpdir(), `xpowers-routing-${branch}-`))
+  t.after(() => rmSync(parent, { recursive: true, force: true }))
+  const worktree = path.join(parent, 'worktree')
+  execFileSync('git', ['-C', main, 'worktree', 'add', '-q', '-b', branch, worktree])
+  return worktree
+}
+
 function assertRoleConfig(repo, format) {
   const expected = {
     default: ['gpt-5.6-terra', 'low'], explorer: ['gpt-5.6-terra', 'low'],
@@ -221,6 +252,9 @@ test('fresh install creates the modern six-role routing configuration', (t) => {
     assert.equal(config.agents[role].config_file, `agents/${role}.toml`)
     assert.equal(typeof config.agents[role].description, 'string')
   }
+  const routingGuide = readFileSync(path.join(repo, '.codex/ROUTING.md'), 'utf8')
+  assert.match(routingGuide, /codex-routing-identity/)
+  assert.match(routingGuide, /manifest-format-1 backups remain exact-recorded-path only/)
   assertRoleConfig(repo, 'modern')
 })
 
@@ -372,6 +406,235 @@ test('backup restore recovers exact bytes and modes and refuses later edits', (t
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /changed after installation/)
   assert.equal(readFileSync(path.join(repo, '.codex/agents/worker.toml'), 'utf8'), 'later user edit\n')
+})
+
+test('restore follows an ordinary repository move without changing dry-run state', (t) => {
+  const original = makeRepo(t)
+  const originalConfig = '# original\napproval_policy = "never"\n'
+  const originalAgents = 'original agent instructions\n'
+  write(original, '.codex/config.toml', originalConfig, 0o600)
+  write(original, 'AGENTS.md', originalAgents, 0o640)
+  const install = run(original)
+  assert.equal(install.status, 0, install.stderr)
+  const identity = readFileSync(identityPath(original), 'utf8').trim()
+  assert.match(identity, /^[0-9a-f]{64}$/)
+  assert.equal(statSync(identityPath(original)).mode & 0o777, 0o600)
+  assert.equal(readManifest(original).worktree_identity, identity)
+
+  const movedParent = mkdtempSync(path.join(tmpdir(), 'xpowers-routing-moved-parent-'))
+  t.after(() => rmSync(movedParent, { recursive: true, force: true }))
+  const moved = path.join(movedParent, 'renamed-repository')
+  renameSync(original, moved)
+  const repoBefore = snapshot(moved)
+  const gitBefore = snapshot(gitDir(moved))
+
+  const preview = run(moved, ['--restore', 'latest', '--dry-run'])
+  assert.equal(preview.status, 0, preview.stderr)
+  assert.match(preview.stdout, /DRY_RUN:/)
+  assert.deepEqual(snapshot(moved), repoBefore)
+  assert.deepEqual(snapshot(gitDir(moved)), gitBefore)
+
+  const restore = run(moved, ['--restore', 'latest'])
+  assert.equal(restore.status, 0, restore.stderr)
+  assert.equal(readFileSync(path.join(moved, '.codex/config.toml'), 'utf8'), originalConfig)
+  assert.equal(readFileSync(path.join(moved, 'AGENTS.md'), 'utf8'), originalAgents)
+  assert.equal(statSync(path.join(moved, '.codex/config.toml')).mode & 0o777, 0o600)
+  assert.equal(statSync(path.join(moved, 'AGENTS.md')).mode & 0o777, 0o640)
+})
+
+test('restore follows a linked-worktree move and leaves the main worktree unchanged', (t) => {
+  const main = makeRepo(t)
+  write(main, 'AGENTS.md', 'main instructions\n', 0o640)
+  commitBase(main)
+  const worktree = addWorktree(t, main, 'routing-move')
+  const install = run(worktree)
+  assert.equal(install.status, 0, install.stderr)
+  const identity = readFileSync(identityPath(worktree), 'utf8')
+  assert.equal(readFileSync(path.join(main, 'AGENTS.md'), 'utf8'), 'main instructions\n')
+  assert.equal(existsSync(path.join(main, '.codex')), false)
+
+  const moved = path.join(path.dirname(worktree), 'moved-worktree')
+  execFileSync('git', ['-C', main, 'worktree', 'move', worktree, moved])
+  const preview = run(moved, ['--restore', 'latest', '--dry-run'])
+  assert.equal(preview.status, 0, preview.stderr)
+  const restore = run(moved, ['--restore', 'latest'])
+  assert.equal(restore.status, 0, restore.stderr)
+  assert.equal(readFileSync(identityPath(moved), 'utf8'), identity)
+  assert.equal(readFileSync(path.join(moved, 'AGENTS.md'), 'utf8'), 'main instructions\n')
+  assert.equal(readFileSync(path.join(main, 'AGENTS.md'), 'utf8'), 'main instructions\n')
+  assert.equal(existsSync(path.join(main, '.codex')), false)
+})
+
+test('sibling linked worktrees receive independent restore identities', (t) => {
+  const main = makeRepo(t)
+  commitBase(main)
+  const first = addWorktree(t, main, 'routing-sibling-one')
+  const second = addWorktree(t, main, 'routing-sibling-two')
+  assert.equal(run(first).status, 0)
+  assert.equal(run(second).status, 0)
+  const firstIdentity = readFileSync(identityPath(first), 'utf8')
+  const secondIdentity = readFileSync(identityPath(second), 'utf8')
+  assert.match(firstIdentity, /^[0-9a-f]{64}\n$/)
+  assert.match(secondIdentity, /^[0-9a-f]{64}\n$/)
+  assert.notEqual(firstIdentity, secondIdentity)
+  assert.notEqual(gitDir(first), gitDir(second))
+})
+
+test('restore rejects a copied foreign backup even when installed hashes match', (t) => {
+  const source = makeRepo(t)
+  const target = makeRepo(t)
+  for (const repo of [source, target]) {
+    write(repo, 'AGENTS.md', 'same original\n', 0o640)
+    const install = run(repo)
+    assert.equal(install.status, 0, install.stderr)
+  }
+  const sourceManifest = readManifest(source)
+  for (const entry of sourceManifest.files) {
+    const sourceFile = path.join(source, entry.path)
+    const targetFile = path.join(target, entry.path)
+    assert.equal(crypto.createHash('sha256').update(readFileSync(sourceFile)).digest('hex'), entry.after)
+    assert.equal(crypto.createHash('sha256').update(readFileSync(targetFile)).digest('hex'), entry.after)
+  }
+
+  const foreignName = '20991231T235959.999999Z'
+  cpSync(backupPath(source), backupPath(target, foreignName), { recursive: true, preserveTimestamps: true })
+  const repoBefore = snapshot(target)
+  const gitBefore = snapshot(gitDir(target))
+  const restore = run(target, ['--restore', foreignName])
+  assert.notEqual(restore.status, 0)
+  assert.match(restore.stderr, /worktree identity mismatch/)
+  assert.deepEqual(snapshot(target), repoBefore)
+  assert.deepEqual(snapshot(gitDir(target)), gitBefore)
+})
+
+test('restore refuses malformed or foreign identity metadata without mutation', (t) => {
+  const cases = [
+    ['missing manifest identity', ({ manifest }) => { delete manifest.worktree_identity }],
+    ['malformed manifest identity', ({ manifest }) => { manifest.worktree_identity = 'bad' }],
+    ['foreign manifest identity', ({ manifest }) => { manifest.worktree_identity = 'f'.repeat(64) }],
+    ['boolean legacy format', ({ manifest }) => {
+      manifest.version = '1.2.0'
+      manifest.manifest_format = true
+      delete manifest.worktree_identity
+    }],
+    ['floating current format', ({ manifest }) => { manifest.manifest_format = 2 }],
+    ['relative repository metadata', ({ manifest }) => { manifest.repository = 'relative/repository' }],
+    ['malformed disk identity', ({ identity }) => writeFileSync(identity, 'bad\n')],
+    ['foreign disk identity', ({ identity }) => writeFileSync(identity, `${'e'.repeat(64)}\n`)],
+    ['unsafe disk identity mode', ({ identity }) => chmodSync(identity, 0o644)],
+  ]
+  for (const [name, mutate] of cases) {
+    const repo = makeRepo(t)
+    write(repo, 'AGENTS.md', `original ${name}\n`)
+    const install = run(repo)
+    assert.equal(install.status, 0, install.stderr)
+    const manifest = readManifest(repo)
+    mutate({ manifest, identity: identityPath(repo) })
+    if (!name.includes('disk identity') && !name.includes('disk identity mode')) {
+      writeManifest(repo, manifest)
+      if (name === 'floating current format') {
+        const manifestPath = path.join(backupPath(repo), 'manifest.json')
+        writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8')
+          .replace('"manifest_format": 2,', '"manifest_format": 2.0,'))
+      }
+    }
+    const repoBefore = snapshot(repo)
+    const gitBefore = snapshot(gitDir(repo))
+    const restore = run(repo, ['--restore', 'latest'])
+    assert.notEqual(restore.status, 0, `${name}: restore unexpectedly succeeded`)
+    assert.deepEqual(snapshot(repo), repoBefore, name)
+    assert.deepEqual(snapshot(gitDir(repo)), gitBefore, name)
+  }
+})
+
+test('unchanged install, dry-run, and restore never repair a missing worktree identity', (t) => {
+  const repo = makeRepo(t)
+  const install = run(repo)
+  assert.equal(install.status, 0, install.stderr)
+  rmSync(identityPath(repo))
+  const backupCount = backups(repo).length
+  const unchanged = run(repo)
+  assert.equal(unchanged.status, 0, unchanged.stderr)
+  assert.match(unchanged.stdout, /ALREADY_CONFIGURED/)
+  assert.equal(existsSync(identityPath(repo)), false)
+  assert.equal(backups(repo).length, backupCount)
+  const installPreview = run(repo, ['--dry-run'])
+  assert.equal(installPreview.status, 0, installPreview.stderr)
+  assert.equal(existsSync(identityPath(repo)), false)
+  for (const args of [['--restore', 'latest', '--dry-run'], ['--restore', 'latest']]) {
+    const result = run(repo, args)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Missing worktree identity/)
+    assert.equal(existsSync(identityPath(repo)), false)
+  }
+})
+
+test('legacy manifests restore only at their exact recorded repository path', (t) => {
+  for (const legacyKind of ['v1.0', 'format-1']) {
+    const samePath = makeRepo(t)
+    assert.equal(run(samePath).status, 0)
+    const sameManifest = readManifest(samePath)
+    delete sameManifest.worktree_identity
+    if (legacyKind === 'v1.0') {
+      sameManifest.version = '1.0.0'
+      delete sameManifest.manifest_format
+    } else {
+      sameManifest.version = '1.2.0'
+      sameManifest.manifest_format = 1
+    }
+    writeManifest(samePath, sameManifest)
+    const sameRestore = run(samePath, ['--restore', 'latest'])
+    assert.equal(sameRestore.status, 0, `${legacyKind}: ${sameRestore.stderr}`)
+
+    const original = makeRepo(t)
+    assert.equal(run(original).status, 0)
+    const movedManifest = readManifest(original)
+    delete movedManifest.worktree_identity
+    if (legacyKind === 'v1.0') {
+      movedManifest.version = '1.0.0'
+      delete movedManifest.manifest_format
+    } else {
+      movedManifest.version = '1.2.0'
+      movedManifest.manifest_format = 1
+    }
+    writeManifest(original, movedManifest)
+    const parent = mkdtempSync(path.join(tmpdir(), `xpowers-routing-${legacyKind}-move-`))
+    t.after(() => rmSync(parent, { recursive: true, force: true }))
+    const moved = path.join(parent, 'moved')
+    renameSync(original, moved)
+    const movedBefore = snapshot(moved)
+    const movedRestore = run(moved, ['--restore', 'latest'])
+    assert.notEqual(movedRestore.status, 0)
+    assert.match(movedRestore.stderr, /Backup format\/repository mismatch/)
+    assert.deepEqual(snapshot(moved), movedBefore)
+  }
+})
+
+test('moved restore retains edit, mode, and saved-original corruption protections', (t) => {
+  for (const kind of ['content', 'mode', 'backup']) {
+    const original = makeRepo(t)
+    write(original, 'AGENTS.md', `original ${kind}\n`, 0o640)
+    const install = run(original)
+    assert.equal(install.status, 0, install.stderr)
+    const parent = mkdtempSync(path.join(tmpdir(), `xpowers-routing-${kind}-move-`))
+    t.after(() => rmSync(parent, { recursive: true, force: true }))
+    const moved = path.join(parent, 'moved')
+    renameSync(original, moved)
+    if (kind === 'content') {
+      writeFileSync(path.join(moved, '.codex/agents/worker.toml'), 'later edit\n')
+    } else if (kind === 'mode') {
+      chmodSync(path.join(moved, '.codex/agents/worker.toml'), 0o600)
+    } else {
+      writeFileSync(path.join(backupPath(moved), 'files', 'AGENTS.md'), 'corrupt\n')
+    }
+    const repoBefore = snapshot(moved)
+    const restore = run(moved, ['--restore', 'latest'])
+    assert.notEqual(restore.status, 0, `${kind}: restore unexpectedly succeeded`)
+    assert.deepEqual(snapshot(moved), repoBefore, kind)
+    if (kind === 'content') assert.match(restore.stderr, /changed after installation/)
+    if (kind === 'mode') assert.match(restore.stderr, /permissions changed after installation/)
+    if (kind === 'backup') assert.match(restore.stderr, /Corrupt\/missing backup content/)
+  }
 })
 
 test('mid-apply failure rolls back earlier writes and records a completed rollback', (t) => {

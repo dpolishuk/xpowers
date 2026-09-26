@@ -139,6 +139,12 @@ Before a changed apply, originals and a manifest are stored privately in the
 resolved Git metadata directory under `codex-routing-backups/`. In a linked
 worktree, this is worktree-specific Git metadata. Backups are not tracked and may
 contain private existing instructions or configuration; keep them private.
+The first changed apply also creates a random, mode-`0600` identity at
+`<absolute-git-dir>/codex-routing-identity`, outside the backup directory. New
+backup manifests bind to that identity. This permits restore after renaming or
+moving an ordinary repository, and after moving a linked worktree with
+`git worktree move`, while preventing a backup copied from another worktree from
+being accepted just because its installed file hashes match.
 
 Restore the most recent compatible backup with:
 
@@ -150,6 +156,10 @@ Or replace `latest` with a backup timestamp. Restore refuses corrupt backups and
 files whose content or permission mode changed after setup, so it cannot silently
 overwrite later user work. There is no force flag. Use a quiet worktree because the
 lock cannot prevent an editor or another process from changing these files.
+Restore and `--dry-run` only read the worktree identity; they never create or
+repair it. Keep the identity with its Git metadata when relocating a repository.
+Backups written by installer 1.0 or manifest format 1 predate this identity and
+remain restorable only at their exact recorded repository path.
 
 ## Required runtime smoke test
 
