@@ -1,0 +1,1067 @@
+const test = require("node:test")
+const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const os = require("node:os")
+const path = require("node:path")
+const crypto = require("node:crypto")
+const { spawn, spawnSync } = require("node:child_process")
+
+const runtime = path.resolve(__dirname, "../scripts/claude-routing")
+const cleanPython = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
+  env: { ...process.env, PYTHONPATH: "" }, encoding: "utf8",
+}).stdout.trim()
+
+function installedFixture(t) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-integrity-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const project = path.join(dir, "project")
+  const home = path.join(dir, "home")
+  fs.mkdirSync(project)
+  fs.mkdirSync(home)
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"), PYTHONDONTWRITEBYTECODE: "1" }
+  const run = (args, installed = false) => spawnSync("python3", ["-B", path.join(installed ? path.join(project, ".claude/xpowers-routing") : runtime, "cli.py"), ...args, "--project", project], {
+    env, encoding: "utf8", timeout: 10000,
+  })
+  const result = run(["install"])
+  assert.equal(result.status, 0, result.stderr)
+  const hash = crypto.createHash("sha256").update(project).digest("hex").slice(0, 24)
+  const manifest = path.join(home, ".claude/xpowers-routing", hash, "install-manifest.json")
+  return { dir, project, home, env, run, manifest, runtime: path.join(project, ".claude/xpowers-routing") }
+}
+
+function assertSuccess(result) { assert.equal(result.status, 0, result.stderr) }
+
+function routingCommand(project, session, name = "routing-on") {
+  const markdown = fs.readFileSync(path.join(project, `.claude/commands/${name}.md`), "utf8")
+  const match = markdown.match(/```bash\n([^\n]+)\n```/)
+  assert.ok(match, `missing executable command in ${name}`)
+  return match[1].replaceAll("${CLAUDE_SESSION_ID}", session)
+}
+
+function observeActivation(f, session, overrides = {}) {
+  const cli = path.join(f.project, ".claude/xpowers-routing/cli.py")
+  const command = routingCommand(f.project, session)
+  const payload = {
+    hook_event_name: "PreToolUse",
+    session_id: session,
+    tool_use_id: `tool-${session}`,
+    cwd: f.project,
+    tool_name: "Bash",
+    tool_input: { command, description: "activate routing", timeout: 10000, run_in_background: false },
+    ...overrides,
+  }
+  const result = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, input: JSON.stringify(payload), encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(result)
+  return { command, payload, output: JSON.parse(result.stdout) }
+}
+
+function executeObserved(f, observation) {
+  const command = observation.output.hookSpecificOutput?.updatedInput?.command
+  assert.ok(command, "installed PreToolUse guard did not attest the activation command")
+  return spawnSync("bash", ["-c", command], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+  })
+}
+
+function activationPath(f, session) {
+  const hash = crypto.createHash("sha256").update(session).digest("hex")
+  return path.join(path.dirname(f.manifest), "activation-proofs", `${hash}.json`)
+}
+
+function python(code, data = {}) {
+  const result = spawnSync("python3", ["-B", "-c", `import sys,json; sys.path.insert(0,${JSON.stringify(runtime)}); import common; data=json.load(sys.stdin); ${code}`], {
+    input: JSON.stringify(data), encoding: "utf8", timeout: 10000,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  return JSON.parse(result.stdout)
+}
+
+test("routing presets assign independent verification and native turn budgets", () => {
+  const cfg = python("print(json.dumps(common.preset_config('opus')))")
+  assert.equal(cfg.roles.coordinator.model, "claude-opus-5-5")
+  assert.equal(cfg.roles.worker.model, "claude-opus-5-5")
+  assert.equal(cfg.roles.worker.effort, "medium")
+  assert.equal(cfg.roles.worker.maxTurns, 80)
+  assert.equal(cfg.roles.verifier.model, "claude-sonnet-5")
+  assert.equal(cfg.roles.verifier.maxTurns, 80)
+  assert.equal(cfg.roles.reviewer.model, cfg.roles.worker.model)
+  assert.equal(cfg.roles.reviewer.maxTurns, 60)
+  assert.equal(cfg.roles.reviewer.effort, "high")
+  assert.equal(cfg.review.afterSeniorExhaustion, true)
+  assert.deepEqual(cfg.review.riskTags, ["money", "concurrency", "data-migration"])
+})
+
+test("guard action preserves a structured denial for non-object JSON payloads", () => {
+  const result = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "guard", "--project", os.tmpdir()], {
+    input: "[]", encoding: "utf8", timeout: 10000,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny")
+})
+
+test("Fable presets change only the requested role", () => {
+  for (const [preset, role] of [["fable-review", "reviewer"], ["fable-coordinator", "coordinator"]]) {
+    const configs = python(`print(json.dumps([common.preset_config('opus'),common.preset_config(${JSON.stringify(preset)})]))`)
+    assert.equal(configs[1].roles[role].model, "claude-fable-5-1")
+    for (const name of Object.keys(configs[0].roles)) {
+      if (name !== role) assert.deepEqual(configs[1].roles[name], configs[0].roles[name])
+    }
+  }
+})
+
+test("routing validation rejects unusable models, budgets, policies and missing roles", () => {
+  const config = python("print(json.dumps(common.preset_config('opus')))")
+  const variants = [
+    (c) => { c.roles.worker.model = "opus\npermissionMode: bypassPermissions" },
+    (c) => { c.roles.worker.maxTurns = 0 },
+    (c) => { c.roles.worker.maxTurns = true },
+    (c) => { c.roles.worker.effort = "turbo" },
+    (c) => { delete c.roles.verifier },
+    (c) => { c.roles.verifier.model = c.roles.worker.model },
+    (c) => { c.escalation.workerAttempts = -1 },
+    (c) => { c.review.riskTags = "money" },
+    (c) => { c.review.afterSeniorExhaustion = "true" },
+  ]
+  for (const mutate of variants) {
+    const changed = JSON.parse(JSON.stringify(config))
+    mutate(changed)
+    assert.equal(python("\ntry: common.validate_config(data); print('false')\nexcept ValueError: print('true')", changed), true)
+  }
+})
+
+test("workflow uses configured budgets and requires fresh independent reviews", () => {
+  const text = python("c=common.preset_config('opus'); c['escalation']['workerAttempts']=3; print(json.dumps(common.workflow(c)))")
+  assert.match(text, /3 attempts/)
+  assert.match(text, /worker.*verifier.*coordinator/i)
+  assert.match(text, /fresh/i)
+  assert.match(text, /resume|fork/)
+  assert.match(text, /Haiku.*effort.*unsupported/i)
+  assert.match(text, /money.*concurrency.*data-migration/)
+})
+
+test("session state cannot escape its directory and is scoped by project and session", t => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-session-path-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const projectA = path.join(dir, "project-a")
+  const projectB = path.join(dir, "project-b")
+  fs.mkdirSync(projectA)
+  fs.mkdirSync(projectB)
+  const paths = python("print(json.dumps([str(common.session_path(data[0],'../../escape')), str(common.session_path(data[0],'other')), str(common.session_path(data[1],'../../escape'))]))", [projectA, projectB])
+  assert.equal(new Set(paths).size, 3)
+  assert.ok(paths.every((p) => !p.includes("..")))
+})
+
+test("activation requires and consumes a live installed PreToolUse proof", t => {
+  const f = installedFixture(t)
+  const direct = f.run(["on", "--session", "proof-session"], true)
+  assert.equal(direct.status, 1)
+  assert.equal(f.run(["status", "--session", "proof-session"]).stdout.trim(), "OFF")
+
+  const observed = observeActivation(f, "proof-session")
+  const hook = observed.output.hookSpecificOutput
+  assert.equal(hook.hookEventName, "PreToolUse")
+  assert.equal(hook.permissionDecision, undefined)
+  assert.equal(hook.updatedInput.description, "activate routing")
+  assert.equal(hook.updatedInput.timeout, 10000)
+  assert.equal(hook.updatedInput.run_in_background, false)
+  assert.match(hook.updatedInput.command, /--hook-token [0-9a-f]+$/)
+  assertSuccess(executeObserved(f, observed))
+  assert.equal(f.run(["status", "--session", "proof-session"]).stdout.trim(), "ON")
+
+  const replay = executeObserved(f, observed)
+  assert.equal(replay.status, 1)
+  assert.equal(f.run(["status", "--session", "proof-session"]).stdout.trim(), "OFF")
+})
+
+test("activation proofs are session-bound, fresh and superseded", t => {
+  const f = installedFixture(t)
+
+  const wrongToken = observeActivation(f, "wrong-token")
+  const wrongTokenCommand = wrongToken.output.hookSpecificOutput.updatedInput.command.replace(/--hook-token [0-9a-f]+$/, "--hook-token deadbeef")
+  assert.notEqual(spawnSync("bash", ["-c", wrongTokenCommand], { env: f.env, cwd: f.project }).status, 0)
+  assert.equal(fs.existsSync(activationPath(f, "wrong-token")), false)
+  assertSuccess(executeObserved(f, observeActivation(f, "wrong-token")))
+  assertSuccess(f.run(["off", "--session", "wrong-token"]))
+
+  const wrongSession = observeActivation(f, "bound-session")
+  const wrongSessionCommand = wrongSession.output.hookSpecificOutput.updatedInput.command.replace('--session "bound-session"', '--session "other-session"')
+  assert.notEqual(spawnSync("bash", ["-c", wrongSessionCommand], { env: f.env, cwd: f.project }).status, 0)
+  assertSuccess(executeObserved(f, wrongSession))
+  assertSuccess(f.run(["off", "--session", "bound-session"]))
+
+  const expired = observeActivation(f, "expired-session")
+  const receipt = JSON.parse(fs.readFileSync(activationPath(f, "expired-session"), "utf8"))
+  receipt.issuedAt = Date.now() / 1000 - 301
+  fs.writeFileSync(activationPath(f, "expired-session"), JSON.stringify(receipt))
+  assert.notEqual(executeObserved(f, expired).status, 0)
+  assert.equal(fs.existsSync(activationPath(f, "expired-session")), false)
+  assert.equal(f.run(["status", "--session", "expired-session"]).stdout.trim(), "OFF")
+
+  const malformed = observeActivation(f, "malformed-session")
+  fs.writeFileSync(activationPath(f, "malformed-session"), "not json\n")
+  assert.notEqual(executeObserved(f, malformed).status, 0)
+  assert.equal(fs.existsSync(activationPath(f, "malformed-session")), false)
+  assert.equal(f.run(["status", "--session", "malformed-session"]).stdout.trim(), "OFF")
+
+  const malformedShape = observeActivation(f, "malformed-shape")
+  fs.writeFileSync(activationPath(f, "malformed-shape"), "[]\n")
+  assert.notEqual(executeObserved(f, malformedShape).status, 0)
+  assert.equal(fs.existsSync(activationPath(f, "malformed-shape")), false)
+  assert.equal(f.run(["status", "--session", "malformed-shape"]).stdout.trim(), "OFF")
+
+  const superseded = observeActivation(f, "superseded-session")
+  observeActivation(f, "superseded-session")
+  assert.notEqual(executeObserved(f, superseded).status, 0)
+  assert.equal(fs.existsSync(activationPath(f, "superseded-session")), false)
+  assertSuccess(executeObserved(f, observeActivation(f, "superseded-session")))
+})
+
+test("only a qualifying live main-session hook can mint an activation proof", t => {
+  const f = installedFixture(t)
+  for (const [name, overrides] of [
+    ["delegated", { agent_id: "agent-123", agent_type: "xpowers-routing-worker" }],
+    ["missing tool use", { tool_use_id: undefined }],
+    ["wrong hook event", { hook_event_name: "PostToolUse" }],
+  ]) {
+    const session = name.replaceAll(" ", "-")
+    const observed = observeActivation(f, session, overrides)
+    assert.equal(observed.output.hookSpecificOutput?.updatedInput, undefined, name)
+    assert.equal(fs.existsSync(activationPath(f, session)), false, name)
+  }
+
+  const sourceSession = "source-runtime"
+  const sourcePayload = {
+    hook_event_name: "PreToolUse", session_id: sourceSession, tool_use_id: "tool-source",
+    cwd: f.project, tool_name: "Bash", tool_input: { command: routingCommand(f.project, sourceSession) },
+  }
+  const sourceGuard = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, input: JSON.stringify(sourcePayload), encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(sourceGuard)
+  assert.equal(JSON.parse(sourceGuard.stdout).hookSpecificOutput.permissionDecision, "deny")
+  assert.equal(fs.existsSync(activationPath(f, sourceSession)), false)
+
+  assertSuccess(executeObserved(f, observeActivation(f, "source-on")))
+  assert.equal(f.run(["on", "--session", "source-on"]).status, 1)
+  assert.equal(f.run(["status", "--session", "source-on"]).stdout.trim(), "OFF")
+
+  const observed = observeActivation(f, "smoke-session")
+  assertSuccess(executeObserved(f, observed))
+  assert.equal(fs.existsSync(activationPath(f, "smoke-session")), false)
+  assertSuccess(f.run(["smoke", "--session", "smoke-session"], true))
+  assert.equal(fs.existsSync(activationPath(f, "smoke-session")), false, "synthetic smoke minted a proof")
+})
+
+test("off, reinstall and restore invalidate pending activation proofs", t => {
+  const f = installedFixture(t)
+
+  const stopped = observeActivation(f, "off-proof")
+  assertSuccess(f.run(["off", "--session", "off-proof"]))
+  assert.notEqual(executeObserved(f, stopped).status, 0)
+
+  const reinstalled = observeActivation(f, "reinstall-proof")
+  assertSuccess(f.run(["install"]))
+  assert.notEqual(executeObserved(f, reinstalled).status, 0)
+
+  const restored = observeActivation(f, "restore-proof")
+  assertSuccess(f.run(["install", "--restore"]))
+  assertSuccess(f.run(["install"]))
+  assert.notEqual(executeObserved(f, restored).status, 0)
+  assert.equal(f.run(["status", "--session", "restore-proof"]).stdout.trim(), "OFF")
+})
+
+test("reinstalling a changed profile disables enabled sessions", t => {
+  const f = installedFixture(t)
+  const session = "changed-profile"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const configPath = path.join(f.project, ".claude/routing.json")
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  config.roles.worker.maxTurns += 1
+  fs.writeFileSync(configPath, JSON.stringify(config))
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ session_id: session, cwd: f.project }),
+  })
+  assertSuccess(sessionStart)
+  assert.deepEqual(JSON.parse(sessionStart.stdout), {})
+  const missingProof = f.run(["on", "--session", session], true)
+  assert.equal(missingProof.status, 1, "reinstall must require a fresh hook proof")
+  assert.match(missingProof.stderr, /fresh matching PreToolUse hook proof/i)
+  const fresh = executeObserved(f, observeActivation(f, session))
+  assertSuccess(fresh)
+  assert.match(fresh.stdout, /maxTurns=81/)
+})
+
+test("case aliases share routing control state and ownership", t => {
+  const f = installedFixture(t)
+  const alias = path.join(path.dirname(f.project), path.basename(f.project).toUpperCase())
+  if (!fs.existsSync(alias)) return t.skip("Case sensitive filesystem")
+  const originalStat = fs.statSync(f.project)
+  const aliasStat = fs.statSync(alias)
+  if (originalStat.dev !== aliasStat.dev || originalStat.ino !== aliasStat.ino) return t.skip("Case alias is not the same directory")
+  const session = "case-alias-session"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const initial = JSON.parse(fs.readFileSync(f.manifest, "utf8"))
+  const installAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "install", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(installAlias)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const controls = fs.readdirSync(path.dirname(path.dirname(f.manifest))).filter(name => /^[0-9a-f]{24}$/.test(name))
+  assert.deepEqual(controls, [path.basename(path.dirname(f.manifest))])
+  assert.equal(JSON.parse(fs.readFileSync(f.manifest, "utf8")).installationId, initial.installationId)
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const offAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "off", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(offAlias)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const statusAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "status", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(statusAlias)
+  assert.equal(statusAlias.stdout.trim(), "OFF")
+  const restoreAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "install", "--restore", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(restoreAlias)
+  assertSuccess(f.run(["install"]))
+})
+
+test("project identity ignores sibling and dangling symlinks", t => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-project-identity-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const project = path.join(dir, "Project")
+  const alias = path.join(dir, "project")
+  fs.mkdirSync(project)
+  if (!fs.existsSync(alias)) return t.skip("Case sensitive filesystem")
+  fs.symlinkSync(project, path.join(dir, "project-symlink"))
+  fs.symlinkSync(path.join(dir, "missing"), path.join(dir, "dangling-symlink"))
+  const result = spawnSync(cleanPython, ["-B", "-c", `import sys; sys.path.insert(0,${JSON.stringify(runtime)}); import common; print(common.resolve_project(sys.argv[1]))`, alias], {
+    encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(result)
+  assert.equal(fs.statSync(result.stdout.trim()).ino, fs.statSync(project).ino)
+  assert.equal(path.basename(result.stdout.trim()), "Project")
+  const origin = path.join(project, ".claude", "xpowers-routing", "install-origin.json")
+  fs.mkdirSync(path.dirname(origin), { recursive: true })
+  fs.writeFileSync(origin, JSON.stringify({ version: 1, project: alias, installationId: "a".repeat(32) }))
+  const legacy = spawnSync(cleanPython, ["-B", "-c", `import sys; sys.path.insert(0,${JSON.stringify(runtime)}); import common; print(common.resolve_project(sys.argv[1]))`, project], {
+    encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(legacy)
+  assert.equal(legacy.stdout.trim(), alias)
+})
+
+test("generated commands work through the guard after Claude substitutes the session ID", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-commands-")))
+  const project = path.join(dir, "project with spaces")
+  const home = path.join(dir, "home")
+  fs.mkdirSync(project)
+  fs.mkdirSync(home)
+  const session = "501ac37b-9e0e-4990-b4a2-caf5d08728a2"
+  // Local command content is substituted by Claude before Bash/PreToolUse.
+  // A conflicting shell environment must never select the session instead.
+  const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"), CLAUDE_SESSION_ID: "different-shell-session" }
+  const invoke = (file, args, input) => spawnSync(file === "python3" ? cleanPython : file, args, { env, cwd: project, input, encoding: "utf8", timeout: 10000 })
+  try {
+    const installed = invoke("python3", ["-B", path.join(runtime, "cli.py"), "install", "--project", project])
+    assert.equal(installed.status, 0, installed.stderr)
+    const poisoned = path.join(dir, "poisoned-bin")
+    const site = path.join(dir, "site")
+    const sentinel = path.join(dir, "python-startup-hit")
+    fs.mkdirSync(poisoned)
+    fs.mkdirSync(site)
+    fs.writeFileSync(path.join(poisoned, "python3"), `#!/bin/sh\nprintf hit > ${JSON.stringify(sentinel)}\nexit 99\n`, { mode: 0o700 })
+    fs.writeFileSync(path.join(site, "sitecustomize.py"), `open(${JSON.stringify(sentinel)}, 'w').write('hit')\n`)
+    const executionEnv = { ...env, PATH: `${poisoned}${path.delimiter}${env.PATH}`, PYTHONPATH: site }
+    const cli = path.join(project, ".claude/xpowers-routing/cli.py")
+    const guard = (command, toolUseId) => {
+      const result = invoke("python3", ["-B", cli, "guard", "--project", project], JSON.stringify({
+        hook_event_name: "PreToolUse", session_id: session, tool_use_id: toolUseId,
+        cwd: project, tool_name: "Bash", tool_input: { command },
+      }))
+      assert.equal(result.status, 0, result.stderr)
+      return JSON.parse(result.stdout)
+    }
+    const template = (name) => {
+      const markdown = fs.readFileSync(path.join(project, `.claude/commands/${name}.md`), "utf8")
+      const match = markdown.match(/```bash\n([^\n]+)\n```/)
+      assert.ok(match, `missing executable command in ${name}`)
+      assert.ok(match[1].includes("${CLAUDE_SESSION_ID}"))
+      return match[1]
+    }
+    for (const name of ["routing-on", "routing-smoke-test", "routing-off"]) {
+      const command = template(name).replaceAll("${CLAUDE_SESSION_ID}", session)
+      if (name === "routing-on") assert.doesNotMatch(command, /--hook-token/)
+      const decision = guard(command, `tool-${name}`)
+      if (name === "routing-on") {
+        assert.equal(decision.hookSpecificOutput.permissionDecision, undefined)
+        assert.match(decision.hookSpecificOutput.updatedInput.command, /--hook-token/)
+      } else {
+        assert.equal(decision.hookSpecificOutput?.permissionDecision, undefined, name)
+        assert.equal(typeof decision.hookSpecificOutput?.updatedInput?.command, "string", name)
+      }
+      const result = spawnSync("bash", ["-c", decision.hookSpecificOutput?.updatedInput?.command || command], {
+        env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+      })
+      assert.equal(result.status, 0, `${name}: ${result.stderr}`)
+      if (name === "routing-smoke-test") assert.match(result.stdout, /PASS/)
+      if (name === "routing-on") {
+        const hooks = JSON.parse(fs.readFileSync(path.join(project, ".claude/settings.json"), "utf8")).hooks
+        const preTool = hooks.PreToolUse[0].hooks[0].command
+        const preToolResult = spawnSync("bash", ["-c", preTool], {
+          env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+          input: JSON.stringify({
+            hook_event_name: "PreToolUse", session_id: session, tool_use_id: "exact-generated-hook",
+            cwd: project, tool_name: "Bash", tool_input: { command: "pwd" },
+          }),
+        })
+        assert.equal(preToolResult.status, 0, preToolResult.stderr)
+        assert.equal(typeof JSON.parse(preToolResult.stdout).hookSpecificOutput.updatedInput.command, "string")
+        const sessionStart = hooks.SessionStart[0].hooks[0].command
+        const sessionStartResult = spawnSync("bash", ["-c", sessionStart], {
+          env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+          input: JSON.stringify({ session_id: session, cwd: project }),
+        })
+        assert.equal(sessionStartResult.status, 0, sessionStartResult.stderr)
+        assert.equal(typeof JSON.parse(sessionStartResult.stdout).hookSpecificOutput.additionalContext, "string")
+        for (const invalid of [template("routing-off"), template("routing-off").replaceAll("${CLAUDE_SESSION_ID}", "other-session")]) {
+          assert.equal(guard(invalid, "tool-invalid").hookSpecificOutput.permissionDecision, "deny")
+        }
+      }
+    }
+    assert.equal(fs.existsSync(sentinel), false)
+    const status = invoke("python3", ["-B", cli, "status", "--project", project, "--session", session])
+    assert.equal(status.status, 0, status.stderr)
+    assert.equal(status.stdout.trim(), "OFF")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("on/off and session-start affect only one session without modifying project files", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-runtime-"))
+  const project = path.join(dir, "project")
+  const home = path.join(dir, "home")
+  const configDir = path.join(home, "custom-claude")
+  fs.mkdirSync(project)
+  fs.mkdirSync(home)
+  const run = (args, input) => spawnSync("python3", ["-B", path.join(runtime, "cli.py"), ...args, "--project", project], {
+    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: configDir }, input: input ? JSON.stringify(input) : undefined,
+    encoding: "utf8", timeout: 10000,
+  })
+  try {
+    const installed = run(["install"])
+    assert.equal(installed.status, 0, installed.stderr)
+    const routing = { project, env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: configDir } }
+    const snapshot = () => JSON.stringify(fs.readdirSync(project, { recursive: true }).filter((p) => fs.statSync(path.join(project, p)).isFile()).sort().map((p) => [p, fs.readFileSync(path.join(project, p), "utf8")]))
+    const before = snapshot()
+    const on = executeObserved(routing, observeActivation(routing, "session-a"))
+    assert.equal(on.status, 0, on.stderr)
+    assert.match(on.stdout, /claude-opus-5-5/)
+    const active = run(["session-start"], { session_id: "session-a", cwd: project })
+    assert.match(JSON.parse(active.stdout).hookSpecificOutput.additionalContext, /coordinator/i)
+    const other = run(["session-start"], { session_id: "session-b", cwd: project })
+    assert.deepEqual(JSON.parse(other.stdout), {})
+    const smoke = run(["smoke", "--session", "session-a"])
+    assert.equal(smoke.status, 0, smoke.stderr)
+    assert.match(smoke.stdout, /PASS/)
+    const workerPath = path.join(project, ".claude/agents/xpowers-routing-worker.md")
+    const worker = fs.readFileSync(workerPath, "utf8")
+    fs.writeFileSync(workerPath, worker.replace("claude-opus-5-5", "claude-sonnet-5"))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must catch edited agent models")
+    fs.writeFileSync(workerPath, worker)
+    const settingsPath = path.join(project, ".claude/settings.json")
+    const settingsBytes = fs.readFileSync(settingsPath, "utf8")
+    fs.writeFileSync(settingsPath, JSON.stringify({ hooks: {} }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must catch missing hook registration")
+    fs.writeFileSync(settingsPath, settingsBytes)
+    const localSettingsPath = path.join(project, ".claude/settings.local.json")
+    fs.writeFileSync(localSettingsPath, JSON.stringify({ disableAllHooks: true }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must catch locally disabled hooks")
+    fs.unlinkSync(localSettingsPath)
+    fs.mkdirSync(configDir, { recursive: true })
+    const globalSettings = path.join(configDir, "settings.json")
+    fs.writeFileSync(globalSettings, JSON.stringify({ disableAllHooks: true }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 1, "smoke must check the effective user settings directory")
+    fs.unlinkSync(globalSettings)
+    // Claude supports project-local settings.local.json, but no user-level
+    // settings.local.json scope. An unused file must not disable routing.
+    fs.writeFileSync(path.join(configDir, "settings.local.json"), JSON.stringify({ disableAllHooks: true }))
+    assert.equal(run(["smoke", "--session", "session-a"]).status, 0)
+    assert.equal(run(["off", "--session", "session-a"]).status, 0)
+    assert.deepEqual(JSON.parse(run(["session-start"], { session_id: "session-a", cwd: project }).stdout), {})
+    assert.equal(snapshot(), before)
+    const configPath = path.join(project, ".claude/routing.json")
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    const staleProof = observeActivation(routing, "session-a")
+    config.roles.worker.maxTurns = 90
+    fs.writeFileSync(configPath, JSON.stringify(config))
+    const stale = executeObserved(routing, staleProof)
+    assert.equal(stale.status, 1)
+    assert.match(stale.stderr, /regenerate|reinstall|setup-claude-routing/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("activation and smoke reject changed or missing installed runtime modules", t => {
+  const f = installedFixture(t)
+  assertSuccess(executeObserved(f, observeActivation(f, "already-active")))
+  for (const name of ["guard.py", "cli.py", "common.py", "install.py"]) {
+    const target = path.join(f.runtime, name)
+    const original = fs.readFileSync(target)
+    for (const action of ["modified", "missing"]) {
+      const proof = observeActivation(f, `drift-${name}-${action}`)
+      if (action === "modified") fs.writeFileSync(target, name === "guard.py" ? "def handle(data, project): return {}\n" : "# accidental truncation\n")
+      else fs.unlinkSync(target)
+      const on = executeObserved(f, proof)
+      if (name === "guard.py") {
+        assert.equal(on.status, 1, `${name} ${action} must block activation`)
+        assert.match(on.stderr, /runtime.*(changed|missing|modified)/i)
+      }
+      // An erased CLI or startup dependency cannot validate itself, but none
+      // may turn the session on. The external profile check diagnoses drift.
+      assert.equal(f.run(["status", "--session", `drift-${name}-${action}`]).stdout.trim(), "OFF")
+      const smoke = f.run(["smoke", "--session", "already-active"])
+      assert.equal(smoke.status, 1, `${name} ${action} must fail smoke`)
+      assert.match(smoke.stderr, /runtime.*(changed|missing|modified)/i)
+      if (name === "guard.py") {
+        const installedSmoke = f.run(["smoke", "--session", "already-active"], true)
+        assert.equal(installedSmoke.status, 1)
+        assert.match(installedSmoke.stderr, /runtime.*guard\.py/i)
+      }
+      fs.writeFileSync(target, original)
+    }
+  }
+  assertSuccess(f.run(["smoke", "--session", "already-active"], true))
+})
+
+test("activation and smoke reject changed, missing or symlinked installed commands", t => {
+  const f = installedFixture(t)
+  const outside = path.join(f.dir, "outside-command.md")
+  fs.writeFileSync(outside, "outside\n")
+  for (const name of ["routing-on.md", "routing-off.md", "routing-smoke-test.md"]) {
+    const target = path.join(f.project, ".claude", "commands", name)
+    const original = fs.readFileSync(target)
+    const mode = fs.statSync(target).mode & 0o777
+    for (const action of ["malformed", "missing", "symlink"]) {
+      const proof = observeActivation(f, `command-${name}-${action}`)
+      if (action === "malformed") fs.writeFileSync(target, "not a generated routing command\n")
+      else if (action === "missing") fs.unlinkSync(target)
+      else {
+        fs.unlinkSync(target)
+        fs.symlinkSync(outside, target)
+      }
+      const on = executeObserved(f, proof)
+      assert.equal(on.status, 1, `${name} ${action} must block activation`)
+      assert.match(on.stderr, /(command|artifact).*(changed|missing|modified)|routing.*(command|artifact)/i)
+      assert.equal(f.run(["status", "--session", `command-${name}-${action}`]).stdout.trim(), "OFF")
+      assertSuccess(f.run(["off", "--session", `command-${name}-${action}`], true))
+      const smoke = f.run(["smoke", "--session", "command-smoke"])
+      assert.equal(smoke.status, 1, `${name} ${action} must fail smoke`)
+      assert.match(smoke.stderr, /(command|artifact).*(changed|missing|modified)|routing.*(command|artifact)/i)
+      fs.rmSync(target, { force: true })
+      fs.writeFileSync(target, original)
+      fs.chmodSync(target, mode)
+    }
+  }
+  assertSuccess(executeObserved(f, observeActivation(f, "commands-restored")))
+})
+
+test("activation and smoke reject changed immutable routing metadata snapshots", t => {
+  const f = installedFixture(t)
+  const outside = path.join(f.dir, "outside-agent.md")
+  const agent = path.join(f.project, ".claude", "agents", "xpowers-routing-worker.md")
+  fs.writeFileSync(outside, fs.readFileSync(agent))
+  const symlinkCopy = (target, name) => {
+    const external = path.join(f.dir, name)
+    fs.copyFileSync(target, external)
+    fs.unlinkSync(target)
+    fs.symlinkSync(external, target)
+  }
+  const fifo = target => {
+    fs.unlinkSync(target)
+    const result = spawnSync("mkfifo", [target], { encoding: "utf8" })
+    assert.equal(result.status, 0, result.stderr)
+  }
+  const cases = [
+    ["routing.json", "routing config symlink", target => symlinkCopy(target, "outside-routing.json")],
+    ["settings.json", "settings symlink", target => symlinkCopy(target, "outside-settings.json")],
+    ["routing.json", "routing config FIFO", fifo],
+    ["settings.json", "settings FIFO", fifo],
+    ["xpowers-routing/generated-config.json", "generated config FIFO", fifo],
+    ["agents/xpowers-routing-worker.md", "agent FIFO", fifo],
+    ["xpowers-routing/install-origin.json", "origin replacement", target => fs.writeFileSync(target, "{}\n")],
+    ["xpowers-routing/generated-config.json", "config whitespace", target => fs.appendFileSync(target, "\n")],
+    ["xpowers-routing/generated-config.json", "config mode", target => fs.chmodSync(target, 0o600)],
+    ["agents/xpowers-routing-worker.md", "agent symlink", target => {
+      fs.unlinkSync(target)
+      fs.symlinkSync(outside, target)
+    }],
+  ]
+  for (const [relative, action, mutate] of cases) {
+    const target = path.join(f.project, ".claude", relative)
+    const original = fs.readFileSync(target)
+    const mode = fs.statSync(target).mode & 0o777
+    const proof = observeActivation(f, `metadata-${action}`)
+    mutate(target)
+    const on = executeObserved(f, proof)
+    assert.equal(on.status, 1, `${action} must block activation`)
+    assert.match(on.stderr, /routing.*(origin|config|agent|snapshot|changed|missing)|ownership|symlink|regular file/i)
+    if (action.includes("FIFO")) assert.match(on.stderr, /not a regular file/i)
+    assert.equal(f.run(["status", "--session", `metadata-${action}`]).stdout.trim(), "OFF")
+    const smoke = f.run(["smoke", "--session", "metadata-smoke"])
+    assert.equal(smoke.status, 1, `${action} must fail smoke`)
+    if (action.includes("FIFO")) assert.match(smoke.stderr, /not a regular file/i)
+    fs.rmSync(target, { force: true })
+    fs.writeFileSync(target, original)
+    fs.chmodSync(target, mode)
+  }
+  assertSuccess(executeObserved(f, observeActivation(f, "metadata-restored")))
+})
+
+test("active live guard rejects a generated config FIFO while routing-off remains available", t => {
+  const f = installedFixture(t)
+  const session = "active-config-fifo"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const generated = path.join(f.runtime, "generated-config.json")
+  fs.unlinkSync(generated)
+  const fifoResult = spawnSync("mkfifo", [generated], { encoding: "utf8" })
+  assert.equal(fifoResult.status, 0, fifoResult.stderr)
+  const cli = path.join(f.runtime, "cli.py")
+  const ordinary = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "fifo-ordinary",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(ordinary)
+  const denied = JSON.parse(ordinary.stdout).hookSpecificOutput
+  assert.equal(denied.permissionDecision, "deny")
+  assert.match(denied.permissionDecisionReason, /cannot validate active routing/i)
+  const off = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "fifo-off",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: routingCommand(f.project, session, "routing-off") },
+    }),
+  })
+  assertSuccess(off)
+  const rewritten = JSON.parse(off.stdout).hookSpecificOutput.updatedInput.command
+  assert.equal(typeof rewritten, "string")
+  assertSuccess(spawnSync("bash", ["-c", rewritten], { env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000 }))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+})
+
+test("missing legacy alias origin denies active guard while exact routing-off recovers", t => {
+  const f = installedFixture(t)
+  const alias = path.join(path.dirname(f.project), path.basename(f.project).toUpperCase())
+  if (!fs.existsSync(alias) || fs.statSync(alias).ino !== fs.statSync(f.project).ino) return t.skip("Case sensitive filesystem")
+  const session = "legacy-alias-off"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const aliasKey = crypto.createHash("sha256").update(alias).digest("hex").slice(0, 24)
+  const originalControl = path.dirname(f.manifest)
+  const aliasControl = path.join(path.dirname(originalControl), aliasKey)
+  fs.renameSync(originalControl, aliasControl)
+  fs.unlinkSync(path.join(f.runtime, "install-origin.json"))
+  const cli = path.join(f.runtime, "cli.py")
+  const ordinary = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-ordinary",
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(ordinary)
+  assert.equal(JSON.parse(ordinary.stdout).hookSpecificOutput.permissionDecision, "deny")
+  const legacyOff = routingCommand(f.project, session, "routing-off").replaceAll(f.project, alias)
+  const off = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-off",
+      cwd: alias, tool_name: "Bash", tool_input: { command: legacyOff },
+    }),
+  })
+  assertSuccess(off)
+  assertSuccess(spawnSync("bash", ["-c", JSON.parse(off.stdout).hookSpecificOutput.updatedInput.command], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  }))
+  const sessionKey = crypto.createHash("sha256").update(session).digest("hex")
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(aliasControl, "sessions", `${sessionKey}.json`), "utf8")), { enabled: false })
+  const inactive = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-inactive",
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(inactive)
+  assert.deepEqual(JSON.parse(inactive.stdout), {})
+  const fresh = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "absent-session", tool_use_id: "bad-origin-absent",
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(fresh)
+  assert.deepEqual(JSON.parse(fresh.stdout), {})
+  const status = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "status", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(status)
+  assert.equal(status.stdout.trim(), "OFF")
+  const sessionStart = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "session-start", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ session_id: session, cwd: alias }),
+  })
+  assertSuccess(sessionStart)
+  assert.deepEqual(JSON.parse(sessionStart.stdout), {})
+})
+
+test("origin failure consumes a minted activation proof and disables its raw session", t => {
+  const f = installedFixture(t)
+  const session = "bad-origin-proof"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const observed = observeActivation(f, session)
+  assert.equal(fs.existsSync(activationPath(f, session)), true)
+  fs.writeFileSync(path.join(f.runtime, "install-origin.json"), "{}\n")
+  const result = executeObserved(f, observed)
+  assert.equal(result.status, 1)
+  assert.equal(fs.existsSync(activationPath(f, session)), false)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+})
+
+test("installed hooks reject unsafe session state nodes before reading them", t => {
+  const f = installedFixture(t)
+  const session = "unsafe-session-state"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const state = path.join(path.dirname(f.manifest), "sessions", `${crypto.createHash("sha256").update(session).digest("hex")}.json`)
+  const hook = JSON.parse(fs.readFileSync(path.join(f.project, ".claude/settings.json"), "utf8")).hooks.PreToolUse[0].hooks[0].command
+  const origin = path.join(f.runtime, "install-origin.json")
+  const originBytes = fs.readFileSync(origin)
+  const invoke = () => spawnSync("bash", ["-c", hook], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: session, tool_use_id: "unsafe-state", cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" } }),
+  })
+  for (const action of ["fifo", "symlink-fifo"]) {
+    const original = fs.readFileSync(state)
+    fs.unlinkSync(state)
+    const fifo = path.join(f.dir, `${action}.fifo`)
+    assert.equal(spawnSync("mkfifo", [fifo]).status, 0)
+    if (action === "fifo") fs.renameSync(fifo, state)
+    else fs.symlinkSync(fifo, state)
+    const result = invoke()
+    assertSuccess(result)
+    const output = JSON.parse(result.stdout).hookSpecificOutput
+    assert.equal(output.permissionDecision, "deny")
+    assert.equal(output.permissionDecisionReason, "XPowers routing: Cannot validate active routing configuration or state; repair it with the routing CLI")
+    if (action === "fifo") {
+      fs.writeFileSync(origin, "{}\n")
+      const raw = invoke()
+      assertSuccess(raw)
+      assert.equal(JSON.parse(raw.stdout).hookSpecificOutput.permissionDecision, "deny")
+      const status = f.run(["status", "--session", session])
+      assert.equal(status.status, 1)
+      assert.match(status.stderr, /regular file/i)
+      const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+        env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+        input: JSON.stringify({ session_id: session, cwd: f.project }),
+      })
+      assert.equal(sessionStart.status, 1)
+      assert.match(sessionStart.stderr, /regular file/i)
+      fs.writeFileSync(origin, originBytes)
+    }
+    fs.rmSync(state, { force: true })
+    fs.writeFileSync(state, original)
+  }
+  const assertNullStateRejected = () => {
+    const hookResult = invoke()
+    assertSuccess(hookResult)
+    assert.equal(JSON.parse(hookResult.stdout).hookSpecificOutput.permissionDecision, "deny")
+    const status = f.run(["status", "--session", session], true)
+    assert.equal(status.status, 1)
+    assert.match(status.stderr, /not a JSON object/i)
+    const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+      env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+      input: JSON.stringify({ session_id: session, cwd: f.project }),
+    })
+    assert.equal(sessionStart.status, 1)
+    assert.match(sessionStart.stderr, /not a JSON object/i)
+  }
+  const original = fs.readFileSync(state)
+  fs.writeFileSync(state, "null\n")
+  assertNullStateRejected()
+  fs.writeFileSync(origin, "{}\n")
+  assertNullStateRejected()
+  fs.writeFileSync(origin, originBytes)
+  fs.writeFileSync(state, original)
+  const sessions = path.dirname(state)
+  const externalSessions = path.join(f.dir, "external-sessions")
+  fs.renameSync(sessions, externalSessions)
+  fs.symlinkSync(externalSessions, sessions, "dir")
+  const ancestor = invoke()
+  assertSuccess(ancestor)
+  assert.equal(JSON.parse(ancestor.stdout).hookSpecificOutput.permissionDecision, "deny")
+  fs.unlinkSync(sessions)
+  fs.renameSync(externalSessions, sessions)
+})
+
+test("session-start rechecks an enabled session after a reinstall under the installation lock", async t => {
+  const f = installedFixture(t)
+  const session = "session-start-reinstall"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const marker = path.join(f.dir, "session-start-ready")
+  const release = path.join(f.dir, "session-start-release")
+  assert.equal(spawnSync("mkfifo", [release]).status, 0)
+  const runner = path.join(f.dir, "paused-session-start.py")
+  fs.writeFileSync(runner, `import io, json, sys
+from pathlib import Path
+runtime, marker, release, payload, project = sys.argv[1:]
+sys.path.insert(0, runtime)
+import cli
+marker, release, project = Path(marker), Path(release), Path(project)
+original = cli.active
+paused_once = False
+def paused(project, session):
+    global paused_once
+    result = original(project, session)
+    if not paused_once:
+        paused_once = True
+        marker.write_text("ready")
+        with release.open() as stream:
+            stream.read(1)
+    return result
+cli.active = paused
+sys.stdin = io.StringIO(payload)
+sys.argv = ["cli.py", "session-start", "--project", str(project)]
+raise SystemExit(cli.main())
+`)
+  const ready = new Promise((resolve, reject) => {
+    let timeout
+    const watcher = fs.watch(f.dir, (event, name) => {
+      if (name === path.basename(marker) && fs.existsSync(marker)) {
+        clearTimeout(timeout)
+        watcher.close()
+        resolve()
+      }
+    })
+    timeout = setTimeout(() => { watcher.close(); reject(new Error("session-start did not reach active state")) }, 10000)
+  })
+  const waitForExit = (process, label) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      process.kill("SIGKILL")
+      reject(new Error(`${label} did not exit`))
+    }, 10000)
+    process.once("error", error => { clearTimeout(timeout); reject(error) })
+    process.once("close", (status, signal) => { clearTimeout(timeout); resolve({ status, signal }) })
+  })
+  let child = spawn("python3", ["-B", runner, f.runtime, marker, release,
+    JSON.stringify({ session_id: session, cwd: f.project }), f.project], {
+    env: f.env, cwd: f.project, stdio: ["ignore", "pipe", "pipe"],
+  })
+  const childClosed = new Promise(resolve => child.once("close", resolve))
+  t.after(async () => {
+    if (child.exitCode === null) child.kill("SIGKILL")
+    await Promise.race([childClosed, new Promise(resolve => setTimeout(resolve, 1000))])
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", data => { stdout += data })
+  child.stderr.on("data", data => { stderr += data })
+  const closed = waitForExit(child, "session-start child")
+  await ready
+  const configPath = path.join(f.project, ".claude/routing.json")
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  config.roles.worker.maxTurns = 81
+  fs.writeFileSync(configPath, JSON.stringify(config))
+  assertSuccess(f.run(["install"]))
+  const writer = spawn("python3", ["-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('go')", release], {
+    stdio: "ignore",
+  })
+  const written = await waitForExit(writer, "session-start release writer")
+  assert.equal(written.status, 0)
+  const result = await closed
+  assert.equal(result.status, 0, stderr)
+  assert.deepEqual(JSON.parse(stdout), {})
+})
+
+test("activation, smoke, and session-start reject unsafe optional settings metadata", t => {
+  const f = installedFixture(t)
+  const session = "optional-settings-metadata"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const runInstalled = (args, input) => spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), ...args, "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: input === undefined ? undefined : JSON.stringify(input),
+  })
+  for (const settings of [path.join(f.project, ".claude/settings.local.json"), path.join(f.env.CLAUDE_CONFIG_DIR, "settings.json")]) {
+    for (const [name, create, message] of [
+      ["FIFO", target => assert.equal(spawnSync("mkfifo", [target]).status, 0), /regular file/i],
+      ["dangling symlink", target => fs.symlinkSync(path.join(f.dir, `missing-${path.basename(target)}`), target), /symlink/i],
+      ["non-object JSON", target => fs.writeFileSync(target, "null\n"), /Invalid Claude settings object/i],
+    ]) {
+      const observed = observeActivation(f, `${session}-${name}-${path.basename(path.dirname(settings))}`)
+      fs.mkdirSync(path.dirname(settings), { recursive: true })
+      create(settings)
+      const activation = spawnSync("bash", ["-c", observed.output.hookSpecificOutput.updatedInput.command], {
+        env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+      })
+      const smoke = runInstalled(["smoke", "--session", session])
+      const sessionStart = runInstalled(["session-start"], { session_id: session, cwd: f.project })
+      for (const result of [activation, smoke, sessionStart]) {
+        assert.equal(result.status, 1, `${name}: ${result.stderr}`)
+        assert.match(result.stderr, message, name)
+      }
+      fs.unlinkSync(settings)
+    }
+  }
+})
+
+test("ordinary active guard commands do not enter activation attestation", t => {
+  const f = installedFixture(t)
+  const session = "ordinary-guard"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const result = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "ordinary-tool",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(result)
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, undefined)
+})
+
+test("installed activation rejects a guard that silently allows project writes", t => {
+  const f = installedFixture(t)
+  fs.writeFileSync(path.join(f.runtime, "guard.py"), "def handle(data, project): return {}\n")
+  const observed = observeActivation(f, "changed-guard")
+  assert.equal(observed.output.hookSpecificOutput.permissionDecision, "deny")
+  assert.match(observed.output.hookSpecificOutput.permissionDecisionReason, /runtime.*guard\.py/i)
+  assert.equal(fs.existsSync(activationPath(f, "changed-guard")), false)
+  assert.equal(f.run(["status", "--session", "changed-guard"]).stdout.trim(), "OFF")
+})
+
+test("runtime integrity requires ownership snapshots and covers extra helper modules", t => {
+  const f = installedFixture(t)
+  const original = fs.readFileSync(f.manifest, "utf8")
+  const missingProof = observeActivation(f, "missing-backup")
+  fs.unlinkSync(f.manifest)
+  const missing = executeObserved(f, missingProof)
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /ownership.*(backup|manifest).*missing|missing.*ownership/i)
+  const manifest = JSON.parse(original)
+  delete manifest.files["xpowers-routing/guard.py"]
+  fs.writeFileSync(f.manifest, original)
+  const missingSnapshotProof = observeActivation(f, "missing-snapshot")
+  fs.writeFileSync(f.manifest, JSON.stringify(manifest))
+  const missingSnapshot = executeObserved(f, missingSnapshotProof)
+  assert.equal(missingSnapshot.status, 1)
+  assert.match(missingSnapshot.stderr, /snapshot.*guard\.py|guard\.py.*snapshot/i)
+  const complete = JSON.parse(original)
+  const helper = path.join(f.runtime, "future-helper.py")
+  fs.writeFileSync(helper, "# helper\n")
+  complete.files["xpowers-routing/future-helper.py"] = { before: null, installed: { data: Buffer.from("# helper\n").toString("base64"), mode: fs.statSync(helper).mode & 0o777 } }
+  fs.writeFileSync(f.manifest, JSON.stringify(complete))
+  assertSuccess(executeObserved(f, observeActivation(f, "valid-helper")))
+  const changedHelperProof = observeActivation(f, "changed-helper")
+  fs.writeFileSync(helper, "# drift\n")
+  const changedHelper = executeObserved(f, changedHelperProof)
+  assert.equal(changedHelper.status, 1)
+  assert.match(changedHelper.stderr, /runtime.*future-helper\.py/i)
+})
+
+test("activation and restore serialize so reinstall cannot revive the old session", async t => {
+  const f = installedFixture(t)
+  const observed = observeActivation(f, "concurrent-session")
+  const hookToken = observed.output.hookSpecificOutput.updatedInput.command.match(/--hook-token ([0-9a-f]+)$/)[1]
+  const paused = path.join(f.dir, "activation-validated")
+  const restoreAttempted = path.join(f.dir, "restore-attempted")
+  const restoreFinished = path.join(f.dir, "restore-finished")
+  const release = path.join(f.dir, "release-activation")
+  const start = code => {
+    const child = spawn("python3", ["-B", "-c", code, f.runtime, f.project, paused, restoreAttempted, release], { env: f.env })
+    t.after(() => child.kill())
+    return new Promise((resolve, reject) => {
+      let output = ""
+      child.stderr.on("data", chunk => { output += chunk })
+      child.on("error", reject)
+      child.on("close", status => resolve({ status, stderr: output }))
+    })
+  }
+  const waitFor = async target => {
+    const deadline = Date.now() + 5000
+    while (!fs.existsSync(target)) {
+      assert.ok(Date.now() < deadline, `timed out waiting for ${target}`)
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const on = start(`import sys,time
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import cli
+project,paused,release=sys.argv[2],Path(sys.argv[3]),Path(sys.argv[5])
+check=cli.check_profile
+def pause_after_check(project, config):
+    manifest=check(project,config)
+    paused.touch()
+    deadline=time.monotonic()+8
+    while not release.exists():
+        if time.monotonic()>deadline: raise RuntimeError('activation was not released')
+        time.sleep(0.01)
+    return manifest
+cli.check_profile=pause_after_check
+sys.argv=['cli.py','on','--project',project,'--session','concurrent-session','--hook-token',${JSON.stringify(hookToken)}]
+raise SystemExit(cli.main())
+`)
+  await waitFor(paused)
+  const restore = start(`import sys,contextlib,fcntl
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import install,common
+project,attempted=Path(sys.argv[2]),Path(sys.argv[4])
+lock=install._locked
+@contextlib.contextmanager
+def observe_restore_lock(project):
+    with (common.control_dir(project)/'install.lock').open('a+b') as probe:
+        try:
+            fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            attempted.write_text('blocked')
+        else:
+            attempted.write_text('available')
+            fcntl.flock(probe,fcntl.LOCK_UN)
+    with lock(project) as control: yield control
+install._locked=observe_restore_lock
+install.restore(project)
+attempted.with_name('restore-finished').touch()
+`)
+  await waitFor(restoreAttempted)
+  // A nonblocking probe proves whether activation owns the install lock. If it
+  // does not, complete restore before releasing activation to expose the race.
+  if (fs.readFileSync(restoreAttempted, "utf8") !== "blocked") await waitFor(restoreFinished)
+  fs.writeFileSync(release, "continue\n")
+  const results = await Promise.all([on, restore])
+  results.forEach(assertSuccess)
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", "concurrent-session"]).stdout.trim(), "OFF")
+})
+
+test("activation after restore fails and leaves its old session disabled", t => {
+  const f = installedFixture(t)
+  assertSuccess(executeObserved(f, observeActivation(f, "restored-session")))
+  assertSuccess(f.run(["install", "--restore"]))
+  assert.equal(f.run(["on", "--session", "restored-session"]).status, 1)
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", "restored-session"]).stdout.trim(), "OFF")
+})

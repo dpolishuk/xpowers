@@ -361,7 +361,11 @@ Claude Code uses a different configuration approach. Models are resolved through
 }
 ```
 
-**Note:** Claude Code's agent system doesn't support per-agent model overrides in configuration files. To set per-agent models in Claude Code, modify the agent file's frontmatter directly.
+Claude Code reads per-agent `model`, `effort` and `maxTurns` from agent frontmatter.
+For an opt-in coordinator/worker/verifier workflow, XPowers can generate those
+files from project `.claude/routing.json`, with Opus 5.5 and Fable presets,
+independent reviews and a coordinator write guard. See
+[Claude Code routing](CLAUDE-ROUTING.md) for installation, configuration and rollback.
 
 ---
 
