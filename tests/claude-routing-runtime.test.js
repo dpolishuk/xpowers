@@ -266,6 +266,31 @@ test("off, reinstall and restore invalidate pending activation proofs", t => {
   assert.equal(f.run(["status", "--session", "restore-proof"]).stdout.trim(), "OFF")
 })
 
+test("reinstalling a changed profile disables enabled sessions", t => {
+  const f = installedFixture(t)
+  const session = "changed-profile"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const configPath = path.join(f.project, ".claude/routing.json")
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  config.roles.worker.maxTurns += 1
+  fs.writeFileSync(configPath, JSON.stringify(config))
+  assertSuccess(f.run(["install"]))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const sessionStart = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "session-start", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ session_id: session, cwd: f.project }),
+  })
+  assertSuccess(sessionStart)
+  assert.deepEqual(JSON.parse(sessionStart.stdout), {})
+  const missingProof = f.run(["on", "--session", session], true)
+  assert.equal(missingProof.status, 1, "reinstall must require a fresh hook proof")
+  assert.match(missingProof.stderr, /fresh matching PreToolUse hook proof/i)
+  const fresh = executeObserved(f, observeActivation(f, session))
+  assertSuccess(fresh)
+  assert.match(fresh.stdout, /maxTurns=81/)
+})
+
 test("generated commands work through the guard after Claude substitutes the session ID", () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-commands-")))
   const project = path.join(dir, "project with spaces")

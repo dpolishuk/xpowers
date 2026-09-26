@@ -450,6 +450,9 @@ def install(project: Path, preset=None):
         updated = {"version": 1, "project": str(project), "installationId": installation_id, "files": snapshots, "ownedHooks": owned_hooks,
                    "settings": {"before": manifest["settings"]["before"] if manifest else before_settings,
                                 "installed": desired_settings}}
+        # Generated agents and routing instructions can change on reinstall.
+        # Require a fresh activation before an existing session uses them.
+        _disable_sessions(control, plan)
         _invalidate_activation_proofs(control, plan)
         plan[control / "install-manifest.json"] = _content(_json_bytes(updated), 0o600)
         if relocated and _missing_node(source_project):

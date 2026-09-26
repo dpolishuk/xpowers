@@ -352,6 +352,36 @@ install.install(Path(sys.argv[1]))
   success(invoke(f))
 })
 
+test("failed reinstall restores an enabled session while successful reinstall disables it", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const state = sessionPath(f, "changed-profile")
+  fs.mkdirSync(path.dirname(state), { recursive: true })
+  fs.writeFileSync(state, '{"enabled":true}\n')
+  const config = json(f, "routing.json")
+  config.roles.worker.maxTurns += 1
+  write(f, "routing.json", JSON.stringify(config))
+  const script = `import sys
+from pathlib import Path
+import install
+original = install._atomic_write
+def fail_manifest(target, snapshot):
+    if target.name == 'install-manifest.json': raise OSError('simulated manifest failure')
+    original(target, snapshot)
+install._atomic_write = fail_manifest
+install.install(Path(sys.argv[1]))
+`
+  const failed = spawnSync("python3", ["-c", script, f.project], {
+    cwd: f.runtime,
+    env: { ...process.env, HOME: f.home, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 10000,
+  })
+  assert.notEqual(failed.status, 0)
+  assert.match(failed.stderr, /simulated manifest failure/)
+  assert.equal(fs.readFileSync(state, "utf8"), '{"enabled":true}\n')
+  success(invoke(f))
+  assert.equal(fs.readFileSync(state, "utf8"), '{\n  "enabled": false\n}\n')
+})
+
 test("routing restore rejects a managed file replaced by a symlink without touching its target", t => {
   const f = fixture(t)
   success(invoke(f))
