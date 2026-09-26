@@ -103,7 +103,11 @@ ACTIVATION_TTL_SECONDS = 300
 
 def _installed_cli(project):
     expected = project / ".claude/xpowers-routing/cli.py"
-    if Path(__file__).resolve(strict=True) != expected.resolve(strict=True):
+    try:
+        installed = Path(__file__).resolve(strict=True).samefile(expected)
+    except FileNotFoundError:
+        installed = False
+    if not installed:
         raise ValueError("Routing activation must run through the installed project CLI")
     return expected
 
@@ -155,10 +159,17 @@ def _issue_activation(project, payload, result):
         with install._locked(project):
             _profile_binding(project)
         raise ValueError("Installed routing guard cannot validate activation") from error
-    if not guard._control_command(tokens, project, session_id, pinned_only=True) or tokens[5] != "on":
+    if len(tokens) != 10 or tokens[5] != "on":
+        return result
+    project = common.resolve_project(project, require_origin=True)
+    if not guard._control_command(tokens, project, session_id, pinned_only=True):
         return result
     expected = _installed_cli(project)
-    if Path(tokens[4]).resolve(strict=True) != expected.resolve(strict=True):
+    try:
+        matching_cli = Path(tokens[4]).samefile(expected)
+    except FileNotFoundError:
+        matching_cli = False
+    if not matching_cli:
         return result
     import install
     with install._locked(project) as control:
@@ -223,11 +234,13 @@ def _activate(project, session_id, token):
     return config
 
 
-def _disable(project, session_id):
+def _disable(project, session_id, raw=False):
     import install
-    state_path = common.session_path(project, session_id)
-    proof_path = common.activation_path(project, session_id)
-    with install._locked(project) as control:
+    state_path = (common.raw_session_path(project, session_id) if raw
+                  else common.session_path(project, session_id))
+    proof_path = (common.raw_activation_path(project, session_id) if raw
+                  else common.activation_path(project, session_id))
+    with install._locked(project, raw=raw) as control:
         install._safe_target(state_path, control)
         install._safe_target(proof_path, control)
         state_snapshot = install._snapshot(state_path)
@@ -302,6 +315,7 @@ def main():
             result = guard.handle(data, project)
             print(json.dumps(_issue_activation(project, data, result)))
         elif args.action == "session-start":
+            project = common.resolve_project(project, require_origin=True)
             data = json.load(sys.stdin)
             if active(project, data.get("session_id")):
                 config = common.load_config(project)
@@ -310,14 +324,22 @@ def main():
             else:
                 print("{}")
         elif args.action == "off":
-            _disable(project, args.session)
+            try:
+                project = common.resolve_project(project, require_origin=True)
+            except (OSError, ValueError):
+                _disable(project, args.session, raw=True)
+            else:
+                _disable(project, args.session)
             print("XPowers routing is OFF for this session.")
         elif args.action == "on":
+            project = common.resolve_project(project, require_origin=True)
             config = _activate(project, args.session, args.hook_token)
             print(common.workflow(config))
         elif args.action == "status":
+            project = common.resolve_project(project, require_origin=True)
             print("ON" if active(project, args.session) else "OFF")
         elif args.action == "smoke":
+            project = common.resolve_project(project, require_origin=True)
             print(smoke(project, args.session))
     except (OSError, ValueError, TypeError, KeyError) as error:
         if args.action == "guard":

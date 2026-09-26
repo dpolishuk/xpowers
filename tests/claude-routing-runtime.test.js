@@ -291,6 +291,68 @@ test("reinstalling a changed profile disables enabled sessions", t => {
   assert.match(fresh.stdout, /maxTurns=81/)
 })
 
+test("case aliases share routing control state and ownership", t => {
+  const f = installedFixture(t)
+  const alias = path.join(path.dirname(f.project), path.basename(f.project).toUpperCase())
+  if (!fs.existsSync(alias)) return t.skip("Case sensitive filesystem")
+  const originalStat = fs.statSync(f.project)
+  const aliasStat = fs.statSync(alias)
+  if (originalStat.dev !== aliasStat.dev || originalStat.ino !== aliasStat.ino) return t.skip("Case alias is not the same directory")
+  const session = "case-alias-session"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const initial = JSON.parse(fs.readFileSync(f.manifest, "utf8"))
+  const installAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "install", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(installAlias)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const controls = fs.readdirSync(path.dirname(path.dirname(f.manifest))).filter(name => /^[0-9a-f]{24}$/.test(name))
+  assert.deepEqual(controls, [path.basename(path.dirname(f.manifest))])
+  assert.equal(JSON.parse(fs.readFileSync(f.manifest, "utf8")).installationId, initial.installationId)
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const offAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "off", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(offAlias)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+  const statusAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "status", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(statusAlias)
+  assert.equal(statusAlias.stdout.trim(), "OFF")
+  const restoreAlias = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "install", "--restore", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(restoreAlias)
+  assertSuccess(f.run(["install"]))
+})
+
+test("project identity ignores sibling and dangling symlinks", t => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-project-identity-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const project = path.join(dir, "Project")
+  const alias = path.join(dir, "project")
+  fs.mkdirSync(project)
+  if (!fs.existsSync(alias)) return t.skip("Case sensitive filesystem")
+  fs.symlinkSync(project, path.join(dir, "project-symlink"))
+  fs.symlinkSync(path.join(dir, "missing"), path.join(dir, "dangling-symlink"))
+  const result = spawnSync(cleanPython, ["-B", "-c", `import sys; sys.path.insert(0,${JSON.stringify(runtime)}); import common; print(common.resolve_project(sys.argv[1]))`, alias], {
+    encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(result)
+  assert.equal(fs.statSync(result.stdout.trim()).ino, fs.statSync(project).ino)
+  assert.equal(path.basename(result.stdout.trim()), "Project")
+  const origin = path.join(project, ".claude", "xpowers-routing", "install-origin.json")
+  fs.mkdirSync(path.dirname(origin), { recursive: true })
+  fs.writeFileSync(origin, JSON.stringify({ version: 1, project: alias, installationId: "a".repeat(32) }))
+  const legacy = spawnSync(cleanPython, ["-B", "-c", `import sys; sys.path.insert(0,${JSON.stringify(runtime)}); import common; print(common.resolve_project(sys.argv[1]))`, project], {
+    encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(legacy)
+  assert.equal(legacy.stdout.trim(), alias)
+})
+
 test("generated commands work through the guard after Claude substitutes the session ID", () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-commands-")))
   const project = path.join(dir, "project with spaces")
@@ -592,6 +654,58 @@ test("active live guard rejects a generated config FIFO while routing-off remain
   assert.equal(typeof rewritten, "string")
   assertSuccess(spawnSync("bash", ["-c", rewritten], { env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000 }))
   assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
+})
+
+test("missing legacy alias origin denies active guard while exact routing-off recovers", t => {
+  const f = installedFixture(t)
+  const alias = path.join(path.dirname(f.project), path.basename(f.project).toUpperCase())
+  if (!fs.existsSync(alias) || fs.statSync(alias).ino !== fs.statSync(f.project).ino) return t.skip("Case sensitive filesystem")
+  const session = "legacy-alias-off"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const aliasKey = crypto.createHash("sha256").update(alias).digest("hex").slice(0, 24)
+  const originalControl = path.dirname(f.manifest)
+  const aliasControl = path.join(path.dirname(originalControl), aliasKey)
+  fs.renameSync(originalControl, aliasControl)
+  fs.unlinkSync(path.join(f.runtime, "install-origin.json"))
+  const cli = path.join(f.runtime, "cli.py")
+  const ordinary = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-ordinary",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(ordinary)
+  assert.equal(JSON.parse(ordinary.stdout).hookSpecificOutput.permissionDecision, "deny")
+  const legacyOff = routingCommand(f.project, session, "routing-off").replaceAll(f.project, alias)
+  const off = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-off",
+      cwd: alias, tool_name: "Bash", tool_input: { command: legacyOff },
+    }),
+  })
+  assertSuccess(off)
+  assertSuccess(spawnSync("bash", ["-c", JSON.parse(off.stdout).hookSpecificOutput.updatedInput.command], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  }))
+  const sessionKey = crypto.createHash("sha256").update(session).digest("hex")
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(aliasControl, "sessions", `${sessionKey}.json`), "utf8")), { enabled: false })
+})
+
+test("ordinary active guard commands do not enter activation attestation", t => {
+  const f = installedFixture(t)
+  const session = "ordinary-guard"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const result = spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), "guard", "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "ordinary-tool",
+      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(result)
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, undefined)
 })
 
 test("installed activation rejects a guard that silently allows project writes", t => {

@@ -168,9 +168,67 @@ def _safe_regular_file(path, root):
         raise ValueError(f"Routing target is not a regular file: {path}")
 
 
-def control_dir(project):
+def resolve_project(project, require_origin=False):
+    """Use a verified same-directory origin spelling when one is installed."""
+    requested = Path(project).resolve(strict=True)
+    project = Path(requested.anchor)
+    for part in requested.parts[1:]:
+        candidate = project / part
+        try:
+            candidate_info = candidate.stat()
+            names = []
+            for entry in project.iterdir():
+                try:
+                    entry_info = entry.lstat()
+                    if (entry_info.st_dev, entry_info.st_ino) == (candidate_info.st_dev, candidate_info.st_ino):
+                        names.append(entry)
+                except FileNotFoundError:
+                    continue
+        except OSError as error:
+            raise ValueError(f"Cannot resolve routing project identity: {candidate}") from error
+        if len(names) != 1:
+            raise ValueError(f"Cannot resolve routing project identity: {candidate}")
+        project = names[0]
+    origin = project / ".claude/xpowers-routing/install-origin.json"
+    try:
+        origin.lstat()
+    except FileNotFoundError:
+        if require_origin and (project / ".claude/xpowers-routing/generated-config.json").exists():
+            raise ValueError("Routing installation origin is missing")
+        return project
+    _safe_regular_file(origin, project)
+    try:
+        value = json.loads(origin.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError("Invalid routing installation origin") from error
+    source = value.get("project") if isinstance(value, dict) else None
+    identity = value.get("installationId") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or value.get("version") != 1
+            or not isinstance(source, str) or not Path(source).is_absolute()
+            or not isinstance(identity, str) or len(identity) != 32
+            or any(char not in "0123456789abcdef" for char in identity)):
+        raise ValueError("Invalid routing installation origin")
+    source = Path(source)
+    try:
+        if source.resolve(strict=True) != source:
+            raise ValueError("Recorded routing origin resolves through a symlink")
+    except FileNotFoundError:
+        return project
+    try:
+        if source.samefile(project):
+            return source
+    except FileNotFoundError:
+        pass
+    return project
+
+
+def raw_control_dir(project):
     key = hashlib.sha256(os.fsencode(Path(project).resolve())).hexdigest()[:24]
     return Path.home() / ".claude" / "xpowers-routing" / key
+
+
+def control_dir(project):
+    return raw_control_dir(resolve_project(project))
 
 
 def session_path(project, session_id):
@@ -180,11 +238,25 @@ def session_path(project, session_id):
     return control_dir(project) / "sessions" / (key + ".json")
 
 
+def raw_session_path(project, session_id):
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
+        raise ValueError("A nonempty Claude session ID is required")
+    key = hashlib.sha256(session_id.encode()).hexdigest()
+    return raw_control_dir(project) / "sessions" / (key + ".json")
+
+
 def activation_path(project, session_id):
     if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
         raise ValueError("A nonempty Claude session ID is required")
     key = hashlib.sha256(session_id.encode()).hexdigest()
     return control_dir(project) / "activation-proofs" / (key + ".json")
+
+
+def raw_activation_path(project, session_id):
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
+        raise ValueError("A nonempty Claude session ID is required")
+    key = hashlib.sha256(session_id.encode()).hexdigest()
+    return raw_control_dir(project) / "activation-proofs" / (key + ".json")
 
 
 def atomic_json(path, value):

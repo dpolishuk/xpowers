@@ -154,9 +154,9 @@ def _invalidate_activation_proofs(control, plan):
 
 
 @contextlib.contextmanager
-def _locked(project):
-    control = common.control_dir(project)
-    if control.resolve().is_relative_to(project):
+def _locked(project, raw=False):
+    control = common.raw_control_dir(project) if raw else common.control_dir(project)
+    if not common._outside_project(control.resolve(), project):
         raise ValueError("Routing control state must live outside the project; choose a project below your home directory")
     # Do not follow user-replaced control directories or lock files.
     home = Path.home().absolute()
@@ -273,11 +273,11 @@ def _installation(project):
                 raise ValueError("Recorded routing origin now resolves through a symlink to another location. Remove the old-path symlink before reinstalling so the original ownership backup can be located safely")
             projects.add(origin_project)
         # Stable ordering permits concurrent installs/copies without inversion.
-        by_control = {common.control_dir(item).resolve(): item for item in projects}
+        by_control = {common.raw_control_dir(item).resolve(): item for item in projects}
         if len(by_control) != len(projects):
             raise ValueError("Routing origins resolve to the same control directory; restore their canonical paths before reinstalling")
         with contextlib.ExitStack() as stack:
-            controls = {by_control[path]: stack.enter_context(_locked(by_control[path])) for path in sorted(by_control, key=str)}
+            controls = {by_control[path]: stack.enter_context(_locked(by_control[path], raw=True)) for path in sorted(by_control, key=str)}
             current_hint = _origin_hint(project)
             if current_hint is not None and Path(current_hint["project"]) not in controls:
                 # Release before acquiring a newly discovered origin so all
@@ -383,7 +383,7 @@ def _managed_files(project, config, config_bytes, installation_id):
 
 
 def install(project: Path, preset=None):
-    project = Path(project).resolve(strict=True)
+    project = common.resolve_project(project)
     if not project.is_dir():
         raise ValueError("Project must be an existing directory")
     claude = project / ".claude"
@@ -467,7 +467,7 @@ def install(project: Path, preset=None):
 
 
 def restore(project: Path):
-    project = Path(project).resolve(strict=True)
+    project = common.resolve_project(project)
     claude = project / ".claude"
     _safe_target(claude, project)
     with _locked(project) as control:

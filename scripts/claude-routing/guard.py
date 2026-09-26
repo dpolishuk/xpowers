@@ -287,6 +287,7 @@ def handle(payload, project):
         except ValueError:
             pass
     try:
+        project = common.resolve_project(project, require_origin=True)
         state_path = common.session_path(project, session_id)
         try:
             state = json.loads(state_path.read_text())
