@@ -1,5 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const crypto = require("node:crypto")
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
@@ -284,6 +285,91 @@ test("index-only changes and ignored former tracked files make evidence stale", 
     assert.equal(runTm(fixture, ["acceptance", "run", "bd-head-union"]).status, 0)
     fs.writeFileSync(path.join(fixture.repo, "legacy.txt"), "legacy two\n")
     assert.equal(runTm(fixture, ["acceptance", "check", "bd-head-union"]).status, 1)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("semantic Git index flags make acceptance evidence stale", () => {
+  const fixture = makeFixture()
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-assume-unchanged"]).status, 0)
+    git(fixture.repo, "update-index", "--assume-unchanged", "app.txt")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-assume-unchanged"]).status, 1)
+    git(fixture.repo, "update-index", "--no-assume-unchanged", "app.txt")
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-skip-worktree"]).status, 0)
+    git(fixture.repo, "update-index", "--skip-worktree", "app.txt")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-skip-worktree"]).status, 1)
+    git(fixture.repo, "update-index", "--no-skip-worktree", "app.txt")
+
+    const empty = path.join(fixture.repo, "intent-empty.txt")
+    fs.writeFileSync(empty, "")
+    git(fixture.repo, "add", "-N", "intent-empty.txt")
+    const itaStage = git(fixture.repo, "ls-files", "--stage", "intent-empty.txt")
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-intent-to-add"]).status, 0)
+    git(fixture.repo, "add", "intent-empty.txt")
+    assert.equal(git(fixture.repo, "ls-files", "--stage", "intent-empty.txt"), itaStage)
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-intent-to-add"]).status, 1)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("semantic index flags for excluded task records do not stale evidence", () => {
+  const fixture = makeFixture()
+  try {
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "task-cache.txt"), "cache\n")
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "task-empty.txt"), "")
+    git(fixture.repo, "add", ".beads/task-cache.txt", ".beads/task-empty.txt")
+    git(fixture.repo, "commit", "-m", "add excluded task records")
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-excluded-index-flags"]).status, 0)
+
+    git(fixture.repo, "update-index", "--assume-unchanged", ".beads/task-cache.txt")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-excluded-index-flags"]).status, 0)
+    git(fixture.repo, "update-index", "--no-assume-unchanged", ".beads/task-cache.txt")
+    git(fixture.repo, "update-index", "--skip-worktree", ".beads/task-cache.txt")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-excluded-index-flags"]).status, 0)
+    git(fixture.repo, "update-index", "--no-skip-worktree", ".beads/task-cache.txt")
+    git(fixture.repo, "rm", "--cached", ".beads/task-empty.txt")
+    git(fixture.repo, "add", "-N", ".beads/task-empty.txt")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-excluded-index-flags"]).status, 0)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("symbolic and detached HEAD identity make acceptance evidence stale", () => {
+  const fixture = makeFixture()
+  const originalBranch = git(fixture.repo, "branch", "--show-current")
+  try {
+    git(fixture.repo, "branch", "acceptance-same-tip")
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-symbolic-head"]).status, 0)
+    git(fixture.repo, "switch", "acceptance-same-tip")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-symbolic-head"]).status, 1)
+
+    git(fixture.repo, "switch", originalBranch)
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-detached-head"]).status, 0)
+    git(fixture.repo, "switch", "--detach")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-detached-head"]).status, 1)
+  } finally {
+    run("git", ["switch", originalBranch], { cwd: fixture.repo })
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("a same-tip branch switch during checks invalidates the run", () => {
+  const fixture = makeFixture()
+  try {
+    git(fixture.repo, "branch", "acceptance-switch-during-check")
+    writePolicy(fixture, [{
+      id: "switch-branch",
+      command: ["git", "switch", "acceptance-switch-during-check"],
+      timeoutMs: 5000,
+    }])
+    const accepted = runTm(fixture, ["acceptance", "run", "bd-switch-during-check"])
+    assert.equal(accepted.status, 1)
+    assert.match(accepted.stderr, /worktree or policy changed while acceptance checks ran/i)
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
   }
@@ -637,6 +723,40 @@ test("a receipt with an altered snapshot manifest is internally inconsistent", (
   }
 })
 
+test("receipts missing symbolic HEAD or semantic index flags are corrupt even with a matching fingerprint", () => {
+  const fixture = makeFixture()
+  try {
+    for (const [task, mutate] of [
+      ["bd-missing-head-state", (snapshot) => { delete snapshot.identity.headState }],
+      ["bd-missing-index-flags", (snapshot) => { delete snapshot.index[0].flags.intentToAdd }],
+    ]) {
+      assert.equal(runTm(fixture, ["acceptance", "run", task]).status, 0)
+      const gitDir = git(fixture.repo, "rev-parse", "--absolute-git-dir")
+      const receiptPath = path.join(gitDir, "xpowers", "acceptance-v1", `${crypto.createHash("sha256").update(task).digest("hex")}.json`)
+      const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"))
+      mutate(receipt.snapshot)
+      const payload = {
+        runtimeVersion: receipt.snapshot.runtimeVersion,
+        identity: receipt.snapshot.identity,
+        policyFingerprint: receipt.snapshot.policyFingerprint,
+        index: receipt.snapshot.index,
+        directories: receipt.snapshot.directories,
+        files: receipt.snapshot.files,
+      }
+      receipt.snapshot.fingerprint = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+      fs.writeFileSync(receiptPath, JSON.stringify(receipt))
+      fs.writeFileSync(fixture.backendLog, "")
+
+      const closed = runTm(fixture, ["close", task])
+      assert.equal(closed.status, 1)
+      assert.match(closed.stderr, /malformed or corrupt/i)
+      assert.deepEqual(backendCalls(fixture), [])
+    }
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("unsafe close-capable command forms are refused without backend dispatch", () => {
   const commands = [
     ["close"],
@@ -870,6 +990,45 @@ test("an interrupted run leaves the latest receipt ineligible", async () => {
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true })
     }
+  }
+})
+
+test("a signal queued when the lock is created invalidates an older passing receipt", () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "signal-after-lock.cjs")
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-lock-signal"]).status, 0)
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const originalRenameSync = fs.renameSync",
+      "let signaled = false",
+      "fs.renameSync = function(source, target) {",
+      "  const result = originalRenameSync.apply(this, arguments)",
+      "  const ownerSuffix = `${path.sep}acceptance-v1${path.sep}lock${path.sep}owner.json`",
+      "  if (!signaled && String(target).endsWith(ownerSuffix)) {",
+      "    signaled = true",
+      "    process.nextTick(() => process.kill(process.pid, 'SIGTERM'))",
+      "  }",
+      "  return result",
+      "}",
+      "",
+    ].join("\n"))
+
+    const rerun = runTm(fixture, ["acceptance", "run", "bd-lock-signal"], {
+      env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim() },
+    })
+    assert.equal(rerun.status, 143, rerun.stderr)
+
+    const checked = runTm(fixture, ["acceptance", "check", "bd-lock-signal"])
+    assert.equal(checked.status, 1)
+    assert.doesNotMatch(checked.stderr, /acceptance state is locked/i)
+    assert.match(checked.stderr, /latest acceptance run is interrupted/i)
+    fs.writeFileSync(fixture.backendLog, "")
+    assert.equal(runTm(fixture, ["close", "bd-lock-signal"]).status, 1)
+    assert.deepEqual(backendCalls(fixture), [])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
   }
 })
 

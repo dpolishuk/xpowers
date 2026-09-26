@@ -93,6 +93,25 @@ function gitOutput(root, args, options = {}) {
   }
 }
 
+function gitHeadState(root) {
+  try {
+    const ref = execFileSync("git", ["symbolic-ref", "--quiet", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim()
+    if (!ref.startsWith("refs/") || ref.includes("\0")) fail("Git returned an unsupported symbolic HEAD")
+    return { type: "symbolic", ref }
+  } catch (error) {
+    if (error instanceof AcceptanceError) throw error
+    if (error.status === 1) return { type: "detached" }
+    const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr || "")
+    fail(`Git symbolic HEAD inspection failed: ${stderr.trim() || error.message}`)
+  }
+}
+
 function resolveGitContext(requestedRoot) {
   for (const name of FORBIDDEN_GIT_ENV) {
     if (process.env[name]) fail(`${name} is unsupported while acceptance policy is enabled`)
@@ -110,7 +129,8 @@ function resolveGitContext(requestedRoot) {
   const context = { root, gitDir, commonDir }
   assertNoTaskRedirect(context)
   const head = gitOutput(root, ["rev-parse", "--verify", "HEAD"]).trim()
-  return { ...context, head }
+  const headState = gitHeadState(root)
+  return { ...context, head, headState }
 }
 
 function lstatSafe(file) {
@@ -378,6 +398,44 @@ function parseNul(buffer) {
   return values
 }
 
+function parseTaggedIndex(buffer) {
+  const entries = new Map()
+  for (const value of parseNul(buffer)) {
+    if (value.length < 3 || value[1] !== " ") fail("Git returned unsupported index flags")
+    const tag = value[0]
+    const relative = value.slice(2)
+    if (!/^[A-Za-z?]$/.test(tag) || !relative || entries.has(relative)) fail("Git returned unsupported index flags")
+    entries.set(relative, {
+      assumeUnchanged: tag !== tag.toUpperCase(),
+      skipWorktree: tag.toUpperCase() === "S",
+    })
+  }
+  return entries
+}
+
+function parseRawDiff(buffer) {
+  const values = parseNul(buffer)
+  if (values.length % 2 !== 0) fail("Git returned an unsupported raw index diff")
+  const entries = new Map()
+  for (let index = 0; index < values.length; index += 2) {
+    const descriptor = values[index]
+    const relative = values[index + 1]
+    if (!/^:\d{6} \d{6} [0-9a-f]+ [0-9a-f]+ [A-Z]$/.test(descriptor) || !relative || entries.has(relative)) {
+      fail("Git returned an unsupported raw index diff")
+    }
+    if (!isExcluded(relative)) entries.set(relative, descriptor)
+  }
+  return entries
+}
+
+function intentToAddPaths(root) {
+  const commonArgs = ["diff", "--cached", "--raw", "-z", "--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv"]
+  const visible = parseRawDiff(gitOutput(root, [...commonArgs, "--ita-visible-in-index", "--"], { encoding: null }))
+  const invisible = parseRawDiff(gitOutput(root, [...commonArgs, "--ita-invisible-in-index", "--"], { encoding: null }))
+  const paths = new Set([...visible.keys(), ...invisible.keys()])
+  return new Set([...paths].filter((relative) => visible.get(relative) !== invisible.get(relative)))
+}
+
 function isExcluded(relative) {
   return relative === ".beads" || relative.startsWith(".beads/")
 }
@@ -471,7 +529,10 @@ function fingerprintResolvedTarget(context, target, label) {
 function createSnapshot(context, policyFingerprint) {
   assertNoTaskRedirect(context)
   const currentHead = gitOutput(context.root, ["rev-parse", "--verify", "HEAD"]).trim()
+  const currentHeadState = gitHeadState(context.root)
   const indexEntries = parseNul(gitOutput(context.root, ["ls-files", "-z", "--stage"], { encoding: null }))
+  const taggedIndex = parseTaggedIndex(gitOutput(context.root, ["ls-files", "-v", "-z", "--cached"], { encoding: null }))
+  const intentPaths = intentToAddPaths(context.root)
   const index = []
   const paths = new Set()
   for (const entry of indexEntries) {
@@ -482,9 +543,23 @@ function createSnapshot(context, policyFingerprint) {
     const stage = Number(stageText)
     if (stage !== 0) fail(`unresolved Git index entry is unsupported: ${relative}`)
     if (mode === "160000") fail(`Git submodules are unsupported by acceptance snapshots: ${relative}`)
-    index.push({ mode, object, stage, path: relative })
+    const flags = taggedIndex.get(relative)
+    if (!flags) fail(`Git index flags are missing for ${relative}`)
+    index.push({
+      mode,
+      object,
+      stage,
+      path: relative,
+      flags: { ...flags, intentToAdd: intentPaths.has(relative) },
+    })
+    taggedIndex.delete(relative)
+    intentPaths.delete(relative)
     paths.add(relative)
   }
+  for (const relative of taggedIndex.keys()) {
+    if (!isExcluded(relative)) fail(`Git index entry is missing for ${relative}`)
+  }
+  if (intentPaths.size > 0) fail(`Git intent-to-add entry is missing from the index: ${[...intentPaths][0]}`)
 
   for (const relative of parseNul(gitOutput(context.root, ["ls-tree", "-rz", "--name-only", "HEAD"], { encoding: null }))) {
     if (!isExcluded(relative)) paths.add(relative)
@@ -543,6 +618,7 @@ function createSnapshot(context, policyFingerprint) {
     gitDir: context.gitDir,
     commonDir: context.commonDir,
     head: currentHead,
+    headState: currentHeadState,
   }
   const payload = { runtimeVersion: RUNTIME_VERSION, identity, policyFingerprint, index, directories, files }
   assertNoTaskRedirect(context)
@@ -703,7 +779,13 @@ function pendingRecord(context, operation) {
     status: "pending",
     operation,
     startedAt: new Date().toISOString(),
-    gitIdentity: { root: context.root, gitDir: context.gitDir, commonDir: context.commonDir, head: context.head },
+    gitIdentity: {
+      root: context.root,
+      gitDir: context.gitDir,
+      commonDir: context.commonDir,
+      head: context.head,
+      headState: context.headState,
+    },
   }
 }
 
@@ -714,8 +796,47 @@ function failedRecord(context, operation, reason, checks = []) {
     finishedAt: new Date().toISOString(),
     reason,
     checks,
-    gitIdentity: { root: context.root, gitDir: context.gitDir, commonDir: context.commonDir, head: context.head },
+    gitIdentity: {
+      root: context.root,
+      gitDir: context.gitDir,
+      commonDir: context.commonDir,
+      head: context.head,
+      headState: context.headState,
+    },
   }
+}
+
+function validHeadState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const keys = Object.keys(value).sort()
+  if (value.type === "detached") return keys.length === 1 && keys[0] === "type"
+  return value.type === "symbolic" && keys.length === 2 && keys[0] === "ref" && keys[1] === "type" &&
+    typeof value.ref === "string" && value.ref.startsWith("refs/") && !value.ref.includes("\0")
+}
+
+function validSnapshotIdentity(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) return false
+  const keys = Object.keys(identity).sort()
+  return keys.length === 5 && keys.join(",") === "commonDir,gitDir,head,headState,root" &&
+    typeof identity.root === "string" && typeof identity.gitDir === "string" &&
+    typeof identity.commonDir === "string" && typeof identity.head === "string" &&
+    validHeadState(identity.headState)
+}
+
+function validSnapshotIndex(index) {
+  if (!Array.isArray(index)) return false
+  return index.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false
+    const keys = Object.keys(entry).sort()
+    if (keys.join(",") !== "flags,mode,object,path,stage") return false
+    const flags = entry.flags
+    if (!flags || typeof flags !== "object" || Array.isArray(flags)) return false
+    const flagKeys = Object.keys(flags).sort()
+    return flagKeys.join(",") === "assumeUnchanged,intentToAdd,skipWorktree" &&
+      typeof flags.assumeUnchanged === "boolean" && typeof flags.skipWorktree === "boolean" &&
+      typeof flags.intentToAdd === "boolean" && typeof entry.mode === "string" &&
+      typeof entry.object === "string" && entry.stage === 0 && typeof entry.path === "string"
+  })
 }
 
 async function runAcceptance(task, context, storage) {
@@ -791,7 +912,8 @@ function checkEligibility(task, context, storage) {
   if (receipt.policyFingerprint !== loaded.fingerprint) fail("acceptance evidence is stale: policy changed")
   if (!receipt.snapshot || typeof receipt.snapshot !== "object" || receipt.snapshot.runtimeVersion !== RUNTIME_VERSION ||
       typeof receipt.snapshot.fingerprint !== "string" || receipt.snapshot.policyFingerprint !== loaded.fingerprint ||
-      !receipt.snapshot.identity || !Array.isArray(receipt.snapshot.index) || !Array.isArray(receipt.snapshot.directories) ||
+      !validSnapshotIdentity(receipt.snapshot.identity) || !validSnapshotIndex(receipt.snapshot.index) ||
+      !Array.isArray(receipt.snapshot.directories) ||
       !Array.isArray(receipt.snapshot.files)) {
     fail("acceptance receipt is malformed or corrupt")
   }
@@ -849,11 +971,11 @@ async function main() {
   let releaseLock = true
   try {
     release = acquireLock(storage, operation, args)
-    await observeOperation(operation)
     if (operation === "run") {
       await runAcceptance(args[0], context, storage)
       return 0
     }
+    await observeOperation(operation)
     if (operation === "check") {
       const snapshot = checkEligibility(args[0], context, storage)
       await observeOperation("acceptance check")
