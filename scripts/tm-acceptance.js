@@ -136,6 +136,7 @@ function atomicWriteJson(target, value) {
   if (Buffer.byteLength(serialized) > MAX_RECEIPT_BYTES) fail("acceptance receipt exceeds size limit")
   const temporary = `${target}.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`
   let descriptor
+  let failure
   try {
     descriptor = fs.openSync(temporary, "wx", 0o600)
     fs.writeFileSync(descriptor, serialized, "utf8")
@@ -146,10 +147,16 @@ function atomicWriteJson(target, value) {
     fs.chmodSync(target, 0o600)
     const directory = fs.openSync(path.dirname(target), "r")
     try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-  } finally {
-    if (descriptor !== undefined) fs.closeSync(descriptor)
-    try { fs.unlinkSync(temporary) } catch (error) { if (error.code !== "ENOENT") throw error }
+  } catch (error) {
+    failure = error
   }
+  if (descriptor !== undefined) {
+    try { fs.closeSync(descriptor) } catch (error) { if (!failure) failure = error }
+  }
+  try { fs.unlinkSync(temporary) } catch (error) {
+    if (error.code !== "ENOENT" && !failure) failure = error
+  }
+  if (failure) throw failure
 }
 
 function acquireLock(storage, operation, tasks) {
