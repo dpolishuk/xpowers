@@ -99,7 +99,12 @@ def _profile_binding(project):
 
 def _issue_activation(project, payload, result):
     """Attest an exact live PreToolUse observation without changing policy."""
-    if result != {} or payload.get("hook_event_name") != "PreToolUse":
+    if not isinstance(payload, dict):
+        return result
+    output = result.get("hookSpecificOutput") if isinstance(result, dict) else None
+    updated_input = output.get("updatedInput") if isinstance(output, dict) else None
+    if (payload.get("hook_event_name") != "PreToolUse" or (result != {} and not isinstance(updated_input, dict))
+            or isinstance(output, dict) and output.get("permissionDecision") is not None):
         return result
     session_id = payload.get("session_id")
     tool_use_id = payload.get("tool_use_id")
@@ -113,7 +118,7 @@ def _issue_activation(project, payload, result):
         return result
     import guard
     try:
-        tokens = guard._tokens(tool_input.get("command"))
+        tokens = guard._tokens(updated_input.get("command") if isinstance(updated_input, dict) else tool_input.get("command"))
     except ValueError:
         return result
     except AttributeError as error:
@@ -123,10 +128,10 @@ def _issue_activation(project, payload, result):
         with install._locked(project):
             _profile_binding(project)
         raise ValueError("Installed routing guard cannot validate activation") from error
-    if not guard._control_command(tokens, project, session_id) or tokens[2] != "on":
+    if not guard._control_command(tokens, project, session_id, pinned_only=True) or tokens[5] != "on":
         return result
     expected = _installed_cli(project)
-    if Path(tokens[1]).resolve(strict=True) != expected.resolve(strict=True):
+    if Path(tokens[4]).resolve(strict=True) != expected.resolve(strict=True):
         return result
     import install
     with install._locked(project) as control:
@@ -145,8 +150,8 @@ def _issue_activation(project, payload, result):
             "issuedAt": time.time(),
         }
         install._commit({proof_path: install._content(install._json_bytes(receipt), 0o600)})
-    updated = dict(tool_input)
-    updated["command"] = tool_input["command"] + " --hook-token " + token
+    updated = dict(updated_input) if isinstance(updated_input, dict) else dict(tool_input)
+    updated["command"] = updated["command"] + " --hook-token " + token
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}
 
 

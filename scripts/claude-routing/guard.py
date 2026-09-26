@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import sys
 
 import common
 
@@ -77,6 +78,17 @@ def _protected(paths, project):
     controls.extend(project / ".claude" / "agents" / f"{PREFIX}{role}.md" for role in DELEGATES | {"coordinator"})
     controls.extend(project / ".claude" / "commands" / name for name in
                     ("routing-on.md", "routing-off.md", "routing-smoke-test.md"))
+    controls.extend(common.trusted_command_aliases())
+    for name in common.TRUSTED_SHELL_COMMANDS:
+        try:
+            controls.append(common.resolve_trusted_command(name, project))
+        except (OSError, ValueError):
+            pass
+    controls.append(Path(sys.executable).absolute())
+    try:
+        controls.append(common.pinned_python(project))
+    except (OSError, ValueError):
+        pass
     return any(_contains_either(paths, control) for control in controls)
 
 
@@ -174,38 +186,61 @@ def _readonly_command(arguments):
     if command == "rg":
         if not options or options[0] != "--no-config":
             return False
-        executing = {"--pre", "--pre-glob", "--hostname-bin"}
+        executing = {"--pre", "--pre-glob", "--hostname-bin", "--search-zip", "-z"}
         if any(
-            option.startswith("--") and option != "--"
-            and any(flag.startswith(option.split("=", 1)[0]) for flag in executing)
+            (option.startswith("--") and option != "--" and any(flag.startswith(option.split("=", 1)[0]) for flag in executing if flag.startswith("--")))
+            or (option.startswith("-") and not option.startswith("--") and "z" in option[1:])
             for option in options[1:]
         ):
             return False
     return True
 
 
-def _control_command(tokens, project, session_id):
-    if len(tokens) != 7 or tokens[0] != "python3":
+def _control_command(tokens, project, session_id, pinned_only=False):
+    expected = project / ".claude" / "xpowers-routing" / "cli.py"
+    modern = (len(tokens) == 10 and tokens[0] == str(common.pinned_python(project))
+              and tokens[1:4] == ["-E", "-S", "-B"] and Path(tokens[4]) == expected
+              and tokens[5] in {"on", "off", "smoke", "status"}
+              and tokens[6] == "--project" and Path(tokens[7]) == project
+              and tokens[8] == "--session" and tokens[9] == session_id)
+    if modern:
+        return True
+    if pinned_only or len(tokens) != 7 or tokens[0] != "python3":
         return False
     if tokens[2] not in {"on", "off", "smoke", "status"}:
         return False
     if tokens[3] != "--project" or tokens[5] != "--session" or tokens[6] != session_id:
         return False
-    expected = project / ".claude" / "xpowers-routing" / "cli.py"
     return Path(tokens[1]) == expected and Path(tokens[4]) == project
+
+
+def _rewrite_control(tokens, project, session_id):
+    if not _control_command(tokens, project, session_id):
+        return None
+    if len(tokens) == 10:
+        return " ".join(shlex.quote(token) for token in tokens)
+    return " ".join([shlex.quote(str(common.pinned_python(project))), "-E", "-S", "-B",
+                      shlex.quote(tokens[1]), shlex.quote(tokens[2]), "--project",
+                      shlex.quote(tokens[4]), "--session", shlex.quote(tokens[6])])
 
 
 def _shell_allowed(command, project, session_id, allow_control):
     tokens = _tokens(command)
     if allow_control and _control_command(tokens, project, session_id):
-        return True
+        return _rewrite_control(tokens, project, session_id)
     segments = [[]]
     for token in tokens:
         if token == "|":
             segments.append([])
         else:
             segments[-1].append(token)
-    return all(_readonly_command(segment) for segment in segments)
+    if not all(_readonly_command(segment) for segment in segments):
+        return None
+    rewritten = []
+    for segment in segments:
+        executable = shlex.quote(str(common.resolve_trusted_command(segment[0], project)))
+        rewritten.append(executable + (" " + " ".join(shlex.quote(token) for token in segment[1:]) if len(segment) > 1 else ""))
+    return " | ".join(rewritten)
 
 
 def _dispatch(tool_input, config):
@@ -234,8 +269,11 @@ def handle(payload, project):
     if payload.get("tool_name") == "Bash" and not payload.get("agent_id") and isinstance(payload.get("tool_input"), dict):
         try:
             tokens = _tokens(payload["tool_input"].get("command"))
-            if _control_command(tokens, project, session_id) and tokens[2] == "off":
-                return {}
+            action = tokens[5] if len(tokens) == 10 else tokens[2] if len(tokens) == 7 else None
+            if _control_command(tokens, project, session_id) and action == "off":
+                updated = dict(payload["tool_input"])
+                updated["command"] = _rewrite_control(tokens, project, session_id)
+                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}
         except ValueError:
             pass
     try:
@@ -291,8 +329,11 @@ def handle(payload, project):
         if role in {"worker", "senior", "verifier"}:
             return {}
         try:
-            if _shell_allowed(tool_input.get("command"), project, session_id, role == "coordinator"):
-                return {}
+            rewritten = _shell_allowed(tool_input.get("command"), project, session_id, role == "coordinator")
+            if rewritten:
+                updated = dict(tool_input)
+                updated["command"] = rewritten
+                return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}
         except ValueError:
             pass
         return deny("Only explicit read-only shell queries are allowed; delegate implementation or tests to the configured agent")

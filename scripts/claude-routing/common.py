@@ -6,11 +6,62 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
+import sys
 import tempfile
 
 ROLES = ("coordinator", "explorer", "worker", "verifier", "senior", "reviewer")
 PRESETS = ("opus", "fable-review", "fable-coordinator")
 MIN_CLAUDE_VERSION = "2.1.280"
+TRUSTED_HOST_DIRS = tuple(Path(value) for value in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
+TRUSTED_SHELL_COMMANDS = ("pwd", "ls", "cat", "rg", "grep", "head", "tail", "wc", "git")
+
+
+def trusted_command_aliases(names=TRUSTED_SHELL_COMMANDS):
+    return tuple(directory / name for directory in TRUSTED_HOST_DIRS for name in names)
+
+
+def _outside_project(path, project):
+    try:
+        path.relative_to(Path(project).resolve())
+        return False
+    except ValueError:
+        for ancestor in (path, *path.parents):
+            try:
+                if ancestor.samefile(Path(project).resolve()):
+                    return False
+            except FileNotFoundError:
+                continue
+        return True
+
+
+def resolve_trusted_command(name, project):
+    """Resolve only fixed host aliases; never consult ambient PATH."""
+    if name not in TRUSTED_SHELL_COMMANDS:
+        raise ValueError("Unsupported trusted shell command")
+    for alias in trusted_command_aliases((name,)):
+        try:
+            info = alias.stat()
+            target = alias.resolve(strict=True)
+            target_info = target.stat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(target_info.st_mode)
+                or not os.access(alias, os.X_OK) or not os.access(target, os.X_OK)
+                or not _outside_project(alias, project) or not _outside_project(target, project)):
+            raise ValueError("Trusted shell executable is unsafe")
+        return target
+    raise ValueError("Trusted shell executable is unavailable")
+
+
+def pinned_python(project):
+    alias = Path(sys.executable).absolute()
+    target = alias.resolve(strict=True)
+    if (not stat.S_ISREG(alias.stat().st_mode) or not stat.S_ISREG(target.stat().st_mode)
+            or not os.access(alias, os.X_OK) or not os.access(target, os.X_OK)
+            or not _outside_project(alias, project) or not _outside_project(target, project)):
+        raise ValueError("Python executable is not a trusted host executable")
+    return target
 
 
 def preset_config(name="opus"):

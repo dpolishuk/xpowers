@@ -168,6 +168,18 @@ Every coordinator, explorer, or reviewer ripgrep query must use exact
 preprocessor. Explicit preprocessor and hostname-program options remain denied.
 Delegate unsupported searches rather than moving or removing `--no-config`.
 
+Accepted shell queries are rewritten by the hook to absolute executables resolved
+only from `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`; the hook
+never searches the ambient `PATH`. If an allowed program is absent from those host
+locations, the query is denied and must be delegated. The hook also rejects ripgrep
+`-z`/`--search-zip`, because those modes can start decompression helpers. Generated
+hooks and routing controls pin the installer-selected Python executable with
+`-E -S -B`, so `PYTHONPATH` and startup-site customizations do not alter them.
+
+This trusts installed operating-system and Homebrew host software plus shell startup
+files. It is not protection against a same-user administrator, a compromised host,
+or an OS sandbox escape.
+
 Subagents are identified by Claude's `agent_id`, not just `agent_type`. A main
 session started with `--agent` therefore cannot acquire worker write access.
 Workers and seniors can edit source; verifiers run checks and report defects;

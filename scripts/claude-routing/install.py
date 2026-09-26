@@ -236,7 +236,7 @@ def _origin_hint(project):
                         or argv[3] != "--project" or not Path(argv[4]).is_absolute()):
                     continue
                 candidate = Path(argv[4])
-                expected = _hook_entries(candidate)
+                expected = _legacy_hook_entries(candidate)
                 if all(value in settings.get("hooks", {}).get(key, []) for key, value in expected.items()):
                     candidates.add(str(candidate))
     if len(candidates) != 1:
@@ -292,6 +292,16 @@ def _installation(project):
 
 def _hook_entries(project):
     cli = project / ".claude" / "xpowers-routing" / "cli.py"
+    invocation = f"{shlex.quote(str(common.pinned_python(project)))} -E -S -B {shlex.quote(str(cli))}"
+    target = f"--project {shlex.quote(str(project))}"
+    return {
+        "PreToolUse": {"matcher": ".*", "hooks": [{"type": "command", "command": f"{invocation} guard {target}", "timeout": 5}]},
+        "SessionStart": {"hooks": [{"type": "command", "command": f"{invocation} session-start {target}", "timeout": 5}]},
+    }
+
+
+def _legacy_hook_entries(project):
+    cli = project / ".claude" / "xpowers-routing" / "cli.py"
     invocation = f"python3 {shlex.quote(str(cli))}"
     target = f"--project {shlex.quote(str(project))}"
     return {
@@ -334,7 +344,7 @@ def _command(name, action, project):
     cli = project / ".claude" / "xpowers-routing" / "cli.py"
     # Claude substitutes this placeholder in command content before Bash runs;
     # it does not depend on an exported CLAUDE_SESSION_ID shell variable.
-    invocation = (f"python3 {shlex.quote(str(cli))} {action} "
+    invocation = (f"{shlex.quote(str(common.pinned_python(project)))} -E -S -B {shlex.quote(str(cli))} {action} "
                   f'--project {shlex.quote(str(project))} --session "${{CLAUDE_SESSION_ID}}"')
     lines = ["---", f"description: {descriptions[action]}", "disable-model-invocation: true", "---", "",
              "Run the following command with Bash and report its result:", "", "```bash", invocation, "```", ""]
@@ -391,13 +401,20 @@ def install(project: Path, preset=None):
         _check_owned_hooks(settings, owned_hooks)
         before_settings = _snapshot(settings_path)
         hooks = settings.setdefault("hooks", {})
+        current_hooks = _hook_entries(project)
+        # Upgrade exact manifest-owned legacy bare-python hooks without touching
+        # adjacent user hooks. Origin discovery above only recognizes that legacy shape.
+        for event, entry in list(owned_hooks.items()):
+            if entry != current_hooks[event]:
+                hooks[event].remove(entry)
+                owned_hooks.pop(event)
         if relocated:
             # Only exact entries recorded as ours may be removed. Other hooks,
             # including commands mentioning the previous path, stay untouched.
             for event, entry in owned_hooks.items():
                 hooks[event].remove(entry)
             owned_hooks = {}
-        for event, entry in _hook_entries(project).items():
+        for event, entry in current_hooks.items():
             entries = hooks.setdefault(event, [])
             if entry not in entries:
                 entries.append(entry)

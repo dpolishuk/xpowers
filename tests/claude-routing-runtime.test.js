@@ -7,6 +7,9 @@ const crypto = require("node:crypto")
 const { spawn, spawnSync } = require("node:child_process")
 
 const runtime = path.resolve(__dirname, "../scripts/claude-routing")
+const cleanPython = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
+  env: { ...process.env, PYTHONPATH: "" }, encoding: "utf8",
+}).stdout.trim()
 
 function installedFixture(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-integrity-")))
@@ -88,6 +91,14 @@ test("routing presets assign independent verification and native turn budgets", 
   assert.equal(cfg.roles.reviewer.effort, "high")
   assert.equal(cfg.review.afterSeniorExhaustion, true)
   assert.deepEqual(cfg.review.riskTags, ["money", "concurrency", "data-migration"])
+})
+
+test("guard action preserves a structured denial for non-object JSON payloads", () => {
+  const result = spawnSync("python3", ["-B", path.join(runtime, "cli.py"), "guard", "--project", os.tmpdir()], {
+    input: "[]", encoding: "utf8", timeout: 10000,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny")
 })
 
 test("Fable presets change only the requested role", () => {
@@ -265,10 +276,18 @@ test("generated commands work through the guard after Claude substitutes the ses
   // Local command content is substituted by Claude before Bash/PreToolUse.
   // A conflicting shell environment must never select the session instead.
   const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: path.join(home, ".claude"), CLAUDE_SESSION_ID: "different-shell-session" }
-  const invoke = (file, args, input) => spawnSync(file, args, { env, cwd: project, input, encoding: "utf8", timeout: 10000 })
+  const invoke = (file, args, input) => spawnSync(file === "python3" ? cleanPython : file, args, { env, cwd: project, input, encoding: "utf8", timeout: 10000 })
   try {
     const installed = invoke("python3", ["-B", path.join(runtime, "cli.py"), "install", "--project", project])
     assert.equal(installed.status, 0, installed.stderr)
+    const poisoned = path.join(dir, "poisoned-bin")
+    const site = path.join(dir, "site")
+    const sentinel = path.join(dir, "python-startup-hit")
+    fs.mkdirSync(poisoned)
+    fs.mkdirSync(site)
+    fs.writeFileSync(path.join(poisoned, "python3"), `#!/bin/sh\nprintf hit > ${JSON.stringify(sentinel)}\nexit 99\n`, { mode: 0o700 })
+    fs.writeFileSync(path.join(site, "sitecustomize.py"), `open(${JSON.stringify(sentinel)}, 'w').write('hit')\n`)
+    const executionEnv = { ...env, PATH: `${poisoned}${path.delimiter}${env.PATH}`, PYTHONPATH: site }
     const cli = path.join(project, ".claude/xpowers-routing/cli.py")
     const guard = (command, toolUseId) => {
       const result = invoke("python3", ["-B", cli, "guard", "--project", project], JSON.stringify({
@@ -293,17 +312,39 @@ test("generated commands work through the guard after Claude substitutes the ses
         assert.equal(decision.hookSpecificOutput.permissionDecision, undefined)
         assert.match(decision.hookSpecificOutput.updatedInput.command, /--hook-token/)
       } else {
-        assert.deepEqual(decision, {}, name)
+        assert.equal(decision.hookSpecificOutput?.permissionDecision, undefined, name)
+        assert.equal(typeof decision.hookSpecificOutput?.updatedInput?.command, "string", name)
       }
-      const result = invoke("bash", ["-c", decision.hookSpecificOutput?.updatedInput?.command || command])
+      const result = spawnSync("bash", ["-c", decision.hookSpecificOutput?.updatedInput?.command || command], {
+        env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+      })
       assert.equal(result.status, 0, `${name}: ${result.stderr}`)
       if (name === "routing-smoke-test") assert.match(result.stdout, /PASS/)
       if (name === "routing-on") {
+        const hooks = JSON.parse(fs.readFileSync(path.join(project, ".claude/settings.json"), "utf8")).hooks
+        const preTool = hooks.PreToolUse[0].hooks[0].command
+        const preToolResult = spawnSync("bash", ["-c", preTool], {
+          env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+          input: JSON.stringify({
+            hook_event_name: "PreToolUse", session_id: session, tool_use_id: "exact-generated-hook",
+            cwd: project, tool_name: "Bash", tool_input: { command: "pwd" },
+          }),
+        })
+        assert.equal(preToolResult.status, 0, preToolResult.stderr)
+        assert.equal(typeof JSON.parse(preToolResult.stdout).hookSpecificOutput.updatedInput.command, "string")
+        const sessionStart = hooks.SessionStart[0].hooks[0].command
+        const sessionStartResult = spawnSync("bash", ["-c", sessionStart], {
+          env: executionEnv, cwd: project, encoding: "utf8", timeout: 10000,
+          input: JSON.stringify({ session_id: session, cwd: project }),
+        })
+        assert.equal(sessionStartResult.status, 0, sessionStartResult.stderr)
+        assert.equal(typeof JSON.parse(sessionStartResult.stdout).hookSpecificOutput.additionalContext, "string")
         for (const invalid of [template("routing-off"), template("routing-off").replaceAll("${CLAUDE_SESSION_ID}", "other-session")]) {
           assert.equal(guard(invalid, "tool-invalid").hookSpecificOutput.permissionDecision, "deny")
         }
       }
     }
+    assert.equal(fs.existsSync(sentinel), false)
     const status = invoke("python3", ["-B", cli, "status", "--project", project, "--session", session])
     assert.equal(status.status, 0, status.stderr)
     assert.equal(status.stdout.trim(), "OFF")

@@ -3,15 +3,28 @@ const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const os = require("node:os")
 const path = require("node:path")
+const zlib = require("node:zlib")
 const { spawnSync } = require("node:child_process")
 
 const runtime = path.join(__dirname, "../scripts/claude-routing")
+const cleanPython = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
+  env: { ...process.env, PYTHONPATH: "" }, encoding: "utf8",
+}).stdout.trim()
+const hostExecutable = name => (process.env.PATH || "").split(path.delimiter)
+  .map(directory => path.join(directory, name))
+  .find(candidate => {
+    try { return fs.statSync(candidate).isFile() && (fs.statSync(candidate).mode & 0o111) !== 0 } catch { return false }
+  })
+const cleanRgAlias = hostExecutable("rg")
+const cleanRg = cleanRgAlias ? fs.realpathSync(cleanRgAlias) : ""
 const invoke = String.raw`
 import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import common, guard
 request = json.load(sys.stdin)
+if "trusted_dirs" in request:
+    common.TRUSTED_HOST_DIRS = tuple(Path(item) for item in request["trusted_dirs"])
 project = Path(request["project"])
 config_path = project / ".claude" / "routing.json"
 config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,14 +48,31 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-guard-"))
   const project = path.join(root, "project")
   const home = path.join(root, "home")
+  const trusted = path.join(root, "trusted-bin")
   fs.mkdirSync(project, { recursive: true })
   fs.mkdirSync(home, { recursive: true })
+  fs.mkdirSync(trusted)
+  for (const name of ["pwd", "ls", "cat", "grep", "head", "tail", "wc", "git"]) {
+    const source = ["/usr/bin", "/bin"].map(dir => path.join(dir, name)).find(fs.existsSync)
+    if (source) fs.symlinkSync(source, path.join(trusted, name))
+  }
+  const realRg = cleanRg
+  if (realRg) fs.symlinkSync(realRg, path.join(trusted, "rg"))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   return {
-    root, project, home,
+    root, project, home, trusted, realRg,
     run(tool, input = {}, overrides = {}, settings = {}) {
       const payload = { session_id: "test-session", cwd: project, tool_name: tool, tool_input: input, ...overrides }
-      const result = spawnSync("python3", ["-B", "-c", invoke, runtime], {
+      const result = spawnSync(cleanPython, ["-B", "-c", invoke, runtime], {
+        input: JSON.stringify({ project, trusted_dirs: [trusted], state: '{"enabled":true}', payload, ...settings }),
+        env: { ...process.env, HOME: home, ...settings.env }, encoding: "utf8", timeout: 10000,
+      })
+      assert.equal(result.status, 0, result.stderr)
+      return JSON.parse(result.stdout)
+    },
+    runProduction(tool, input = {}, overrides = {}, settings = {}) {
+      const payload = { session_id: "test-session", cwd: project, tool_name: tool, tool_input: input, ...overrides }
+      const result = spawnSync(cleanPython, ["-B", "-c", invoke, runtime], {
         input: JSON.stringify({ project, state: '{"enabled":true}', payload, ...settings }),
         env: { ...process.env, HOME: home, ...settings.env }, encoding: "utf8", timeout: 10000,
       })
@@ -59,7 +89,10 @@ function denied(result, message = "") {
 }
 
 function allowed(result, message = "") {
-  assert.deepEqual(result, {}, message)
+  if (Object.keys(result).length === 0) return
+  assert.equal(result.hookSpecificOutput?.hookEventName, "PreToolUse", message)
+  assert.equal(result.hookSpecificOutput?.permissionDecision, undefined, message)
+  assert.equal(typeof result.hookSpecificOutput?.updatedInput?.command, "string", message)
 }
 
 test("routing guard is inactive for an absent or disabled session", (t) => {
@@ -489,4 +522,88 @@ test("guarded Git queries disable partial-clone lazy fetches", (t) => {
   allowed(f.run("Bash", { command: safe }))
   git(["--no-pager", "--no-lazy-fetch", "ls-tree", "HEAD"])
   assert.equal(fs.existsSync(sentinel), false, "--no-lazy-fetch still invoked the remote helper")
+})
+
+test("readonly commands execute pinned host binaries instead of poisoned PATH", t => {
+  const f = fixture(t)
+  if (!f.realRg) return t.skip("host rg unavailable")
+  const fake = path.join(f.root, "poisoned-bin")
+  const sentinel = path.join(f.root, "poisoned-path-hit")
+  fs.mkdirSync(fake)
+  for (const name of ["rg", "git", "cat", "head", "pwd"]) {
+    fs.writeFileSync(path.join(fake, name), `#!/bin/sh\nprintf hit >> ${JSON.stringify(sentinel)}\nexit 99\n`, { mode: 0o700 })
+  }
+  const input = path.join(f.root, "input.txt")
+  fs.writeFileSync(input, "needle\nother\n")
+  const initialized = spawnSync("git", ["init", "-q", f.project], { encoding: "utf8" })
+  assert.equal(initialized.status, 0, initialized.stderr)
+  const env = { PATH: `${fake}${path.delimiter}${process.env.PATH}` }
+  for (const identity of [{}, { agent_id: "e", agent_type: "xpowers-routing-explorer" }, { agent_id: "r", agent_type: "xpowers-routing-reviewer" }]) {
+    for (const [command, expected] of [
+      [`rg --no-config -- needle ${input} | head -1`, "needle"],
+      ["pwd | cat", fs.realpathSync(f.project)],
+      ["git --no-pager --no-lazy-fetch rev-parse --show-toplevel | cat", fs.realpathSync(f.project)],
+    ]) {
+      const result = f.run("Bash", { command, description: "keep", timeout: 7, run_in_background: false }, identity, { env })
+      const updated = result.hookSpecificOutput.updatedInput
+      assert.equal(updated.description, "keep")
+      assert.equal(updated.timeout, 7)
+      assert.equal(updated.run_in_background, false)
+      assert.equal(updated.command.includes(f.realRg), command.startsWith("rg"))
+      const executed = spawnSync("bash", ["-c", updated.command], { cwd: f.project, env: { ...process.env, ...env }, encoding: "utf8" })
+      assert.equal(executed.status, 0, executed.stderr)
+      assert.equal(executed.stdout.trim(), expected)
+    }
+  }
+  assert.equal(fs.existsSync(sentinel), false)
+})
+
+test("trusted command failures and compressed rg modes deny without ambient helpers", t => {
+  const f = fixture(t)
+  if (f.realRg) {
+    const compressed = path.join(f.root, "input.txt.gz")
+    const helper = path.join(f.root, "helper-bin")
+    const sentinel = path.join(f.root, "gzip-helper-hit")
+    fs.writeFileSync(compressed, zlib.gzipSync("needle\n"))
+    fs.mkdirSync(helper)
+    fs.writeFileSync(path.join(helper, "gzip"), `#!/bin/sh\nprintf hit > ${JSON.stringify(sentinel)}\nexec /usr/bin/gzip "$@"\n`, { mode: 0o700 })
+    const bypass = spawnSync(f.realRg, ["--no-config", "-z", "needle", compressed], {
+      env: { ...process.env, PATH: `${helper}${path.delimiter}${process.env.PATH}` }, encoding: "utf8",
+    })
+    assert.equal(bypass.status, 0, bypass.stderr)
+    assert.equal(fs.existsSync(sentinel), true, "fixture must reproduce rg helper lookup through PATH")
+    fs.rmSync(sentinel)
+    denied(f.run("Bash", { command: `rg --no-config -z needle ${compressed}` }))
+    assert.equal(fs.existsSync(sentinel), false, "guarded command must not invoke gzip")
+  }
+  denied(f.run("Bash", { command: "rg --no-config -z needle file" }))
+  denied(f.run("Bash", { command: "rg --no-config --search-zip needle file" }))
+  denied(f.run("Bash", { command: "rg --no-config --search-z needle file" }))
+  denied(f.run("Bash", { command: "rg --no-config -iz needle file" }))
+  denied(f.run("Bash", { command: "pwd" }, {}, { trusted_dirs: [] }))
+  const inside = path.join(f.project, "inside-bin")
+  fs.mkdirSync(inside)
+  fs.writeFileSync(path.join(inside, "pwd"), "#!/bin/sh\n", { mode: 0o700 })
+  denied(f.run("Bash", { command: "pwd" }, {}, { trusted_dirs: [inside] }))
+  const higher = path.join(f.root, "higher-priority")
+  fs.mkdirSync(higher)
+  denied(f.run("Write", { file_path: path.join(higher, "pwd") }, { agent_id: "w", agent_type: "xpowers-routing-worker" }, { trusted_dirs: [higher, f.trusted] }))
+  if (f.realRg) denied(f.run("Write", { file_path: f.realRg }, { agent_id: "w", agent_type: "xpowers-routing-worker" }))
+  const fixedRg = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg", "/bin/rg"].find(candidate => fs.existsSync(candidate))
+  if (!fixedRg && f.realRg) {
+    denied(f.runProduction("Bash", { command: "rg --no-config -- needle file" }, {}, {
+      env: { PATH: path.dirname(f.realRg) },
+    }))
+  }
+})
+
+test("legacy bare-python off commands are rewritten while corrupt routing state recovers", t => {
+  const f = fixture(t)
+  const cli = path.join(f.project, ".claude/xpowers-routing/cli.py")
+  const result = f.run("Bash", { command: `python3 ${cli} off --project ${f.project} --session test-session` }, {}, { state: "corrupt" })
+  allowed(result)
+  const command = result.hookSpecificOutput.updatedInput.command
+  assert.notEqual(command.split(" ")[0], "python3")
+  assert.match(command, / -E -S -B /)
+  assert.match(command, / off --project /)
 })

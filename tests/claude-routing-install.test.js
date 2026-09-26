@@ -215,7 +215,9 @@ test("routing hook commands quote project paths containing spaces and apostrophe
   const command = json(f, "settings.json").hooks.PreToolUse[0].hooks[0].command
   const parsed = spawnSync("python3", ["-c", "import json,shlex,sys; print(json.dumps(shlex.split(sys.argv[1])))", command], { encoding: "utf8" })
   success(parsed)
-  assert.deepEqual(JSON.parse(parsed.stdout), ["python3", file(f, "xpowers-routing/cli.py"), "guard", "--project", f.project])
+  const argv = JSON.parse(parsed.stdout)
+  assert.equal(path.isAbsolute(argv[0]), true)
+  assert.deepEqual(argv.slice(1), ["-E", "-S", "-B", file(f, "xpowers-routing/cli.py"), "guard", "--project", f.project])
 })
 
 test("routing installers serialize concurrent installs without duplicate hooks or lost originals", async t => {
@@ -484,8 +486,16 @@ test("legacy routing relocation finds only the exact manifest named by registere
   const manifest = JSON.parse(fs.readFileSync(manifestPath(f), "utf8"))
   delete manifest.installationId
   delete manifest.files["xpowers-routing/install-origin.json"]
-  fs.writeFileSync(manifestPath(f), JSON.stringify(manifest))
   fs.rmSync(file(f, "xpowers-routing/install-origin.json"), { force: true })
+  const settings = json(f, "settings.json")
+  const legacyInvocation = `python3 ${file(f, "xpowers-routing/cli.py")}`
+  settings.hooks = {
+    PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command: `${legacyInvocation} guard --project ${f.project}`, timeout: 5 }] }],
+    SessionStart: [{ hooks: [{ type: "command", command: `${legacyInvocation} session-start --project ${f.project}`, timeout: 5 }] }],
+  }
+  write(f, "settings.json", JSON.stringify(settings))
+  manifest.ownedHooks = { PreToolUse: settings.hooks.PreToolUse[0], SessionStart: settings.hooks.SessionStart[0] }
+  fs.writeFileSync(manifestPath(f), JSON.stringify(manifest))
   const moved = { ...f, project: path.join(path.dirname(f.project), "legacy-moved") }
   fs.renameSync(f.project, moved.project)
   success(invoke(moved))
