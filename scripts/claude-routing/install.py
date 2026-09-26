@@ -420,7 +420,12 @@ def install(project: Path, preset=None):
                 entries.append(entry)
                 owned_hooks[event] = entry
         plan = {}
-        snapshots = dict(previous_files)
+        snapshots = {}
+        # Artifacts shipped by an earlier installer version but no longer
+        # generated must leave the managed set in this same transaction. The
+        # union preflight above has already verified they remain untouched.
+        for name in set(previous_files) - set(files):
+            plan[claude / name] = previous_files[name]["before"]
         for name, data in files.items():
             target = claude / name
             current = _snapshot(target)

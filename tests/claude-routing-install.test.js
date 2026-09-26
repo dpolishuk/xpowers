@@ -59,6 +59,19 @@ function activationProofPath(f, session = "test-session") {
   const hash = crypto.createHash("sha256").update(session).digest("hex")
   return path.join(path.dirname(manifestPath(f)), "activation-proofs", `${hash}.json`)
 }
+function snapshot(data, mode = 0o644) {
+  return { data: Buffer.from(data).toString("base64"), mode }
+}
+function addLegacyArtifact(f, relative, installed, before = null, mode = 0o644, beforeMode = mode) {
+  const target = file(f, relative)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, installed)
+  fs.chmodSync(target, mode)
+  const manifest = JSON.parse(fs.readFileSync(manifestPath(f), "utf8"))
+  manifest.files[relative] = { before: before === null ? null : snapshot(before, beforeMode), installed: snapshot(installed, mode) }
+  fs.writeFileSync(manifestPath(f), JSON.stringify(manifest, null, 2) + "\n")
+  return target
+}
 
 test("routing install generates configured roles, native limits and independent verification", t => {
   const f = fixture(t)
@@ -97,6 +110,77 @@ test("routing reinstall preserves custom config and unrelated settings, explicit
   success(invoke(f, "install", "fable-review"))
   assert.equal(json(f, "routing.json").preset, "fable-review")
   assert.match(read(f, "agents/xpowers-routing-reviewer.md"), /^model: "claude-fable-5-1"$/m)
+})
+
+test("routing upgrade retires obsolete managed artifacts and restores their original command", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const legacyCommand = addLegacyArtifact(f, "commands/routing-legacy.md", "old generated command\n", "user command\n", 0o640, 0o600)
+  const obsoleteRuntime = addLegacyArtifact(f, "xpowers-routing/obsolete.py", "old runtime\n")
+  const obsoleteAgent = addLegacyArtifact(f, "agents/xpowers-routing-obsolete.md", "old agent\n")
+
+  success(invoke(f))
+  assert.equal(read(f, "commands/routing-legacy.md"), "user command\n")
+  assert.equal(fs.statSync(legacyCommand).mode & 0o777, 0o600)
+  assert.equal(fs.existsSync(obsoleteRuntime), false)
+  assert.equal(fs.existsSync(obsoleteAgent), false)
+  const manifest = JSON.parse(fs.readFileSync(manifestPath(f), "utf8"))
+  for (const name of ["commands/routing-legacy.md", "xpowers-routing/obsolete.py", "agents/xpowers-routing-obsolete.md"]) assert.equal(manifest.files[name], undefined)
+  const profile = spawnSync("python3", ["-c", "from pathlib import Path; import common; from cli import check_profile; project=Path(__import__('sys').argv[1]); check_profile(project, common.load_config(project))", f.project], {
+    cwd: f.runtime, env: { ...process.env, HOME: f.home, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 10000,
+  })
+  success(profile)
+  fs.writeFileSync(legacyCommand, "later user command\n")
+  fs.chmodSync(legacyCommand, 0o700)
+  success(invoke(f))
+  success(invoke(f, "restore"))
+  assert.equal(read(f, "commands/routing-legacy.md"), "later user command\n")
+  assert.equal(fs.statSync(legacyCommand).mode & 0o777, 0o700)
+})
+
+test("routing upgrade refuses edited obsolete artifacts and rolls back retirement failures", t => {
+  const f = fixture(t)
+  success(invoke(f))
+  const obsolete = addLegacyArtifact(f, "xpowers-routing/obsolete.py", "old runtime\n")
+  const userCommand = addLegacyArtifact(f, "commands/routing-legacy.md", "old generated command\n", "user command\n", 0o640, 0o600)
+  fs.writeFileSync(obsolete, "user changed runtime\n")
+  assert.equal(Buffer.from(JSON.parse(fs.readFileSync(manifestPath(f), "utf8")).files["xpowers-routing/obsolete.py"].installed.data, "base64").toString(), "old runtime\n")
+  const beforeRefusal = {
+    obsolete: fs.readFileSync(obsolete), command: fs.readFileSync(userCommand), manifest: fs.readFileSync(manifestPath(f)), settings: fs.readFileSync(file(f, "settings.json")),
+  }
+  const refused = invoke(f)
+  assert.notEqual(refused.status, 0, refused.stdout)
+  assert.match(refused.stderr, /Managed routing file was modified/)
+  assert.deepEqual(fs.readFileSync(obsolete), beforeRefusal.obsolete)
+  assert.deepEqual(fs.readFileSync(userCommand), beforeRefusal.command)
+  assert.deepEqual(fs.readFileSync(manifestPath(f)), beforeRefusal.manifest)
+  assert.deepEqual(fs.readFileSync(file(f, "settings.json")), beforeRefusal.settings)
+
+  fs.writeFileSync(obsolete, "old runtime\n")
+  const beforeFailure = {
+    obsolete: fs.readFileSync(obsolete), command: fs.readFileSync(userCommand), manifest: fs.readFileSync(manifestPath(f)),
+  }
+  const script = `import sys
+from pathlib import Path
+import install
+original = install._atomic_write
+obsolete = Path(sys.argv[2])
+def fail_after_retirement(target, snapshot):
+    if target.name == 'install-manifest.json' and not obsolete.exists():
+        raise OSError('simulated upgrade failure after retirement')
+    original(target, snapshot)
+install._atomic_write = fail_after_retirement
+install.install(Path(sys.argv[1]))
+`
+  const failed = spawnSync("python3", ["-c", script, f.project, obsolete], {
+    cwd: f.runtime, env: { ...process.env, HOME: f.home, PYTHONDONTWRITEBYTECODE: "1" }, encoding: "utf8", timeout: 10000,
+  })
+  assert.notEqual(failed.status, 0)
+  assert.match(failed.stderr, /simulated upgrade failure after retirement/)
+  assert.deepEqual(fs.readFileSync(obsolete), beforeFailure.obsolete)
+  assert.deepEqual(fs.readFileSync(userCommand), beforeFailure.command)
+  assert.deepEqual(fs.readFileSync(manifestPath(f)), beforeFailure.manifest)
+  assert.equal(fs.statSync(userCommand).mode & 0o777, 0o640)
 })
 
 test("routing restore preserves later unrelated settings and recovers overwritten original files", t => {
