@@ -196,6 +196,10 @@ See [OpenCode Providers Documentation](https://opencode.ai/docs/providers/).
 
 ## Claude Code Configuration
 
+For role-based coordination, see [Claude Code routing](CLAUDE-ROUTING.md):
+project `.claude/routing.json`, Opus/Fable presets, independent verification,
+and an opt-in coordinator write guard with reversible installation.
+
 ### Available Examples
 
 #### `claude-code.example.anthropic.json`
