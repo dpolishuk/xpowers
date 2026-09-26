@@ -567,6 +567,53 @@ test("a spawn failure supersedes an older passing receipt", () => {
   }
 })
 
+test("a pending receipt write failure retains the lock until full-store recovery", () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "fail-receipt-rename.cjs")
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-receipt-write"]).status, 0)
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const originalRenameSync = fs.renameSync",
+      "fs.renameSync = function(source, target) {",
+      "  const statePart = `${path.sep}acceptance-v1${path.sep}`",
+      "  const lockPart = `${path.sep}acceptance-v1${path.sep}lock${path.sep}`",
+      "  if (String(target).includes(statePart) && !String(target).includes(lockPart)) {",
+      "    const error = new Error('simulated receipt ENOSPC')",
+      "    error.code = 'ENOSPC'",
+      "    throw error",
+      "  }",
+      "  return originalRenameSync.apply(this, arguments)",
+      "}",
+      "",
+    ].join("\n"))
+
+    const failed = runTm(fixture, ["acceptance", "run", "bd-receipt-write"], {
+      env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim() },
+    })
+    assert.equal(failed.status, 1)
+    assert.match(failed.stderr, /simulated receipt ENOSPC/i)
+
+    const checked = runTm(fixture, ["acceptance", "check", "bd-receipt-write"])
+    assert.equal(checked.status, 1)
+    assert.match(checked.stderr, /acceptance state is locked/i)
+    fs.writeFileSync(fixture.backendLog, "")
+    const closed = runTm(fixture, ["close", "bd-receipt-write"])
+    assert.equal(closed.status, 1)
+    assert.match(closed.stderr, /acceptance state is locked/i)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    const gitDir = git(fixture.repo, "rev-parse", "--absolute-git-dir")
+    fs.rmSync(path.join(gitDir, "xpowers", "acceptance-v1"), { recursive: true, force: true })
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-receipt-write"]).status, 0)
+    assert.equal(runTm(fixture, ["close", "bd-receipt-write"]).status, 0)
+    assert.deepEqual(backendCalls(fixture), [["close", "bd-receipt-write"]])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("linked worktrees use isolated acceptance receipt stores", () => {
   const fixture = makeFixture()
   const linked = path.join(fixture.root, "linked")

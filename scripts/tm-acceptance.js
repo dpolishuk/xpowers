@@ -31,6 +31,14 @@ class AcceptanceError extends Error {
   }
 }
 
+class PendingReceiptWriteError extends AcceptanceError {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = "PendingReceiptWriteError"
+    this.cause = cause
+  }
+}
+
 function fail(message, exitCode = 1) {
   throw new AcceptanceError(message, exitCode)
 }
@@ -519,7 +527,11 @@ function failedRecord(context, operation, reason, checks = []) {
 
 async function runAcceptance(task, context, storage) {
   const pending = pendingRecord(context, "run")
-  writeReceipt(storage, task, pending)
+  try {
+    writeReceipt(storage, task, pending)
+  } catch (error) {
+    throw new PendingReceiptWriteError(error)
+  }
   let checks = []
   try {
     const loaded = loadPolicy(context)
@@ -629,6 +641,7 @@ async function main() {
   const context = resolveGitContext(process.env.TM_REPO_ROOT || process.cwd())
   const storage = storageFor(context)
   const release = acquireLock(storage, operation, args)
+  let releaseLock = true
   try {
     if (operation === "run") {
       await runAcceptance(args[0], context, storage)
@@ -649,8 +662,11 @@ async function main() {
     } finally {
       removeSignals()
     }
+  } catch (error) {
+    if (error instanceof PendingReceiptWriteError) releaseLock = false
+    throw error
   } finally {
-    release()
+    if (releaseLock) release()
   }
 }
 
