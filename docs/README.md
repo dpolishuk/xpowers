@@ -23,8 +23,8 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 ## Backend / Tracker Context
 
 - `tm` — canonical user-facing interface
-- `bd` — current backend in this repo
-- `br` — Beads Rust / classic beads-compatible backend alternative
+- `br` — current backend in this repo (Beads Rust)
+- `bd` — legacy Beads backend, retained in migration guides
 - `tk` — Ticket / git-backed markdown tracker alternative
 - `linear` — Linear-native backend preview (core commands only on this repo branch)
 
