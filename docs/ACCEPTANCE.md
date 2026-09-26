@@ -85,7 +85,7 @@ The runtime caps the policy at 256 KiB, receipts at 512 KiB, Git listings at 16 
 
 ## XPowers repository policy
 
-XPowers commits [`.xpowers/acceptance.json`](../.xpowers/acceptance.json) as a repository-specific pilot. After `npm ci`, it runs the root Node `.test.js` suite with concurrency 4 and the dot reporter, verifies generated Codex skill wrappers, and runs ESLint. The Node check canonicalizes `TMPDIR` so temporary-repository paths compare consistently on macOS. These checks require Node.js 20 or later, npm dependencies, Git, and Bash. They do not replace the Bun, Gemini, package typecheck, security-audit, or other jobs in full CI.
+XPowers commits [`.xpowers/acceptance.json`](../.xpowers/acceptance.json) as a repository-specific pilot. Install its test dependencies with `npm ci` and `bun install --frozen-lockfile --cwd .opencode`. The policy runs the root Node `.test.js` suite with concurrency 4 and the dot reporter, verifies generated Codex skill wrappers, and runs ESLint. The Node check canonicalizes `TMPDIR` so temporary-repository paths compare consistently on macOS. Because the Node suite includes an OpenCode runtime test that invokes Bun and resolves `.opencode` dependencies, these checks require Node.js 20 or later, npm dependencies, Bun with `.opencode` dependencies installed, Git, and Bash. They do not replace the remaining Bun, Gemini, package typecheck, security-audit, or other jobs in full CI.
 
 Use the runtime from the checkout so the command and companion match this branch:
 
