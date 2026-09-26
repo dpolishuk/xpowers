@@ -290,7 +290,7 @@ These tools are related, but they are **not interchangeable day-to-day commands*
 Located in `.beads/config.yaml`. Key settings:
 - `tm.backend: br`: Route `tm` commands to Beads Rust
 - `.beads/metadata.json`: Select the local `beads.db` SQLite database and JSONL export
-- `tm sync`: Export through `br sync --flush-only`; commit and push separately
+- `tm sync`: Export the local tracker state; commit and push separately
 
 **NEVER** read `.beads/issues.jsonl` directly - always use `tm` (or a backend CLI only when a backend-specific guide explicitly requires it).
 
