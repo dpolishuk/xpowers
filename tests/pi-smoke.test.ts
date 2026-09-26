@@ -45,7 +45,7 @@ test("pi install writes extension and registers commands/tools at runtime", asyn
     PATH: `${binDir}:${process.env.PATH}`,
   }
 
-  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "pi", "--yes"], {
+  const result = spawnSync(bunPath, ["scripts/install.ts", "--hosts", "pi", "--yes", "--features", "__none__"], {
     cwd: repoRoot,
     encoding: "utf8",
     env,
