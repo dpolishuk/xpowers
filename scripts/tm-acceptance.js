@@ -35,7 +35,7 @@ const FORBIDDEN_GIT_ENV = [
   "GIT_DISCOVERY_ACROSS_FILESYSTEM",
   "GIT_NAMESPACE",
 ]
-const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BEADS_DIR", "BEADS_DB"]
+const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BD_NO_DB", "BEADS_DIR", "BEADS_DB", "BEADS_JSONL"]
 
 class AcceptanceError extends Error {
   constructor(message, exitCode = 1) {

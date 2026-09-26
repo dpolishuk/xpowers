@@ -652,12 +652,27 @@ test("malformed policy nodes, backend mismatch, and Git overrides fail closed", 
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BD_DATABASE: path.join(fixture.root, "other.db") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BEADS_DIR: path.join(fixture.root, "other-beads") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BEADS_DB: path.join(fixture.root, "other.db") } }).status, 1)
-    const directOverride = run(process.execPath, [acceptancePath, "check", "bd-node"], {
-      cwd: fixture.repo,
-      env: { ...fixture.env, BEADS_DB: path.join(fixture.root, "other.db") },
+    const wrapperNoDbOverride = runTm(fixture, ["close", "bd-node"], { env: { BD_NO_DB: "true" } })
+    assert.equal(wrapperNoDbOverride.status, 1)
+    assert.match(wrapperNoDbOverride.stderr, /database environment overrides are unsupported/i)
+    const wrapperJsonlOverride = runTm(fixture, ["close", "bd-node"], {
+      env: { BEADS_JSONL: path.join(fixture.root, "alternate.jsonl") },
     })
-    assert.equal(directOverride.status, 1)
-    assert.match(directOverride.stderr, /BEADS_DB is unsupported/i)
+    assert.equal(wrapperJsonlOverride.status, 1)
+    assert.match(wrapperJsonlOverride.stderr, /database environment overrides are unsupported/i)
+    const directBackendOverrides = {
+      BEADS_DB: path.join(fixture.root, "other.db"),
+      BEADS_JSONL: path.join(fixture.root, "alternate.jsonl"),
+      BD_NO_DB: "true",
+    }
+    for (const [name, value] of Object.entries(directBackendOverrides)) {
+      const directOverride = run(process.execPath, [acceptancePath, "check", "bd-node"], {
+        cwd: fixture.repo,
+        env: { ...fixture.env, [name]: value },
+      })
+      assert.equal(directOverride.status, 1, name)
+      assert.match(directOverride.stderr, new RegExp(`${name} is unsupported`, "i"))
+    }
     assert.deepEqual(backendCalls(fixture), [])
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
