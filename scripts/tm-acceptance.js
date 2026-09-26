@@ -22,7 +22,17 @@ const MAX_STORED_STREAM_BYTES = 4096
 const HASH_CHUNK_BYTES = 64 * 1024
 const TASK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-const FORBIDDEN_GIT_ENV = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"]
+const FORBIDDEN_GIT_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_NAMESPACE",
+]
 const FORBIDDEN_BACKEND_ENV = ["BD_DB", "BD_DATABASE", "BEADS_DIR", "BEADS_DB"]
 
 class AcceptanceError extends Error {
@@ -498,7 +508,7 @@ function boundedText(buffer) {
 let activeChild = null
 let interruptedSignal = null
 
-function killChild(child) {
+function killCheckProcessGroup(child) {
   if (!child?.pid) return
   try {
     if (process.platform === "win32") child.kill("SIGKILL")
@@ -506,10 +516,28 @@ function killChild(child) {
   } catch { /* already exited */ }
 }
 
-function installSignalHandlers() {
+function installCheckSignalHandlers() {
   const handler = (signal) => {
     interruptedSignal = signal
-    killChild(activeChild)
+    killCheckProcessGroup(activeChild)
+  }
+  process.on("SIGINT", handler)
+  process.on("SIGTERM", handler)
+  return () => {
+    process.off("SIGINT", handler)
+    process.off("SIGTERM", handler)
+  }
+}
+
+function forwardBackendSignal(child, signal) {
+  if (!child?.pid) return
+  try { child.kill(signal) } catch { /* process already exited */ }
+}
+
+function installBackendSignalHandlers() {
+  const handler = (signal) => {
+    interruptedSignal = signal
+    forwardBackendSignal(activeChild, signal)
   }
   process.on("SIGINT", handler)
   process.on("SIGTERM", handler)
@@ -541,7 +569,7 @@ function runCheck(check, root) {
       if (stream === "stderr" && stderr.length < MAX_CHECK_OUTPUT_BYTES) stderr = Buffer.concat([stderr, chunk]).subarray(0, MAX_CHECK_OUTPUT_BYTES)
       if (total > MAX_CHECK_OUTPUT_BYTES && !outputExceeded) {
         outputExceeded = true
-        killChild(child)
+        killCheckProcessGroup(child)
       }
     }
     child.stdout.on("data", capture("stdout"))
@@ -549,7 +577,7 @@ function runCheck(check, root) {
     child.on("error", (error) => { spawnError = error })
     const timer = setTimeout(() => {
       timedOut = true
-      killChild(child)
+      killCheckProcessGroup(child)
       child.stdout.destroy()
       child.stderr.destroy()
     }, check.timeoutMs)
@@ -606,7 +634,7 @@ async function runAcceptance(task, context, storage) {
   try {
     const loaded = loadPolicy(context)
     const before = createSnapshot(context, loaded.fingerprint)
-    const removeSignals = installSignalHandlers()
+    const removeSignals = installCheckSignalHandlers()
     try {
       for (const check of loaded.policy.checks) {
         if (interruptedSignal) fail(`acceptance run interrupted by ${interruptedSignal}`)
@@ -685,11 +713,14 @@ function spawnBackendClose(tasks, context) {
     const child = spawn("br", ["close", ...tasks], {
       cwd: context.root,
       shell: false,
-      detached: process.platform !== "win32",
       stdio: "inherit",
     })
     activeChild = child
-    child.on("error", reject)
+    if (interruptedSignal) forwardBackendSignal(child, interruptedSignal)
+    child.on("error", (error) => {
+      activeChild = null
+      reject(error)
+    })
     child.on("close", (code, signal) => {
       activeChild = null
       if (interruptedSignal === "SIGINT" || signal === "SIGINT") resolve(130)
@@ -726,7 +757,7 @@ async function main() {
       const snapshot = checkEligibility(task, context, storage)
       process.stdout.write(`tm acceptance: ${task} is eligible (${snapshot.fingerprint})\n`)
     }
-    const removeSignals = installSignalHandlers()
+    const removeSignals = installBackendSignalHandlers()
     try {
       return await spawnBackendClose(args, context)
     } finally {

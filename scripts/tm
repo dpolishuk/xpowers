@@ -358,7 +358,7 @@ main() {
       echo "tm: acceptance policy currently supports only the br backend (configured: $backend)" >&2
       exit 1
     fi
-    if [[ -n "${GIT_DIR:-}" || -n "${GIT_WORK_TREE:-}" || -n "${GIT_INDEX_FILE:-}" || -n "${GIT_COMMON_DIR:-}" || -n "${GIT_OBJECT_DIRECTORY:-}" ]]; then
+    if [[ -n "${GIT_DIR:-}" || -n "${GIT_WORK_TREE:-}" || -n "${GIT_INDEX_FILE:-}" || -n "${GIT_COMMON_DIR:-}" || -n "${GIT_OBJECT_DIRECTORY:-}" || -n "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" || -n "${GIT_CEILING_DIRECTORIES:-}" || -n "${GIT_DISCOVERY_ACROSS_FILESYSTEM:-}" || -n "${GIT_NAMESPACE:-}" ]]; then
       echo "tm: Git repository/index overrides are unsupported while acceptance policy is enabled" >&2
       exit 1
     fi

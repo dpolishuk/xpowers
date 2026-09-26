@@ -45,7 +45,22 @@ function makeFixture() {
     "#!/usr/bin/env node",
     "const fs = require('node:fs')",
     `fs.appendFileSync(${JSON.stringify(backendLog)}, JSON.stringify(process.argv.slice(2)) + '\\n')`,
-    "setTimeout(() => process.exit(Number(process.env.BR_EXIT_CODE || 0)), Number(process.env.BR_DELAY_MS || 0))",
+    "if (process.env.BR_SIGNAL_MARKER) {",
+    "  let handling = false",
+    "  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {",
+    "    if (handling) return",
+    "    handling = true",
+    "    fs.writeFileSync(process.env.BR_SIGNAL_MARKER, signal)",
+    "    setTimeout(() => {",
+    "      fs.writeFileSync(process.env.BR_SIGNAL_DONE, `done:${signal}`)",
+    "      process.exit(0)",
+    "    }, Number(process.env.BR_SIGNAL_DELAY_MS || 0))",
+    "  })",
+    "  if (process.env.BR_SIGNAL_READY) fs.writeFileSync(process.env.BR_SIGNAL_READY, 'ready')",
+    "  setInterval(() => {}, 1000)",
+    "} else {",
+    "  setTimeout(() => process.exit(Number(process.env.BR_EXIT_CODE || 0)), Number(process.env.BR_DELAY_MS || 0))",
+    "}",
     "",
   ].join("\n"))
   fs.chmodSync(path.join(bin, "br"), 0o755)
@@ -566,7 +581,22 @@ test("malformed policy nodes, backend mismatch, and Git overrides fail closed", 
     writePolicy(fixture, [passingCheck()])
     fs.writeFileSync(fixture.backendLog, "")
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { TM_BACKEND: "bd" } }).status, 1)
-    assert.equal(runTm(fixture, ["close", "bd-node"], { env: { GIT_INDEX_FILE: path.join(fixture.root, "index") } }).status, 1)
+    const gitOverrides = {
+      GIT_INDEX_FILE: path.join(fixture.root, "index"),
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(fixture.root, "objects"),
+      GIT_CEILING_DIRECTORIES: fixture.root,
+      GIT_DISCOVERY_ACROSS_FILESYSTEM: "1",
+      GIT_NAMESPACE: "acceptance-test",
+    }
+    for (const [name, value] of Object.entries(gitOverrides)) {
+      assert.equal(runTm(fixture, ["close", "bd-node"], { env: { [name]: value } }).status, 1, name)
+      const directGitOverride = run(process.execPath, [acceptancePath, "check", "bd-node"], {
+        cwd: fixture.repo,
+        env: { ...fixture.env, [name]: value },
+      })
+      assert.equal(directGitOverride.status, 1, name)
+      assert.match(directGitOverride.stderr, new RegExp(`${name} is unsupported`, "i"))
+    }
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BD_DB: path.join(fixture.root, "other.db") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BD_DATABASE: path.join(fixture.root, "other.db") } }).status, 1)
     assert.equal(runTm(fixture, ["close", "bd-node"], { env: { BEADS_DIR: path.join(fixture.root, "other-beads") } }).status, 1)
@@ -618,6 +648,51 @@ test("guarded close holds the acceptance lock until br exits", async () => {
     assert.equal(runTm(fixture, ["acceptance", "check", "bd-lock"]).status, 0)
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("guarded close forwards graceful signals and holds the lock through backend cleanup", async () => {
+  for (const [signal, expectedStatus] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+    const fixture = makeFixture()
+    const ready = path.join(fixture.root, `br-${signal}-ready`)
+    const received = path.join(fixture.root, `br-${signal}-received`)
+    const done = path.join(fixture.root, `br-${signal}-done`)
+    try {
+      assert.equal(runTm(fixture, ["acceptance", "run", `bd-${signal.toLowerCase()}`]).status, 0)
+      fs.writeFileSync(fixture.backendLog, "")
+      const child = spawn(tmPath, ["close", `bd-${signal.toLowerCase()}`], {
+        cwd: fixture.repo,
+        env: {
+          ...fixture.env,
+          BR_SIGNAL_READY: ready,
+          BR_SIGNAL_MARKER: received,
+          BR_SIGNAL_DONE: done,
+          BR_SIGNAL_DELAY_MS: "1200",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      let stderr = ""
+      child.stderr.setEncoding("utf8")
+      child.stderr.on("data", (chunk) => { stderr += chunk })
+      await waitFor(() => fs.existsSync(ready))
+      assert.equal(fs.readFileSync(ready, "utf8"), "ready")
+      assert.deepEqual(backendCalls(fixture), [["close", `bd-${signal.toLowerCase()}`]])
+
+      child.kill(signal)
+      await waitFor(() => fs.existsSync(received))
+      assert.equal(fs.readFileSync(received, "utf8"), signal)
+      const competing = runTm(fixture, ["acceptance", "check", `bd-${signal.toLowerCase()}`])
+      assert.equal(competing.status, 1)
+      assert.match(competing.stderr, /acceptance state is locked/i)
+      assert.equal(fs.existsSync(done), false)
+
+      const outcome = await waitForExit(child)
+      assert.equal(outcome.status, expectedStatus, stderr)
+      assert.equal(fs.readFileSync(done, "utf8"), `done:${signal}`)
+      assert.equal(runTm(fixture, ["acceptance", "check", `bd-${signal.toLowerCase()}`]).status, 0)
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
   }
 })
 
