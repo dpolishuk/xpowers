@@ -223,13 +223,13 @@ test("independent verifier and reviewer cannot resume, fork or override configur
   denied(f.run("Agent", { subagent_type: "xpowers-routing-worker", model: "haiku" }))
 })
 
-test("readonly shell commands and genuine git queries are allowed", (t) => {
+test("readonly shell commands and the bounded Git query subset are allowed", (t) => {
   const f = fixture(t)
   for (const command of [
     "pwd", "ls -la", "cat README.md", "rg --files", "rg -n pattern src | head -20", "grep -R pattern src", "tail -30 file.log",
-    "git status --short", "git --no-pager diff HEAD", "git diff --stat", "git diff --no-ext-diff --no-textconv",
-    "git log -5 --oneline", "git show HEAD:README.md", "git branch --show-current", "git branch --list 'feature/*'",
-    "git rev-parse --show-toplevel", "git merge-base HEAD main", "git merge-tree base ours theirs", "git ls-files", "git -C subdir status",
+    "git --no-pager --no-lazy-fetch rev-parse --show-toplevel", "git --no-pager --no-lazy-fetch merge-base HEAD main",
+    "git --no-pager --no-lazy-fetch ls-tree HEAD", "git --no-pager --no-lazy-fetch branch --show-current",
+    "git --no-optional-locks --no-pager -C subdir --no-lazy-fetch rev-parse --show-toplevel",
   ]) allowed(f.run("Bash", { command }), command)
 })
 
@@ -237,6 +237,22 @@ test("coordinator shell rejects mutation, evaluation, write flags and command in
   const f = fixture(t)
   for (const command of [
     "git merge main", "git apply changes.patch", "git checkout main", "git reset --hard", "git config user.name alice",
+    "git status --short", "git --no-pager diff HEAD", "git --no-pager log -1", "git --no-pager show HEAD",
+    "git --no-pager rev-list HEAD", "git --no-pager ls-files", "git --no-pager merge-tree base ours theirs",
+    "git --no-pager --no-lazy-fetch status --short", "git --no-pager --no-lazy-fetch diff HEAD",
+    "git --no-pager --no-lazy-fetch show '--format=%G?' HEAD", "git --no-pager --no-lazy-fetch log '--format=%G?' -1",
+    "git --no-pager --no-lazy-fetch rev-list '--format=%G?' HEAD", "git --no-pager --no-lazy-fetch rev-list --objects --indexed-objects HEAD",
+    "git --no-pager --no-lazy-fetch ls-files", "git --no-pager --no-lazy-fetch for-each-ref refs/heads",
+    "git --no-pager --no-lazy-fetch describe --always", "git --no-pager --no-lazy-fetch shortlog HEAD",
+    "git --no-pager --no-lazy-fetch merge-tree HEAD~1 HEAD", "git --no-pager --no-lazy-fetch merge-tree base ours theirs",
+    "git rev-parse --show-toplevel", "git merge-base HEAD main", "git ls-tree HEAD", "git branch --show-current",
+    "git --no-pager rev-parse HEAD", "git --no-lazy-fetch rev-parse HEAD",
+    "git -C --no-pager --no-lazy-fetch rev-parse HEAD", "git --no-pager -C --no-lazy-fetch rev-parse HEAD",
+    "git --no-pager --no-lazy-fetch branch --list", "git --no-pager --no-lazy-fetch branch -a",
+    "git --no-pager --no-lazy-fetch --help", "git --no-pager --no-lazy-fetch -h",
+    "git --no-pager --no-lazy-fetch rev-parse --help", "git --no-pager --no-lazy-fetch rev-parse --hel",
+    "git --no-pager --no-lazy-fetch rev-parse -c alias.bad=value", "git --no-pager --no-lazy-fetch rev-parse --config-env=alias.bad=BAD",
+    "git --no-pager --no-lazy-fetch rev-parse --git-dir=other", "git --no-pager --no-lazy-fetch ls-tree --work-tree=other HEAD",
     "git branch new-branch", "git branch -D stale", "git diff --output=source.js", "git diff --output source.js",
     "git branch -l new-branch", "git diff --out=source.js", "git diff --ext", "git show --textc",
     "git -c alias.safe='!touch src.js' safe", "git --config-env=alias.safe=BAD safe", "git diff --ext-diff", "git show --textconv",
@@ -278,7 +294,7 @@ test("shell expansion screening preserves quoted literal search patterns", (t) =
   const f = fixture(t)
   for (const command of [
     "rg 'foo.*bar' src", "rg \"[a-z]?\" src", "rg 'config{value}' src",
-    "git branch --list 'feature/*'", "git diff -- 'src/[name].js'", "rg 'it'\\''s.*quoted' src",
+    "rg 'it'\\''s.*quoted' src",
   ]) allowed(f.run("Bash", { command }), command)
   for (const command of [
     "git diff --out\"p\"* /dev/null input.txt", "git diff --out[pu]* /dev/null input.txt",
@@ -322,6 +338,114 @@ test("verifier can run independent tests while explorer and reviewer shell stay 
   }
   for (const role of ["explorer", "reviewer"]) {
     denied(f.run("Bash", { command: "touch src.js" }, { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }))
-    allowed(f.run("Bash", { command: "git diff" }, { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }))
+    denied(f.run("Bash", { command: "git diff" }, { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }))
+    allowed(f.run("Bash", { command: "git --no-pager --no-lazy-fetch rev-parse --show-toplevel" }, { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }))
   }
+})
+
+for (const helperCase of [
+  {
+    name: "diff.external",
+    command: "git --no-pager --no-lazy-fetch diff",
+    probeCommand: "git --no-pager diff",
+    prepare(f, helper, git) {
+      fs.writeFileSync(path.join(f.project, "tracked.txt"), "one\n")
+      assert.equal(git(["init", "-q"]).status, 0)
+      assert.equal(git(["add", "tracked.txt"]).status, 0)
+      assert.equal(git(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"]).status, 0)
+      fs.writeFileSync(path.join(f.project, "tracked.txt"), "two\n")
+      assert.equal(git(["config", "diff.external", helper]).status, 0)
+    },
+  },
+  {
+    name: "core.fsmonitor",
+    command: "git --no-pager --no-lazy-fetch status --short",
+    probeCommand: "git --no-pager status --short",
+    prepare(f, helper, git) {
+      assert.equal(git(["init", "-q"]).status, 0)
+      assert.equal(git(["config", "core.fsmonitor", helper]).status, 0)
+    },
+  },
+]) {
+  test(`coordinator refuses a Git query that can execute ${helperCase.name}`, (t) => {
+    const f = fixture(t)
+    const sentinel = path.join(f.root, "helper-ran")
+    const helper = path.join(f.root, "git-helper.sh")
+    fs.writeFileSync(helper, "#!/bin/sh\nprintf invoked > \"$GIT_HELPER_SENTINEL\"\nexit 0\n", { mode: 0o700 })
+    const cleanEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+    )
+    const gitEnvironment = {
+      ...cleanEnvironment,
+      HOME: f.home,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    }
+    const git = args => spawnSync("git", args, {
+      cwd: f.project, env: gitEnvironment, encoding: "utf8", timeout: 10000,
+    })
+    helperCase.prepare(f, helper, git)
+    spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", helperCase.probeCommand], {
+      cwd: f.project,
+      env: {
+        ...gitEnvironment,
+        GIT_HELPER_SENTINEL: sentinel,
+      },
+      encoding: "utf8",
+      timeout: 10000,
+    })
+    assert.equal(fs.readFileSync(sentinel, "utf8"), "invoked", "fixture did not reproduce configured helper execution")
+    fs.rmSync(sentinel)
+    const decision = f.run("Bash", { command: helperCase.command })
+    denied(decision)
+    assert.equal(fs.existsSync(sentinel), false, "denied Git query still executed its configured helper")
+  })
+}
+
+test("guarded Git queries disable partial-clone lazy fetches", (t) => {
+  const f = fixture(t)
+  const home = path.join(f.root, "git-home")
+  const bin = path.join(f.root, "bin")
+  const sentinel = path.join(f.root, "remote-helper-ran")
+  fs.mkdirSync(home)
+  fs.mkdirSync(bin)
+  fs.writeFileSync(path.join(f.project, "tracked.txt"), "content\n")
+  const cleanEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  )
+  const gitEnvironment = {
+    ...cleanEnvironment,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+  }
+  const git = args => spawnSync("git", args, { cwd: f.project, env: gitEnvironment, encoding: "utf8", timeout: 10000 })
+  assert.equal(git(["init", "-q"]).status, 0)
+  assert.equal(git(["add", "tracked.txt"]).status, 0)
+  assert.equal(git(["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"]).status, 0)
+  const tree = git(["rev-parse", "HEAD^{tree}"])
+  assert.equal(tree.status, 0, tree.stderr)
+  const treeId = tree.stdout.trim()
+  for (const [name, value] of [
+    ["core.repositoryformatversion", "1"],
+    ["extensions.partialClone", "origin"],
+    ["remote.origin.url", "probe::unused"],
+    ["remote.origin.promisor", "true"],
+    ["remote.origin.partialclonefilter", "blob:none"],
+  ]) assert.equal(git(["config", name, value]).status, 0)
+  fs.rmSync(path.join(f.project, ".git", "objects", treeId.slice(0, 2), treeId.slice(2)))
+  const helper = path.join(bin, "git-remote-probe")
+  fs.writeFileSync(helper, `#!/bin/sh\nprintf 'hit\\n' >> '${sentinel}'\nexit 1\n`, { mode: 0o700 })
+
+  const unsafe = "git --no-pager ls-tree HEAD"
+  git(["--no-pager", "ls-tree", "HEAD"])
+  assert.match(fs.readFileSync(sentinel, "utf8"), /hit/, "fixture did not reproduce a lazy remote helper")
+  fs.rmSync(sentinel)
+  denied(f.run("Bash", { command: unsafe }))
+
+  const safe = "git --no-pager --no-lazy-fetch ls-tree HEAD"
+  allowed(f.run("Bash", { command: safe }))
+  git(["--no-pager", "--no-lazy-fetch", "ls-tree", "HEAD"])
+  assert.equal(fs.existsSync(sentinel), false, "--no-lazy-fetch still invoked the remote helper")
 })

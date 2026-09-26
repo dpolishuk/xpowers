@@ -89,8 +89,8 @@ def smoke(project, session):
         ("external scratch allowed", {"tool_name": "Write", "tool_input": {"file_path": str(common.control_dir(project).parent.parent / "routing-smoke-never-written.md")}}, False),
         ("main --agent cannot bypass guard", {"agent_type": "xpowers-routing-worker", "tool_name": "Edit", "tool_input": {"file_path": str(project / "file.txt")}}, True),
         ("delegated worker can edit", {"agent_id": "smoke-worker", "agent_type": "xpowers-routing-worker", "tool_name": "Edit", "tool_input": {"file_path": str(project / "file.txt")}}, False),
-        ("git merge-base allowed", {"tool_name": "Bash", "tool_input": {"command": "git merge-base HEAD main"}}, False),
-        ("git merge-tree allowed", {"tool_name": "Bash", "tool_input": {"command": "git merge-tree HEAD main"}}, False),
+        ("bounded git query allowed", {"tool_name": "Bash", "tool_input": {"command": "git --no-pager --no-lazy-fetch merge-base HEAD main"}}, False),
+        ("git merge-tree denied", {"tool_name": "Bash", "tool_input": {"command": "git --no-pager --no-lazy-fetch merge-tree HEAD main"}}, True),
         ("git merge denied", {"tool_name": "Bash", "tool_input": {"command": "git merge main"}}, True),
         ("shell project write denied", {"tool_name": "Bash", "tool_input": {"command": "printf bad > source.txt"}}, True),
     ]

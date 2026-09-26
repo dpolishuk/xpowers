@@ -131,12 +131,21 @@ paths and symlinks, including a project path that points outside the repository.
 Native file writes outside the project remain available for memory and scratch;
 routing control files and session state are protected.
 
-The coordinator's shell has a conservative read-only allowlist. Exact
-`git merge-base` and `git merge-tree` queries are accepted; `git merge`,
-redirections, arbitrary interpreters and executable read-command options are
-rejected. `merge-tree` can create Git objects but does not update source, index
-or commits. Delegate builds, Docker checks, Git mutations and unfamiliar shell
-commands to the appropriate agent.
+The coordinator's shell has a conservative read-only allowlist. Git access is
+limited to `rev-parse`, `merge-base`, `ls-tree`, and exact
+`branch --show-current` queries. Every accepted query must include the exact
+global options `--no-pager` and `--no-lazy-fetch`, for example
+`git --no-pager --no-lazy-fetch merge-base HEAD main`. This requires Git 2.45
+or newer. Older Git versions fail closed; upgrade Git or delegate the query
+instead of removing either option.
+
+Commands such as `git diff`, `git status`, `git ls-files`, `git log`, and
+`git merge-tree` are delegated because repository configuration can make them
+execute pagers, filters, filesystem monitors, signature programs, merge
+drivers, or lazy-fetch remote helpers. Help, output, configuration, environment
+override, redirection, arbitrary interpreter, and executable read-command
+options are also rejected. Delegate builds, Docker checks, Git mutations, and
+unsupported shell queries to the appropriate agent.
 
 Subagents are identified by Claude's `agent_id`, not just `agent_type`. A main
 session started with `--agent` therefore cannot acquire worker write access.
@@ -152,8 +161,9 @@ available, inspect hook failures and avoid disabling hooks while routing is on.
 ## Smoke checks and rollback
 
 `/routing-smoke-test` checks the current session's guard with synthetic events:
-source-edit denial, external scratch, main/subagent identity, safe Git queries,
-and mutation rejection. It performs no attempted writes or shell commands.
+source-edit denial, external scratch, main/subagent identity, a bounded Git
+query, unsafe Git query denial, and mutation rejection. It performs no
+attempted writes or shell commands.
 It does not spend model tokens or prove provider availability. Check actual
 subagent models in Claude Code `/tasks`; forced model environment settings,
 organization restrictions and effort caps can override requested settings.
@@ -195,4 +205,4 @@ reinstalling does not silently reactivate that session.
 - [Custom subagents](https://code.claude.com/docs/en/sub-agents)
 - [Hook events and agent identity](https://code.claude.com/docs/en/hooks)
 - [Commands and session substitution](https://code.claude.com/docs/en/skills)
-- [Git merge-tree behavior](https://git-scm.com/docs/git-merge-tree)
+- [Git 2.45 release notes (`--no-lazy-fetch`)](https://github.com/git/git/blob/master/Documentation/RelNotes/2.45.0.adoc)

@@ -18,10 +18,7 @@ DELEGATES = {"explorer", "worker", "verifier", "senior", "reviewer"}
 READ_TOOLS = {"Read", "Glob", "Grep", "WebFetch", "WebSearch", "AskUserQuestion", "TaskOutput"}
 EDIT_TOOLS = {"Write", "Edit", "NotebookEdit"}
 READ_COMMANDS = {"pwd", "ls", "cat", "rg", "grep", "head", "tail", "wc"}
-GIT_QUERIES = {
-    "status", "diff", "show", "log", "rev-parse", "rev-list", "merge-base",
-    "merge-tree", "ls-files", "ls-tree", "for-each-ref", "describe", "shortlog",
-}
+GIT_QUERIES = {"rev-parse", "merge-base", "ls-tree"}
 
 
 def deny(reason):
@@ -128,39 +125,41 @@ def _tokens(command):
 
 def _git_query(arguments):
     index = 0
+    no_pager = False
+    no_lazy_fetch = False
     while index < len(arguments):
         option = arguments[index]
-        if option in {"--no-pager", "--no-optional-locks"}:
+        if option == "--no-pager":
+            no_pager = True
+            index += 1
+        elif option == "--no-lazy-fetch":
+            no_lazy_fetch = True
+            index += 1
+        elif option == "--no-optional-locks":
             index += 1
         elif option == "-C" and index + 1 < len(arguments):
             index += 2
         else:
             break
-    if index == len(arguments):
+    if not no_pager or not no_lazy_fetch or index == len(arguments):
         return False
     subcommand = arguments[index]
     options = arguments[index + 1:]
     # These can write files or start programs even on otherwise read-only queries.
-    forbidden = {"--output", "--ext-diff", "--textconv", "--write-tree"}
+    forbidden = {
+        "--output", "--ext-diff", "--textconv", "--write-tree", "--help",
+        "--config-env", "--git-dir", "--work-tree", "--namespace", "--exec-path",
+    }
     if any(
-        option.startswith("--") and option != "--"
-        and any(flag.startswith(option.split("=", 1)[0]) for flag in forbidden)
+        option in {"-c", "-h"} or (
+            option.startswith("--") and option != "--"
+            and any(flag.startswith(option.split("=", 1)[0]) for flag in forbidden)
+        )
         for option in options
     ):
         return False
     if subcommand == "branch":
-        if not options:
-            return True
-        if options == ["--show-current"]:
-            return True
-        query_flags = {"-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose", "--no-color"}
-        if all(option in query_flags for option in options):
-            return True
-        # Patterns are harmless only in explicit list mode; positional names
-        # without --list would create a branch.
-        if options[0] == "--list":
-            return all(not option.startswith("-") or option in query_flags for option in options[1:])
-        return False
+        return options == ["--show-current"]
     return subcommand in GIT_QUERIES
 
 
