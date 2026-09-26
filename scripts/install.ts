@@ -949,7 +949,7 @@ const FEATURES: FeatureConfig[] = [
         await chmod(join(binDir, "tm"), 0o755)
 
         // Copy companion files
-        for (const name of ["tm-backends.sh", "tm-linear-backend.js", "tm-linear-sync.js", "tm-linear-sync-config.js"]) {
+        for (const name of ["tm-backends.sh", "tm-linear-backend.js", "tm-linear-sync.js", "tm-linear-sync-config.js", "tm-acceptance.js"]) {
           const src = join(REPO_ROOT, "scripts", name)
           if (existsSync(src)) {
             await copyFile(src, join(libDir, name))
@@ -968,7 +968,7 @@ const FEATURES: FeatureConfig[] = [
     uninstall: async () => {
       const binDir = join(homedir(), ".local", "bin")
       const libDir = join(homedir(), ".local", "lib", "tm")
-      for (const f of ["tm", "tm-backends.sh", "tm-linear-backend.js", "tm-linear-sync.js", "tm-linear-sync-config.js"]) {
+      for (const f of ["tm", "tm-backends.sh", "tm-linear-backend.js", "tm-linear-sync.js", "tm-linear-sync-config.js", "tm-acceptance.js"]) {
         await unlink(join(binDir, f)).catch(() => {})
       }
       await rm(libDir, { recursive: true, force: true }).catch(() => {})
