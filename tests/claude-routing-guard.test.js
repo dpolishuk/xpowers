@@ -537,12 +537,15 @@ test("readonly commands execute pinned host binaries instead of poisoned PATH", 
   fs.writeFileSync(input, "needle\nother\n")
   const initialized = spawnSync("git", ["init", "-q", f.project], { encoding: "utf8" })
   assert.equal(initialized.status, 0, initialized.stderr)
+  const gitProbe = spawnSync(path.join(f.trusted, "git"), ["--no-pager", "--no-lazy-fetch", "rev-parse", "--show-toplevel"], {
+    cwd: f.project, encoding: "utf8",
+  })
   const env = { PATH: `${fake}${path.delimiter}${process.env.PATH}` }
   for (const identity of [{}, { agent_id: "e", agent_type: "xpowers-routing-explorer" }, { agent_id: "r", agent_type: "xpowers-routing-reviewer" }]) {
     for (const [command, expected] of [
       [`rg --no-config -- needle ${input} | head -1`, "needle"],
       ["pwd | cat", fs.realpathSync(f.project)],
-      ["git --no-pager --no-lazy-fetch rev-parse --show-toplevel | cat", fs.realpathSync(f.project)],
+      ["git --no-pager --no-lazy-fetch rev-parse --show-toplevel | cat", null],
     ]) {
       const result = f.run("Bash", { command, description: "keep", timeout: 7, run_in_background: false }, identity, { env })
       const updated = result.hookSpecificOutput.updatedInput
@@ -550,12 +553,41 @@ test("readonly commands execute pinned host binaries instead of poisoned PATH", 
       assert.equal(updated.timeout, 7)
       assert.equal(updated.run_in_background, false)
       assert.equal(updated.command.includes(f.realRg), command.startsWith("rg"))
+      if (expected === null) {
+        assert.match(updated.command, /^set -o pipefail; /)
+        assert.match(updated.command, /--no-pager/)
+        assert.match(updated.command, /--no-lazy-fetch/)
+      }
       const executed = spawnSync("bash", ["-c", updated.command], { cwd: f.project, env: { ...process.env, ...env }, encoding: "utf8" })
-      assert.equal(executed.status, 0, executed.stderr)
-      assert.equal(executed.stdout.trim(), expected)
+      if (expected !== null) {
+        assert.equal(executed.status, 0, executed.stderr)
+        assert.equal(executed.stdout.trim(), expected)
+      } else if (gitProbe.status === 0) {
+        assert.equal(executed.status, 0, executed.stderr)
+        assert.equal(executed.stdout.trim(), fs.realpathSync(f.project))
+      } else {
+        assert.notEqual(executed.status, 0)
+        assert.notEqual(executed.stderr.trim(), "")
+      }
     }
   }
   assert.equal(fs.existsSync(sentinel), false)
+})
+
+test("generated readonly pipelines preserve an earlier command failure", t => {
+  const f = fixture(t)
+  const missing = path.join(f.root, "missing-input")
+  for (const identity of [{}, { agent_id: "e", agent_type: "xpowers-routing-explorer" }, { agent_id: "r", agent_type: "xpowers-routing-reviewer" }]) {
+    const result = f.run("Bash", { command: `cat ${missing} | cat`, description: "keep", timeout: 7, run_in_background: false }, identity)
+    const updated = result.hookSpecificOutput.updatedInput
+    assert.match(updated.command, /^set -o pipefail; /)
+    assert.equal(updated.description, "keep")
+    assert.equal(updated.timeout, 7)
+    assert.equal(updated.run_in_background, false)
+    const executed = spawnSync("bash", ["-c", updated.command], { cwd: f.project, encoding: "utf8" })
+    assert.notEqual(executed.status, 0)
+    assert.match(executed.stderr, /missing-input/)
+  }
 })
 
 test("trusted command failures and compressed rg modes deny without ambient helpers", t => {

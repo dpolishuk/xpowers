@@ -240,7 +240,8 @@ def _shell_allowed(command, project, session_id, allow_control):
     for segment in segments:
         executable = shlex.quote(str(common.resolve_trusted_command(segment[0], project)))
         rewritten.append(executable + (" " + " ".join(shlex.quote(token) for token in segment[1:]) if len(segment) > 1 else ""))
-    return " | ".join(rewritten)
+    pipeline = " | ".join(rewritten)
+    return "set -o pipefail; " + pipeline if len(segments) > 1 else pipeline
 
 
 def _dispatch(tool_input, config):

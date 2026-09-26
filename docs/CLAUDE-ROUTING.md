@@ -175,6 +175,8 @@ locations, the query is denied and must be delegated. The hook also rejects ripg
 `-z`/`--search-zip`, because those modes can start decompression helpers. Generated
 hooks and routing controls pin the installer-selected Python executable with
 `-E -S -B`, so `PYTHONPATH` and startup-site customizations do not alter them.
+Generated multi-command queries also enable `pipefail`, so a failed non-final stage
+fails the whole query instead of being hidden by a later read command.
 
 This trusts installed operating-system and Homebrew host software plus shell startup
 files. It is not protection against a same-user administrator, a compromised host,
