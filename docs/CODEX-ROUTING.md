@@ -188,10 +188,18 @@ routing_test_tmp=$(mktemp -d)
 python3 -m venv "$routing_test_tmp/venv"
 "$routing_test_tmp/venv/bin/python" -m pip install \
   'tomlkit @ https://files.pythonhosted.org/packages/bd/75/8539d011f6be8e29f339c42e633aae3cb73bffa95dd0f9adec09b9c58e85/tomlkit-0.13.3-py3-none-any.whl#sha256=c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0'
-PYTHON_BIN="$routing_test_tmp/venv/bin/python" node --test tests/codex-routing-installer.test.js
-rm -rf "$routing_test_tmp"
+export PYTHON_BIN="$routing_test_tmp/venv/bin/python"
+node --test tests/codex-routing-installer.test.js
 ```
 
 This does not change system packages or the repository. CI creates its own parser
-environment automatically. When running the full suite locally, pass the same
-selected interpreter: `PYTHON_BIN="$routing_test_tmp/venv/bin/python" npm test`.
+environment automatically. Keep `PYTHON_BIN` exported while running the full suite
+or `tm acceptance`, so their child processes inherit the selected interpreter. Only
+after every dependent check has finished, remove the temporary environment:
+
+```bash
+npm test
+# Or run ./scripts/tm acceptance commands while PYTHON_BIN remains exported.
+rm -rf "$routing_test_tmp"
+unset PYTHON_BIN routing_test_tmp
+```

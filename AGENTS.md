@@ -225,20 +225,29 @@ node --test tests/cass-memory.test.js
 
 ### Acceptance gate for this repository
 
-XPowers commits `.xpowers/acceptance.json`. Install the dependencies exercised by its Node suite, finish and commit the intended source changes, then use the matching runtime from this checkout:
+XPowers commits `.xpowers/acceptance.json`. Install the dependencies exercised by its Node suite, including the isolated Python parser used by the Codex routing installer tests:
 
 ```bash
 npm ci
 bun install --frozen-lockfile --cwd .opencode
+routing_test_tmp=$(mktemp -d)
+python3 -m venv "$routing_test_tmp/venv"
+"$routing_test_tmp/venv/bin/python" -m pip install \
+  'tomlkit @ https://files.pythonhosted.org/packages/bd/75/8539d011f6be8e29f339c42e633aae3cb73bffa95dd0f9adec09b9c58e85/tomlkit-0.13.3-py3-none-any.whl#sha256=c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0'
+export PYTHON_BIN="$routing_test_tmp/venv/bin/python"
 ```
+
+Finish and commit the intended source changes, then use the matching runtime from this checkout. Keep `PYTHON_BIN` exported through the acceptance run so every policy check inherits it:
 
 ```bash
 ./scripts/tm acceptance run <task-id>
 ./scripts/tm acceptance check <task-id>
 ./scripts/tm close <task-id>
+rm -rf "$routing_test_tmp"
+unset PYTHON_BIN routing_test_tmp
 ```
 
-The policy runs the root Node `.test.js` suite with concurrency 4 and compact output, checks generated Codex skill wrappers, and runs ESLint. The Node suite includes an OpenCode runtime test that invokes Bun and resolves `.opencode` dependencies, so the policy requires Node.js 20 or later, npm dependencies, Bun with `.opencode` dependencies installed, Git, and Bash. The receipt covers the exact worktree snapshot, including bounded internal directory-symlink subtrees; it does not stand in for the remaining Bun, Gemini, package typecheck, security-audit, or other full-CI jobs. See `docs/ACCEPTANCE.md` for the proof boundary, traversal caps, recovery procedure, and local-trust limits.
+The policy runs the root Node `.test.js` suite with concurrency 4 and compact output, checks generated Codex skill wrappers, and runs ESLint. The Node suite includes an OpenCode runtime test that invokes Bun and resolves `.opencode` dependencies, plus Codex routing installer tests that use Python 3.9+ and pinned `tomlkit`. The receipt covers the exact worktree snapshot, including bounded internal directory-symlink subtrees; it does not stand in for the remaining Bun, Gemini, package typecheck, security-audit, or other full-CI jobs. See [Codex routing contributor test setup](docs/CODEX-ROUTING.md#contributor-test-setup) for the canonical parser setup and `docs/ACCEPTANCE.md` for the proof boundary, traversal caps, recovery procedure, and local-trust limits.
 
 ### Test Structure
 
