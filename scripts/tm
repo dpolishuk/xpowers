@@ -360,6 +360,11 @@ main() {
   repo_root="$(find_repo_root)"
 
   if [[ -n "$repo_root" ]] && acceptance_policy_configured "$repo_root"; then
+    local acceptance_redirect="${repo_root}/.beads/redirect"
+    if [[ -L "$acceptance_redirect" || -e "$acceptance_redirect" ]]; then
+      echo "tm: task-store redirect is unsupported while acceptance policy is enabled" >&2
+      exit 1
+    fi
     if [[ "$backend" != "br" ]]; then
       echo "tm: acceptance policy currently supports only the br backend (configured: $backend)" >&2
       exit 1

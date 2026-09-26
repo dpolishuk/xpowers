@@ -10,6 +10,7 @@ const { execFileSync, spawn } = require("node:child_process")
 
 const RUNTIME_VERSION = 1
 const POLICY_RELATIVE_PATH = path.join(".xpowers", "acceptance.json")
+const TASK_REDIRECT_RELATIVE_PATH = path.join(".beads", "redirect")
 const TASK_SELECTOR_PATHS = [".beads/config.yaml", ".beads/metadata.json"]
 const MAX_POLICY_BYTES = 256 * 1024
 const MAX_RECEIPT_BYTES = 512 * 1024
@@ -106,8 +107,10 @@ function resolveGitContext(requestedRoot) {
   const gitDir = fs.realpathSync(gitOutput(root, ["rev-parse", "--absolute-git-dir"]).trim())
   const commonText = gitOutput(root, ["rev-parse", "--git-common-dir"]).trim()
   const commonDir = fs.realpathSync(path.resolve(root, commonText))
+  const context = { root, gitDir, commonDir }
+  assertNoTaskRedirect(context)
   const head = gitOutput(root, ["rev-parse", "--verify", "HEAD"]).trim()
-  return { root, gitDir, commonDir, head }
+  return { ...context, head }
 }
 
 function lstatSafe(file) {
@@ -116,6 +119,12 @@ function lstatSafe(file) {
   } catch (error) {
     if (error.code === "ENOENT") return null
     throw error
+  }
+}
+
+function assertNoTaskRedirect(context) {
+  if (lstatSafe(path.join(context.root, TASK_REDIRECT_RELATIVE_PATH))) {
+    fail("task-store redirect is unsupported while acceptance policy is enabled")
   }
 }
 
@@ -460,6 +469,7 @@ function fingerprintResolvedTarget(context, target, label) {
 }
 
 function createSnapshot(context, policyFingerprint) {
+  assertNoTaskRedirect(context)
   const currentHead = gitOutput(context.root, ["rev-parse", "--verify", "HEAD"]).trim()
   const indexEntries = parseNul(gitOutput(context.root, ["ls-files", "-z", "--stage"], { encoding: null }))
   const index = []
@@ -535,6 +545,7 @@ function createSnapshot(context, policyFingerprint) {
     head: currentHead,
   }
   const payload = { runtimeVersion: RUNTIME_VERSION, identity, policyFingerprint, index, directories, files }
+  assertNoTaskRedirect(context)
   return { ...payload, fingerprint: sha256(Buffer.from(JSON.stringify(payload), "utf8")) }
 }
 

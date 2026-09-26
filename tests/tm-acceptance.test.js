@@ -332,6 +332,72 @@ test("unsafe task-store selector nodes fail closed", () => {
   }
 })
 
+test("task-store redirects added after acceptance refuse wrapper and direct-runtime operations", () => {
+  const fixture = makeFixture()
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-redirect"]).status, 0)
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "redirect"), `${path.join(fixture.root, "target-beads")}\n`)
+    fs.writeFileSync(fixture.backendLog, "")
+
+    for (const args of [["acceptance", "check", "bd-redirect"], ["close", "bd-redirect"], ["show", "bd-redirect"]]) {
+      const refused = runTm(fixture, args)
+      assert.equal(refused.status, 1, args.join(" "))
+      assert.match(refused.stderr, /task-store redirect is unsupported/i)
+    }
+    const direct = run(process.execPath, [acceptancePath, "check", "bd-redirect"], {
+      cwd: fixture.repo,
+      env: fixture.env,
+    })
+    assert.equal(direct.status, 1)
+    assert.match(direct.stderr, /task-store redirect is unsupported/i)
+    assert.deepEqual(backendCalls(fixture), [])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("all redirect node types and redirects created during checks fail closed", () => {
+  const redirectCreators = [
+    ["regular file", (target) => fs.writeFileSync(target, "/tmp/target-beads\n")],
+    ["directory", (target) => fs.mkdirSync(target)],
+    ["dangling symlink", (target) => fs.symlinkSync("missing-target", target)],
+  ]
+  for (const [label, createRedirect] of redirectCreators) {
+    const fixture = makeFixture()
+    try {
+      createRedirect(path.join(fixture.repo, ".beads", "redirect"))
+      const refused = runTm(fixture, ["acceptance", "run", `bd-redirect-${label.replaceAll(" ", "-")}`])
+      assert.equal(refused.status, 1, label)
+      assert.match(refused.stderr, /task-store redirect is unsupported/i)
+      assert.deepEqual(backendCalls(fixture), [])
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+
+  const fixture = makeFixture()
+  const redirect = path.join(fixture.repo, ".beads", "redirect")
+  try {
+    const originalPolicy = fs.readFileSync(path.join(fixture.repo, ".xpowers", "acceptance.json"), "utf8")
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-redirect-during-check"]).status, 0)
+    writePolicy(fixture, [{
+      id: "create-redirect",
+      command: [process.execPath, "-e", "require('node:fs').writeFileSync('.beads/redirect', '/tmp/target-beads\\n')"],
+      timeoutMs: 5000,
+    }])
+    const failed = runTm(fixture, ["acceptance", "run", "bd-redirect-during-check"])
+    assert.equal(failed.status, 1)
+    assert.match(failed.stderr, /task-store redirect is unsupported/i)
+    fs.unlinkSync(redirect)
+    fs.writeFileSync(path.join(fixture.repo, ".xpowers", "acceptance.json"), originalPolicy)
+    const checked = runTm(fixture, ["acceptance", "check", "bd-redirect-during-check"])
+    assert.equal(checked.status, 1)
+    assert.match(checked.stderr, /latest acceptance run is failed/i)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("POSIX permission changes invalidate acceptance evidence", () => {
   const fixture = makeFixture()
   try {
@@ -687,9 +753,13 @@ test("an unconfigured project preserves ordinary tm passthrough behavior", () =>
     assert.equal(closed.status, 0, closed.stderr)
     const created = runTm(fixture, ["create", "title", "-qsclosed", "--json"])
     assert.equal(created.status, 0, created.stderr)
+    fs.writeFileSync(path.join(fixture.repo, ".beads", "redirect"), "/tmp/ordinary-target\n")
+    const shown = runTm(fixture, ["show", "bd-ordinary"])
+    assert.equal(shown.status, 0, shown.stderr)
     assert.deepEqual(backendCalls(fixture), [
       ["close", "bd-ordinary"],
       ["create", "title", "-qsclosed", "--json"],
+      ["show", "bd-ordinary"],
     ])
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
