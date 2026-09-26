@@ -287,7 +287,19 @@ def handle(payload, project):
         except ValueError:
             pass
     try:
-        project = common.resolve_project(project, require_origin=True)
+        try:
+            project = common.resolve_project(project, require_origin=True)
+        except (OSError, ValueError) as identity_error:
+            state_path = common.raw_session_path(project, session_id)
+            try:
+                state = json.loads(state_path.read_text())
+            except FileNotFoundError:
+                return {}
+            if not isinstance(state, dict) or type(state.get("enabled")) is not bool:
+                return deny("Invalid routing state; repair it with the routing CLI")
+            if not state["enabled"]:
+                return {}
+            raise identity_error
         state_path = common.session_path(project, session_id)
         try:
             state = json.loads(state_path.read_text())

@@ -141,8 +141,14 @@ test("workflow uses configured budgets and requires fresh independent reviews", 
   assert.match(text, /money.*concurrency.*data-migration/)
 })
 
-test("session state cannot escape its directory and is scoped by project and session", () => {
-  const paths = python("print(json.dumps([str(common.session_path('/tmp/project-a','../../escape')), str(common.session_path('/tmp/project-a','other')), str(common.session_path('/tmp/project-b','../../escape'))]))")
+test("session state cannot escape its directory and is scoped by project and session", t => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "xpowers-routing-session-path-")))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const projectA = path.join(dir, "project-a")
+  const projectB = path.join(dir, "project-b")
+  fs.mkdirSync(projectA)
+  fs.mkdirSync(projectB)
+  const paths = python("print(json.dumps([str(common.session_path(data[0],'../../escape')), str(common.session_path(data[0],'other')), str(common.session_path(data[1],'../../escape'))]))", [projectA, projectB])
   assert.equal(new Set(paths).size, 3)
   assert.ok(paths.every((p) => !p.includes("..")))
 })
@@ -668,11 +674,11 @@ test("missing legacy alias origin denies active guard while exact routing-off re
   fs.renameSync(originalControl, aliasControl)
   fs.unlinkSync(path.join(f.runtime, "install-origin.json"))
   const cli = path.join(f.runtime, "cli.py")
-  const ordinary = spawnSync("python3", ["-B", cli, "guard", "--project", f.project], {
-    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+  const ordinary = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
     input: JSON.stringify({
       hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-ordinary",
-      cwd: f.project, tool_name: "Bash", tool_input: { command: "pwd" },
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
     }),
   })
   assertSuccess(ordinary)
@@ -691,6 +697,49 @@ test("missing legacy alias origin denies active guard while exact routing-off re
   }))
   const sessionKey = crypto.createHash("sha256").update(session).digest("hex")
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(aliasControl, "sessions", `${sessionKey}.json`), "utf8")), { enabled: false })
+  const inactive = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: session, tool_use_id: "bad-origin-inactive",
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(inactive)
+  assert.deepEqual(JSON.parse(inactive.stdout), {})
+  const fresh = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "guard", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({
+      hook_event_name: "PreToolUse", session_id: "absent-session", tool_use_id: "bad-origin-absent",
+      cwd: alias, tool_name: "Bash", tool_input: { command: "pwd" },
+    }),
+  })
+  assertSuccess(fresh)
+  assert.deepEqual(JSON.parse(fresh.stdout), {})
+  const status = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "status", "--project", alias, "--session", session], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+  })
+  assertSuccess(status)
+  assert.equal(status.stdout.trim(), "OFF")
+  const sessionStart = spawnSync("python3", ["-B", path.join(alias, ".claude/xpowers-routing/cli.py"), "session-start", "--project", alias], {
+    env: f.env, cwd: alias, encoding: "utf8", timeout: 10000,
+    input: JSON.stringify({ session_id: session, cwd: alias }),
+  })
+  assertSuccess(sessionStart)
+  assert.deepEqual(JSON.parse(sessionStart.stdout), {})
+})
+
+test("origin failure consumes a minted activation proof and disables its raw session", t => {
+  const f = installedFixture(t)
+  const session = "bad-origin-proof"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "ON")
+  const observed = observeActivation(f, session)
+  assert.equal(fs.existsSync(activationPath(f, session)), true)
+  fs.writeFileSync(path.join(f.runtime, "install-origin.json"), "{}\n")
+  const result = executeObserved(f, observed)
+  assert.equal(result.status, 1)
+  assert.equal(fs.existsSync(activationPath(f, session)), false)
+  assert.equal(f.run(["status", "--session", session]).stdout.trim(), "OFF")
 })
 
 test("ordinary active guard commands do not enter activation attestation", t => {

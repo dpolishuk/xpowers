@@ -250,7 +250,19 @@ def _disable(project, session_id, raw=False):
 
 
 def active(project, session):
-    state = common.session_path(project, session)
+    try:
+        identity = common.resolve_project(project, require_origin=True)
+    except (OSError, ValueError) as identity_error:
+        state = common.raw_session_path(project, session)
+        if not state.exists():
+            return False
+        data = json.loads(state.read_text())
+        if not isinstance(data, dict) or type(data.get("enabled")) is not bool:
+            raise ValueError("Invalid routing session state; run /routing-off to reset it")
+        if not data["enabled"]:
+            return False
+        raise identity_error
+    state = common.session_path(identity, session)
     if not state.exists():
         return False
     data = json.loads(state.read_text())
@@ -315,9 +327,9 @@ def main():
             result = guard.handle(data, project)
             print(json.dumps(_issue_activation(project, data, result)))
         elif args.action == "session-start":
-            project = common.resolve_project(project, require_origin=True)
             data = json.load(sys.stdin)
             if active(project, data.get("session_id")):
+                project = common.resolve_project(project, require_origin=True)
                 config = common.load_config(project)
                 check_profile(project, config)
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": common.workflow(config)}}))
@@ -332,11 +344,14 @@ def main():
                 _disable(project, args.session)
             print("XPowers routing is OFF for this session.")
         elif args.action == "on":
-            project = common.resolve_project(project, require_origin=True)
+            try:
+                project = common.resolve_project(project, require_origin=True)
+            except (OSError, ValueError):
+                _disable(project, args.session, raw=True)
+                raise
             config = _activate(project, args.session, args.hook_token)
             print(common.workflow(config))
         elif args.action == "status":
-            project = common.resolve_project(project, require_origin=True)
             print("ON" if active(project, args.session) else "OFF")
         elif args.action == "smoke":
             project = common.resolve_project(project, require_origin=True)

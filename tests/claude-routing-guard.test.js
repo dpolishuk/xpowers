@@ -36,6 +36,8 @@ elif request.get("config") is not None:
 generated = project / ".claude" / "xpowers-routing" / "generated-config.json"
 generated.parent.mkdir(parents=True, exist_ok=True)
 generated.write_text(request.get("generated", json.dumps(common.preset_config("opus"))))
+origin = project / ".claude" / "xpowers-routing" / "install-origin.json"
+origin.write_text(json.dumps({"version": 1, "project": str(project.resolve()), "installationId": "a" * 32}))
 state_path = common.session_path(project, "test-session")
 state_path.parent.mkdir(parents=True, exist_ok=True)
 if request.get("state") is not None:
