@@ -20,6 +20,14 @@ READ_TOOLS = {"Read", "Glob", "Grep", "WebFetch", "WebSearch", "AskUserQuestion"
 EDIT_TOOLS = {"Write", "Edit", "NotebookEdit"}
 READ_COMMANDS = {"pwd", "ls", "cat", "rg", "grep", "head", "tail", "wc"}
 GIT_QUERIES = {"rev-parse", "merge-base", "ls-tree"}
+# Git treats a literal zero as an explicit disabled trace target, including
+# Trace2 targets otherwise inherited from global or system configuration.
+GIT_TRACE_DESTINATIONS = (
+    "GIT_TRACE", "GIT_TRACE_CURL", "GIT_TRACE_FSMONITOR", "GIT_TRACE_PACK_ACCESS",
+    "GIT_TRACE_PACKET", "GIT_TRACE_PACKFILE", "GIT_TRACE_PERFORMANCE", "GIT_TRACE_REFS",
+    "GIT_TRACE_SETUP", "GIT_TRACE_SHALLOW", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF",
+)
+GIT_SAFE_ENVIRONMENT = tuple(name + "=0" for name in GIT_TRACE_DESTINATIONS)
 
 
 def deny(reason):
@@ -239,7 +247,8 @@ def _shell_allowed(command, project, session_id, allow_control):
     rewritten = []
     for segment in segments:
         executable = shlex.quote(str(common.resolve_trusted_command(segment[0], project)))
-        rewritten.append(executable + (" " + " ".join(shlex.quote(token) for token in segment[1:]) if len(segment) > 1 else ""))
+        prefix = " ".join(GIT_SAFE_ENVIRONMENT) + " " if segment[0] == "git" else ""
+        rewritten.append(prefix + executable + (" " + " ".join(shlex.quote(token) for token in segment[1:]) if len(segment) > 1 else ""))
     pipeline = " | ".join(rewritten)
     return "set -o pipefail; " + pipeline if len(segments) > 1 else pipeline
 

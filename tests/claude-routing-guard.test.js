@@ -590,6 +590,51 @@ test("generated readonly pipelines preserve an earlier command failure", t => {
   }
 })
 
+test("generated Git queries neutralize inherited trace destinations", t => {
+  const f = fixture(t)
+  const initialized = spawnSync(path.join(f.trusted, "git"), ["init", "-q", f.project], { encoding: "utf8" })
+  assert.equal(initialized.status, 0, initialized.stderr)
+  const trace = path.join(f.project, "trace.log")
+  const event = path.join(f.project, "trace-event.log")
+  const configTarget = path.join(f.project, "trace-config.log")
+  fs.writeFileSync(path.join(f.home, ".gitconfig"), `[trace2]\n\teventTarget = ${configTarget}\n`)
+  const command = "git --no-pager --no-lazy-fetch rev-parse --show-toplevel | cat"
+  const environment = { HOME: f.home, GIT_TRACE: trace, GIT_TRACE2_EVENT: event }
+  const git = path.join(f.trusted, "git")
+  const gitArgs = ["--no-pager", "--no-lazy-fetch", "rev-parse", "--show-toplevel"]
+  const baseline = spawnSync(git, gitArgs, { cwd: f.project, env: { ...process.env, ...environment }, encoding: "utf8" })
+  assert.notEqual(baseline.status, null, baseline.error?.message)
+  for (const target of [trace, event]) assert.equal(fs.existsSync(target), true, `baseline did not write ${path.basename(target)}`)
+  const configBaseline = spawnSync(git, gitArgs, { cwd: f.project, env: { ...process.env, HOME: f.home }, encoding: "utf8" })
+  assert.notEqual(configBaseline.status, null, configBaseline.error?.message)
+  assert.equal(fs.existsSync(configTarget), true, "baseline did not write the global Trace2 target")
+  for (const target of [trace, event, configTarget]) fs.rmSync(target)
+  const supported = spawnSync(git, gitArgs, { cwd: f.project, env: { ...process.env, HOME: f.home }, encoding: "utf8" }).status === 0
+  if (fs.existsSync(configTarget)) fs.rmSync(configTarget)
+  for (const identity of [{}, { agent_id: "e", agent_type: "xpowers-routing-explorer" }, { agent_id: "r", agent_type: "xpowers-routing-reviewer" }]) {
+    const result = f.run("Bash", { command, description: "keep", timeout: 7, run_in_background: false }, identity, { env: environment })
+    const updated = result.hookSpecificOutput.updatedInput
+    assert.match(updated.command, /^set -o pipefail; /)
+    for (const variable of [
+      "GIT_TRACE", "GIT_TRACE_CURL", "GIT_TRACE_FSMONITOR", "GIT_TRACE_PACK_ACCESS",
+      "GIT_TRACE_PACKET", "GIT_TRACE_PACKFILE", "GIT_TRACE_PERFORMANCE", "GIT_TRACE_REFS",
+      "GIT_TRACE_SETUP", "GIT_TRACE_SHALLOW", "GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF",
+    ]) assert.match(updated.command, new RegExp(`${variable}=0`))
+    assert.equal(updated.description, "keep")
+    assert.equal(updated.timeout, 7)
+    assert.equal(updated.run_in_background, false)
+    const executed = spawnSync("bash", ["-c", updated.command], { cwd: f.project, env: { ...process.env, ...environment }, encoding: "utf8" })
+    if (supported) {
+      assert.equal(executed.status, 0, executed.stderr)
+      assert.equal(executed.stdout.trim(), fs.realpathSync(f.project))
+    } else {
+      assert.notEqual(executed.status, 0)
+      assert.notEqual(executed.stderr.trim(), "")
+    }
+    for (const target of [trace, event, configTarget]) assert.equal(fs.existsSync(target), false, `rewritten query wrote ${path.basename(target)}`)
+  }
+})
+
 test("trusted command failures and compressed rg modes deny without ambient helpers", t => {
   const f = fixture(t)
   if (f.realRg) {

@@ -177,6 +177,8 @@ hooks and routing controls pin the installer-selected Python executable with
 `-E -S -B`, so `PYTHONPATH` and startup-site customizations do not alter them.
 Generated multi-command queries also enable `pipefail`, so a failed non-final stage
 fails the whole query instead of being hidden by a later read command.
+Generated Git stages explicitly disable inherited Trace and Trace2 destinations, so
+an ambient diagnostic setting cannot write into the project during a read-only query.
 
 This trusts installed operating-system and Homebrew host software plus shell startup
 files. It is not protection against a same-user administrator, a compromised host,
