@@ -57,7 +57,7 @@ tm close TASK
 tm close TASK_A TASK_B
 ```
 
-With a policy enabled, `tm close` accepts only explicit task IDs and no flags. It checks every target before dispatching to `br`; `--force` does not override this. On successful eligibility, it prints an eligibility line per ID, holds the acceptance lock through `br` completion, and preserves `br`'s standard I/O and exit status. Ambiguous or bulk terminal forms, including close-eligible epic helpers and imported terminal task states, are refused instead of being treated as accepted. Unsupported root/database overrides and backend-bypass forms are also refused. A failed command exits nonzero and explains why the task is not eligible.
+With a policy enabled, `tm close` accepts only explicit task IDs and no flags. It checks every target before dispatching to `br`; `--force` does not override this. On successful eligibility, it prints an eligibility line per ID, holds the acceptance lock through `br` completion, and preserves `br`'s standard I/O and exit status. Ambiguous or bulk terminal forms, including close-eligible epic helpers and imported terminal task states, are refused instead of being treated as accepted. Compact or clustered short-option tokens on `create` and `update` are also refused; use separate short options and values or long options. Unsupported root/database overrides and backend-bypass forms are refused. A failed command exits nonzero and explains why the task is not eligible.
 
 ## What a receipt covers
 

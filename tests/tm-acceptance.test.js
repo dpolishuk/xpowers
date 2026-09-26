@@ -581,9 +581,19 @@ test("unsafe close-capable command forms are refused without backend dispatch", 
     ["update", "bd-safe", "-s", "closed"],
     ["update", "bd-safe", "-sclosed"],
     ["update", "bd-safe", "-s=closed"],
+    ["update", "bd-safe", "-qsclosed"],
+    ["update", "bd-safe", "-vqsclosed"],
+    ["update", "bd-safe", "-qs=closed"],
+    ["update", "bd-safe", "-vqs=closed"],
     ["create", "title", "--status=done"],
+    ["create", "title", "-qsclosed", "--json"],
+    ["create", "title", "-vqsclosed"],
+    ["create", "title", "-qs=closed"],
+    ["create", "title", "-vqs=closed"],
     ["create", "--file", "tasks.json"],
     ["create", "-f/tasks.json"],
+    ["create", "-qftasks.json"],
+    ["create", "-vqf=tasks.json"],
     ["--db", "other.db", "close", "bd-safe"],
   ]
   for (const args of commands) {
@@ -654,13 +664,18 @@ test("malformed policy nodes, backend mismatch, and Git overrides fail closed", 
   }
 })
 
-test("an unconfigured project preserves ordinary tm close behavior", () => {
+test("an unconfigured project preserves ordinary tm passthrough behavior", () => {
   const fixture = makeFixture()
   try {
     fs.rmSync(path.join(fixture.repo, ".xpowers"), { recursive: true })
     const closed = runTm(fixture, ["close", "bd-ordinary"])
     assert.equal(closed.status, 0, closed.stderr)
-    assert.deepEqual(backendCalls(fixture), [["close", "bd-ordinary"]])
+    const created = runTm(fixture, ["create", "title", "-qsclosed", "--json"])
+    assert.equal(created.status, 0, created.stderr)
+    assert.deepEqual(backendCalls(fixture), [
+      ["close", "bd-ordinary"],
+      ["create", "title", "-qsclosed", "--json"],
+    ])
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
   }
@@ -764,6 +779,72 @@ test("an interrupted run leaves the latest receipt ineligible", async () => {
     assert.equal(closed.status, 1)
     assert.match(closed.stderr, /latest acceptance run is interrupted/i)
     assert.deepEqual(backendCalls(fixture), [])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("signals during synchronous snapshot work release the lock and cannot revive or dispatch", async () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "pause-snapshot.cjs")
+  try {
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const originalLstatSync = fs.lstatSync",
+      "let paused = false",
+      "fs.lstatSync = function(target) {",
+      "  if (!paused && process.env.SNAPSHOT_SIGNAL_MARKER && String(target).endsWith(`${path.sep}app.txt`)) {",
+      "    paused = true",
+      "    fs.writeFileSync(process.env.SNAPSHOT_SIGNAL_MARKER, 'snapshot')",
+      "    const deadline = Date.now() + 1200",
+      "    while (Date.now() < deadline) {}",
+      "  }",
+      "  return originalLstatSync.apply(this, arguments)",
+      "}",
+      "",
+    ].join("\n"))
+    const preloadEnv = (marker) => ({
+      ...fixture.env,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim(),
+      SNAPSHOT_SIGNAL_MARKER: marker,
+    })
+    const runAndSignal = async (args, marker) => {
+      const child = spawn(tmPath, args, {
+        cwd: fixture.repo,
+        env: preloadEnv(marker),
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+      let stderr = ""
+      child.stderr.setEncoding("utf8")
+      child.stderr.on("data", (chunk) => { stderr += chunk })
+      await waitFor(() => fs.existsSync(marker))
+      child.kill("SIGTERM")
+      const outcome = await waitForExit(child)
+      assert.equal(outcome.status, 143, stderr)
+      assert.equal(outcome.signal, null)
+    }
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-snapshot-signal"]).status, 0)
+    await runAndSignal(
+      ["acceptance", "run", "bd-snapshot-signal"],
+      path.join(fixture.root, "run-snapshot-ready"),
+    )
+    const interrupted = runTm(fixture, ["acceptance", "check", "bd-snapshot-signal"])
+    assert.equal(interrupted.status, 1)
+    assert.doesNotMatch(interrupted.stderr, /acceptance state is locked/i)
+    assert.match(interrupted.stderr, /latest acceptance run is interrupted/i)
+    fs.writeFileSync(fixture.backendLog, "")
+    assert.equal(runTm(fixture, ["close", "bd-snapshot-signal"]).status, 1)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-snapshot-signal"]).status, 0)
+    await runAndSignal(
+      ["close", "bd-snapshot-signal"],
+      path.join(fixture.root, "close-snapshot-ready"),
+    )
+    assert.deepEqual(backendCalls(fixture), [])
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-snapshot-signal"]).status, 0)
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
   }

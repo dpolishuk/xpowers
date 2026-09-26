@@ -98,6 +98,12 @@ acceptance_reject_unsafe_command() {
     done
   fi
   if [[ "${args[0]:-}" == "create" || "${args[0]:-}" == "update" ]]; then
+    for arg in "${args[@]:1}"; do
+      if [[ "$arg" == -??* && "$arg" != --* ]]; then
+        echo "tm: compact or clustered short options are unsupported for create/update while acceptance policy is enabled; use separate short options and values or long options" >&2
+        return 0
+      fi
+    done
     local i=1
     while [[ $i -lt ${#args[@]} ]]; do
       arg="${args[$i]}"

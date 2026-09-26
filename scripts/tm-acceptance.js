@@ -5,6 +5,7 @@
 const fs = require("node:fs")
 const path = require("node:path")
 const crypto = require("node:crypto")
+const { setImmediate } = require("node:timers")
 const { execFileSync, spawn } = require("node:child_process")
 
 const RUNTIME_VERSION = 1
@@ -542,10 +543,11 @@ function killCheckProcessGroup(child) {
   } catch { /* already exited */ }
 }
 
-function installCheckSignalHandlers() {
+function installOperationSignalHandlers(operation) {
   const handler = (signal) => {
-    interruptedSignal = signal
-    killCheckProcessGroup(activeChild)
+    if (!interruptedSignal) interruptedSignal = signal
+    if (operation === "guard-close") forwardBackendSignal(activeChild, signal)
+    else killCheckProcessGroup(activeChild)
   }
   process.on("SIGINT", handler)
   process.on("SIGTERM", handler)
@@ -560,17 +562,15 @@ function forwardBackendSignal(child, signal) {
   try { child.kill(signal) } catch { /* process already exited */ }
 }
 
-function installBackendSignalHandlers() {
-  const handler = (signal) => {
-    interruptedSignal = signal
-    forwardBackendSignal(activeChild, signal)
-  }
-  process.on("SIGINT", handler)
-  process.on("SIGTERM", handler)
-  return () => {
-    process.off("SIGINT", handler)
-    process.off("SIGTERM", handler)
-  }
+function failIfInterrupted(operation) {
+  if (!interruptedSignal) return
+  const exitCode = interruptedSignal === "SIGINT" ? 130 : interruptedSignal === "SIGTERM" ? 143 : 1
+  fail(`${operation} interrupted by ${interruptedSignal}`, exitCode)
+}
+
+async function observeSignals(operation) {
+  await new Promise((resolve) => setImmediate(resolve))
+  failIfInterrupted(operation)
 }
 
 function runCheck(check, root) {
@@ -658,24 +658,22 @@ async function runAcceptance(task, context, storage) {
   }
   let checks = []
   try {
+    await observeSignals("acceptance run")
     const loaded = loadPolicy(context)
     const before = createSnapshot(context, loaded.fingerprint)
-    const removeSignals = installCheckSignalHandlers()
-    try {
-      for (const check of loaded.policy.checks) {
-        if (interruptedSignal) fail(`acceptance run interrupted by ${interruptedSignal}`)
-        process.stdout.write(`tm acceptance: running ${check.id}\n`)
-        const result = await runCheck(check, context.root)
-        checks.push(result)
-        if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`)
-        if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`)
-        if (result.status !== "passed") fail(`acceptance check ${check.id} ${result.status}`)
-        process.stdout.write(`tm acceptance: ${check.id} passed\n`)
-      }
-    } finally {
-      removeSignals()
+    await observeSignals("acceptance run")
+    for (const check of loaded.policy.checks) {
+      failIfInterrupted("acceptance run")
+      process.stdout.write(`tm acceptance: running ${check.id}\n`)
+      const result = await runCheck(check, context.root)
+      checks.push(result)
+      if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`)
+      if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : `${result.stderr}\n`)
+      if (result.status !== "passed") fail(`acceptance check ${check.id} ${result.status}`)
+      process.stdout.write(`tm acceptance: ${check.id} passed\n`)
     }
     const after = createSnapshot(context, loaded.fingerprint)
+    await observeSignals("acceptance run")
     if (before.fingerprint !== after.fingerprint) fail("worktree or policy changed while acceptance checks ran")
     writeReceipt(storage, task, {
       status: "passed",
@@ -686,6 +684,7 @@ async function runAcceptance(task, context, storage) {
       snapshot: after,
       checks,
     })
+    await observeSignals("acceptance run")
     process.stdout.write(`tm acceptance: ${task} is eligible (${after.fingerprint})\n`)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -769,33 +768,38 @@ async function main() {
 
   const context = resolveGitContext(process.env.TM_REPO_ROOT || process.cwd())
   const storage = storageFor(context)
-  const release = acquireLock(storage, operation, args)
+  const removeSignals = installOperationSignalHandlers(operation)
+  let release = null
   let releaseLock = true
   try {
+    release = acquireLock(storage, operation, args)
+    await observeSignals(operation)
     if (operation === "run") {
       await runAcceptance(args[0], context, storage)
       return 0
     }
     if (operation === "check") {
       const snapshot = checkEligibility(args[0], context, storage)
+      await observeSignals("acceptance check")
       process.stdout.write(`tm acceptance: ${args[0]} is eligible (${snapshot.fingerprint})\n`)
       return 0
     }
     for (const task of args) {
       const snapshot = checkEligibility(task, context, storage)
+      await observeSignals("guarded close")
       process.stdout.write(`tm acceptance: ${task} is eligible (${snapshot.fingerprint})\n`)
     }
-    const removeSignals = installBackendSignalHandlers()
-    try {
-      return await spawnBackendClose(args, context)
-    } finally {
-      removeSignals()
-    }
+    failIfInterrupted("guarded close")
+    return await spawnBackendClose(args, context)
   } catch (error) {
     if (error instanceof PendingReceiptWriteError) releaseLock = false
     throw error
   } finally {
-    if (releaseLock) release()
+    try {
+      if (release && releaseLock) release()
+    } finally {
+      removeSignals()
+    }
   }
 }
 
