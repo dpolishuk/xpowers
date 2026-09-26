@@ -492,6 +492,51 @@ For quick switching between modes:
 
 ---
 
+## Optional native Codex routing
+
+XPowers wrapper installation and OpenCode's `/routing-settings` are separate from
+native Codex routing. The Codex setup is opt-in and writes only repository-local
+managed configuration; it never enables routing as part of `install.sh --codex`.
+
+The default routing profile is:
+
+| Scope / role | Default model | Default effort | Responsibility |
+|---|---|---|---|
+| Root coordinator | `gpt-6-astra` | `medium` | Plans, routes, and reviews; its instructions forbid repository edits, including tiny fixes. |
+| `default` | `gpt-5.6-terra` | `low` | Guard role that requires an explicit role selection. |
+| `explorer` | `gpt-5.6-terra` | `low` | Bounded read-only discovery. |
+| `worker` | `gpt-5.6-terra` | `medium` | Normal bounded implementation. |
+| `verifier` | `gpt-5.6-terra` | `medium` | Fresh independent verification without fixes. |
+| `senior` | `gpt-5.6-sol` | `high` | Materially risky work or Terra escalation. |
+| `reviewer` | `gpt-5.6-sol` | `high` | Fresh review of risky or escalated changes. |
+
+Use it from an XPowers checkout after reviewing the full guide:
+
+```bash
+bash scripts/setup-codex-routing.sh --repo /path/to/project --dry-run
+bash scripts/setup-codex-routing.sh --repo /path/to/project
+```
+
+The root profile starts at `medium`; reserve an explicit root `high` override for
+architectural complexity.
+
+Fresh setups use the `modern` format for current Codex Desktop. It sets explicit
+`[agents.<role>]` registrations and points them to `.codex/agents/*.toml`, enables
+agents on the root with a maximum of three concurrent child threads, and disables
+agent spawning in child role files. Use `--config-format legacy` only for older V1
+Codex CLI clients such as 0.140. A separately installed CLI version does not prove
+what a Codex Desktop runtime supports; legacy V1 depth settings do not enforce child
+disablement on newer V2 clients.
+
+The setup validates configuration syntax and creates no model calls. It does not
+prove which model or effort the runtime used. Start a fresh trusted session and run
+the generated `.codex/ROUTING-SMOKE-TEST.md`, inspecting runtime metadata when it is
+available. Record `UNVERIFIED` where it is unavailable; do not use a model's own
+name as evidence. See [CODEX-ROUTING.md](CODEX-ROUTING.md) for overrides, adoption,
+backups, restore, and operational limits.
+
+---
+
 ## Troubleshooting Model Configuration
 
 **Issue: Model not found**

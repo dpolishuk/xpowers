@@ -577,6 +577,21 @@ $codex-skill-executing-plans Continue from current tm ready task.
 
 You can also use `/skills` in Codex UI to discover and select the same wrappers.
 
+### Optional native Codex routing
+
+Installing XPowers skills does not enable native Codex multi-agent routing. For an
+opt-in, repository-local Astra → Terra → Sol setup, review
+[the Codex routing guide](docs/CODEX-ROUTING.md), preview the change, then apply it:
+
+```bash
+bash scripts/setup-codex-routing.sh --repo /path/to/project --dry-run
+bash scripts/setup-codex-routing.sh --repo /path/to/project
+```
+
+The setup does not make model calls or change global Codex, account, provider, or
+ordinary Desktop Chat/Work settings. Open a fresh trusted Codex session afterward
+and follow the generated smoke test before treating runtime routing as verified.
+
 </details>
 
 <details>

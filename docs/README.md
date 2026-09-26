@@ -11,6 +11,7 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 - [ACCEPTANCE.md](ACCEPTANCE.md) — opt-in current-code verification before `tm close` with the `br` backend
 - [linear-mcp-setup.md](linear-mcp-setup.md) — canonical Linear setup and `tm sync` guide
 - [model-configuration.md](model-configuration.md) — model/provider configuration guide for supported hosts
+- [CODEX-ROUTING.md](CODEX-ROUTING.md) — optional repository-local native Codex routing setup and verification
 
 ## Host-Specific Install Guides
 
