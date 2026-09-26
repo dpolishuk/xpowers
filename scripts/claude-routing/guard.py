@@ -78,6 +78,8 @@ def _protected(paths, project):
         common.claude_config_dir() / "settings.local.json",
     ]
     controls.extend(project / ".claude" / "agents" / f"{PREFIX}{role}.md" for role in DELEGATES | {"coordinator"})
+    controls.extend(project / ".claude" / "commands" / name for name in
+                    ("routing-on.md", "routing-off.md", "routing-smoke-test.md"))
     return any(_contains_either(paths, control) for control in controls)
 
 

@@ -244,18 +244,18 @@ def _installation(project):
                 hint = current_hint
                 continue
             control = controls[project]
-            manifest = _read_manifest(control, project)
             source = project
-            if manifest is None and current_hint is not None:
+            if current_hint is not None:
                 source = Path(current_hint["project"])
                 manifest = _read_manifest(controls[source], source)
                 if manifest is None:
                     raise ValueError("Routing ownership backup is missing. Recover the original external install-manifest.json before reinstalling; generated files will not be adopted as originals")
-            if manifest is not None and current_hint is not None:
                 identity = current_hint["installationId"]
                 if (current_hint["project"] != manifest["project"]
                         or identity is not None and identity != manifest.get("installationId")):
                     raise ValueError("Routing origin does not match its ownership manifest; refusing to overwrite the installation")
+            else:
+                manifest = _read_manifest(control, project)
             yield control, manifest, source
             return
     raise ValueError("Routing origin changed repeatedly during installation; retry when other installers finish")

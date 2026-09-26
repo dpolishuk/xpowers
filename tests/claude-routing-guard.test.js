@@ -137,6 +137,27 @@ test("routing settings and generated agent definitions are protected from native
   }
 })
 
+test("generated routing commands are protected from worker and senior native edits", (t) => {
+  const f = fixture(t)
+  const commandDirectory = path.join(f.project, ".claude", "commands")
+  fs.mkdirSync(commandDirectory, { recursive: true })
+  const commandAlias = path.join(f.project, "routing-command-alias")
+  fs.symlinkSync(commandDirectory, commandAlias, "dir")
+  const targets = [
+    ".claude/commands/routing-on.md",
+    path.join(f.project, ".claude", "commands", "routing-off.md"),
+    path.join(commandAlias, "routing-smoke-test.md"),
+  ]
+  for (const role of ["worker", "senior"]) {
+    const identity = { agent_id: "agent-123", agent_type: `xpowers-routing-${role}` }
+    for (const tool of ["Write", "Edit", "NotebookEdit"]) {
+      const key = tool === "NotebookEdit" ? "notebook_path" : "file_path"
+      for (const target of targets) denied(f.run(tool, { [key]: target }, identity), `${role} ${tool} ${target}`)
+      allowed(f.run(tool, { [key]: ".claude/commands/project-command.md" }, identity), `${role} ${tool} unrelated command`)
+    }
+  }
+})
+
 test("custom CLAUDE_CONFIG_DIR settings are protected while outside scratch remains writable", (t) => {
   const f = fixture(t)
   const configDirectory = path.join(f.root, "custom-claude")

@@ -341,6 +341,75 @@ test("routing relocation replaces only owned absolute hooks and restores origina
   assert.equal(fs.existsSync(file(moved, "xpowers-routing/cli.py")), false)
 })
 
+test("routing ownership follows the current marker across an A to B to A roundtrip", t => {
+  const f = fixture(t, "project-a")
+  const unrelated = { matcher: "Read", hooks: [{ type: "command", command: "echo user-hook" }] }
+  write(f, "commands/routing-on.md", "original command bytes\n")
+  write(f, "settings.json", JSON.stringify({ theme: "dark", hooks: { PreToolUse: [unrelated] } }))
+  success(invoke(f))
+  const destinationManifest = manifestPath(f)
+
+  const moved = { ...f, project: path.join(path.dirname(f.project), "project-b") }
+  fs.renameSync(f.project, moved.project)
+  success(invoke(moved))
+  const sourceManifest = manifestPath(moved)
+  assert.equal(fs.existsSync(destinationManifest), true)
+  assert.equal(fs.existsSync(sourceManifest), true)
+
+  fs.renameSync(moved.project, f.project)
+  success(invoke(f))
+  const hooks = json(f, "settings.json").hooks
+  assert.equal(hooks.PreToolUse.length, 2)
+  assert.deepEqual(hooks.PreToolUse[0], unrelated)
+  assert.match(hooks.PreToolUse[1].hooks[0].command, new RegExp(f.project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  assert.equal(hooks.SessionStart.length, 1)
+
+  success(invoke(f, "restore"))
+  assert.equal(read(f, "commands/routing-on.md"), "original command bytes\n")
+  assert.deepEqual(json(f, "settings.json"), { theme: "dark", hooks: { PreToolUse: [unrelated] } })
+  assert.equal(fs.existsSync(file(f, "routing.json")), false)
+  assert.equal(fs.existsSync(file(f, "xpowers-routing/cli.py")), false)
+})
+
+test("routing roundtrip refuses a bad hinted backup instead of using the stale destination", t => {
+  for (const kind of ["missing", "corrupt", "mismatched-origin", "mismatched-identity"]) {
+    const f = fixture(t, `project-a-${kind}`)
+    write(f, "commands/routing-on.md", `original ${kind}\n`)
+    success(invoke(f))
+    const destinationManifest = manifestPath(f)
+    const destinationBefore = fs.readFileSync(destinationManifest)
+    const moved = { ...f, project: path.join(path.dirname(f.project), `project-b-${kind}`) }
+    fs.renameSync(f.project, moved.project)
+    success(invoke(moved))
+    const sourceManifest = manifestPath(moved)
+    fs.renameSync(moved.project, f.project)
+
+    if (kind === "missing") {
+      fs.unlinkSync(sourceManifest)
+    } else if (kind === "corrupt") {
+      fs.writeFileSync(sourceManifest, "not json\n")
+    } else if (kind === "mismatched-origin") {
+      const manifest = JSON.parse(fs.readFileSync(sourceManifest, "utf8"))
+      manifest.project = path.join(path.dirname(f.project), "another-project")
+      fs.writeFileSync(sourceManifest, JSON.stringify(manifest))
+    } else {
+      const manifest = JSON.parse(fs.readFileSync(sourceManifest, "utf8"))
+      manifest.installationId = manifest.installationId === "f".repeat(32) ? "e".repeat(32) : "f".repeat(32)
+      fs.writeFileSync(sourceManifest, JSON.stringify(manifest))
+    }
+
+    const settingsBefore = read(f, "settings.json")
+    const commandBefore = read(f, "commands/routing-on.md")
+    const originBefore = read(f, "xpowers-routing/install-origin.json")
+    const result = invoke(f)
+    assert.notEqual(result.status, 0, `${kind}: reinstall unexpectedly succeeded`)
+    assert.equal(read(f, "settings.json"), settingsBefore, kind)
+    assert.equal(read(f, "commands/routing-on.md"), commandBefore, kind)
+    assert.equal(read(f, "xpowers-routing/install-origin.json"), originBefore, kind)
+    assert.deepEqual(fs.readFileSync(destinationManifest), destinationBefore, kind)
+  }
+})
+
 test("copied routing installations keep independent ownership and restoration", t => {
   const f = fixture(t)
   success(invoke(f))
