@@ -23,6 +23,9 @@ const MAX_CHECK_OUTPUT_BYTES = 64 * 1024
 const MAX_STORED_STREAM_BYTES = 4096
 const OUTPUT_WRITE_TIMEOUT_MS = 5000
 const HASH_CHUNK_BYTES = 64 * 1024
+const MAX_DIRECTORY_SYMLINK_NODES = 4096
+const MAX_DIRECTORY_SYMLINK_DEPTH = 32
+const MAX_DIRECTORY_SYMLINK_PATH_BYTES = 256 * 1024
 const TASK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 const CHECK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const FORBIDDEN_GIT_ENV = [
@@ -398,6 +401,12 @@ function parseNul(buffer) {
   return values
 }
 
+function decodeUtf8(raw, label) {
+  const value = raw.toString("utf8")
+  if (!Buffer.from(value, "utf8").equals(raw)) fail(`${label} is not valid UTF-8 and cannot be safely fingerprinted`)
+  return value
+}
+
 function parseTaggedIndex(buffer) {
   const entries = new Map()
   for (const value of parseNul(buffer)) {
@@ -505,25 +514,149 @@ function assertTaskSelectorCanonical(context, target, expectedRelative) {
   if (relative !== expectedRelative) fail(`task-store selector ${expectedRelative} resolves to an unsupported path`)
 }
 
-function fingerprintResolvedTarget(context, target, label) {
-  const relative = assertCanonicalTargetAllowed(context, target, label)
-  const stat = fs.lstatSync(target)
+function createDirectoryTraversalState(nodes, directoryPaths) {
+  return {
+    nodes,
+    directoryPaths,
+    reservedPaths: new Set(),
+    pathBytes: 0,
+    activeDirectories: new Set(),
+    completedDirectories: new Set(),
+  }
+}
+
+function reserveTraversalPath(state, relative) {
+  if (state.reservedPaths.has(relative)) return
+  if (state.reservedPaths.size >= MAX_DIRECTORY_SYMLINK_NODES) {
+    fail(`directory symlink traversal node limit exceeded (${MAX_DIRECTORY_SYMLINK_NODES})`)
+  }
+  const nextPathBytes = state.pathBytes + Buffer.byteLength(relative, "utf8")
+  if (nextPathBytes > MAX_DIRECTORY_SYMLINK_PATH_BYTES) {
+    fail(`directory symlink traversal path-byte limit exceeded (${MAX_DIRECTORY_SYMLINK_PATH_BYTES})`)
+  }
+  state.reservedPaths.add(relative)
+  state.pathBytes = nextPathBytes
+}
+
+function storeSnapshotNode(state, node) {
+  const existing = state.nodes.get(node.path)
+  if (existing) return existing
+  state.nodes.set(node.path, node)
+  return node
+}
+
+function readLinkUtf8(file, label) {
+  const raw = fs.readlinkSync(file, { encoding: "buffer" })
+  return decodeUtf8(raw, `${label} target`)
+}
+
+function resolveLinkTarget(file, link, label) {
+  try {
+    return fs.realpathSync(path.resolve(path.dirname(file), link))
+  } catch (error) {
+    if (error.code === "ELOOP") fail(`directory symlink cycle is unsupported: ${label}`)
+    fail(`dangling symlink is unsupported: ${label}`)
+  }
+}
+
+function listDirectoryEntries(directory, relative, state) {
+  const entries = []
+  let handle
+  try {
+    handle = fs.opendirSync(directory, { encoding: "buffer" })
+    let entry
+    while ((entry = handle.readSync()) !== null) {
+      const rawName = Buffer.isBuffer(entry.name) ? entry.name : Buffer.from(entry.name)
+      const name = decodeUtf8(rawName, `directory entry under ${relative}`)
+      if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+        fail(`unsafe directory entry under ${relative}`)
+      }
+      const childRelative = relative ? `${relative}/${name}` : name
+      reserveTraversalPath(state, childRelative)
+      entries.push({ name, rawName })
+    }
+  } finally {
+    if (handle) handle.closeSync()
+  }
+  entries.sort((left, right) => Buffer.compare(left.rawName, right.rawName))
+  return entries.map((entry) => entry.name)
+}
+
+function fingerprintTraversedNode(context, absolute, relative, label, state, depth) {
+  if (depth > MAX_DIRECTORY_SYMLINK_DEPTH) {
+    fail(`directory symlink traversal depth limit exceeded (${MAX_DIRECTORY_SYMLINK_DEPTH})`)
+  }
+  reserveTraversalPath(state, relative)
+  const stat = lstatSafe(absolute)
+  if (!stat) fail(`${label} changed while it was being traversed`)
   if (stat.isFile()) {
-    const opened = hashRegularFileNoFollow(target, label, (canonical) => {
-      assertCanonicalTargetAllowed(context, canonical, label)
+    const opened = hashRegularFileNoFollow(absolute, label, (canonical) => {
+      const canonicalRelative = assertCanonicalTargetAllowed(context, canonical, label)
+      if (canonicalRelative !== relative) fail(`${label} path changed while it was being traversed`)
     })
-    return {
+    storeSnapshotNode(state, {
       path: relative,
       type: "file",
       mode: opened.stat.mode & 0o7777,
       size: opened.stat.size,
       digest: opened.digest,
-    }
+    })
+    return { path: relative, type: "file" }
   }
-  if (stat.isDirectory()) {
-    fail(`${label} resolves to a directory; directory symlink targets are unsupported`)
+  if (stat.isDirectory()) return fingerprintTraversedDirectory(context, absolute, relative, label, state, depth)
+  if (stat.isSymbolicLink()) {
+    const link = readLinkUtf8(absolute, label)
+    const realTarget = resolveLinkTarget(absolute, link, relative)
+    const target = fingerprintResolvedTarget(context, realTarget, `symlink ${relative}`, state, depth + 1)
+    storeSnapshotNode(state, {
+      path: relative,
+      type: "symlink",
+      mode: stat.mode & 0o7777,
+      target: link,
+      resolvedTarget: target,
+    })
+    return { path: relative, type: "symlink" }
   }
   fail(`${label} is a special file and unsupported`)
+}
+
+function fingerprintTraversedDirectory(context, directory, relative, label, state, depth) {
+  if (depth > MAX_DIRECTORY_SYMLINK_DEPTH) {
+    fail(`directory symlink traversal depth limit exceeded (${MAX_DIRECTORY_SYMLINK_DEPTH})`)
+  }
+  if (state.activeDirectories.has(relative)) fail(`directory symlink cycle is unsupported: ${relative}`)
+  if (state.completedDirectories.has(relative)) return { path: relative, type: "directory" }
+  reserveTraversalPath(state, relative)
+  const canonical = fs.realpathSync(directory)
+  const canonicalRelative = assertCanonicalTargetAllowed(context, canonical, label)
+  if (canonicalRelative !== relative) fail(`${label} path changed while it was being traversed`)
+  const stat = fs.lstatSync(directory)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) fail(`${label} changed while it was being traversed`)
+
+  state.activeDirectories.add(relative)
+  try {
+    storeSnapshotNode(state, { path: relative, type: "directory", mode: stat.mode & 0o7777 })
+    for (const name of listDirectoryEntries(directory, relative, state)) {
+      const childRelative = `${relative}/${name}`
+      const child = path.join(directory, name)
+      fingerprintTraversedNode(context, child, childRelative, `directory symlink node ${childRelative}`, state, depth + 1)
+    }
+    const after = fs.lstatSync(directory)
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameFileState(stat, after) || fs.realpathSync(directory) !== canonical) {
+      fail(`${label} changed while it was being traversed`)
+    }
+    state.completedDirectories.add(relative)
+    return { path: relative, type: "directory" }
+  } finally {
+    state.activeDirectories.delete(relative)
+  }
+}
+
+function fingerprintResolvedTarget(context, target, label, state, depth = 0) {
+  const relative = assertCanonicalTargetAllowed(context, target, label)
+  if (relative === "") fail(`${label} resolves to the worktree root, which is unsupported`)
+  addAncestorDirectories(state.directoryPaths, relative)
+  return fingerprintTraversedNode(context, target, relative, label, state, depth)
 }
 
 function createSnapshot(context, policyFingerprint) {
@@ -570,28 +703,33 @@ function createSnapshot(context, policyFingerprint) {
   paths.add(POLICY_RELATIVE_PATH.split(path.sep).join("/"))
   for (const selector of TASK_SELECTOR_PATHS) paths.add(selector)
 
-  const files = []
+  const fileNodes = new Map()
   const directoryPaths = new Set()
+  const traversal = createDirectoryTraversalState(fileNodes, directoryPaths)
   for (const relative of [...paths].sort()) {
     if (relative.includes("\0") || path.isAbsolute(relative) || relative.split("/").includes("..")) fail(`unsafe Git path: ${relative}`)
     addAncestorDirectories(directoryPaths, relative)
     assertNoSymlinkParents(context.root, relative)
+    if (fileNodes.has(relative)) continue
     const absolute = path.join(context.root, ...relative.split("/"))
     const stat = lstatSafe(absolute)
     if (!stat) {
-      files.push({ path: relative, type: "missing" })
+      fileNodes.set(relative, { path: relative, type: "missing" })
       continue
     }
     const taskSelector = isTaskSelector(relative)
     if (stat.isSymbolicLink()) {
       if (taskSelector) fail(`task-store selector ${relative} must be a regular file, not a symlink`)
-      const link = fs.readlinkSync(absolute)
-      const resolved = path.resolve(path.dirname(absolute), link)
-      let realTarget
-      try { realTarget = fs.realpathSync(resolved) } catch { fail(`dangling symlink is unsupported: ${relative}`) }
-      const target = fingerprintResolvedTarget(context, realTarget, `symlink ${relative}`)
-      addAncestorDirectories(directoryPaths, target.path)
-      files.push({ path: relative, type: "symlink", target: link, resolvedTarget: target })
+      const link = readLinkUtf8(absolute, `symlink ${relative}`)
+      const realTarget = resolveLinkTarget(absolute, link, relative)
+      const target = fingerprintResolvedTarget(context, realTarget, `symlink ${relative}`, traversal)
+      fileNodes.set(relative, {
+        path: relative,
+        type: "symlink",
+        mode: stat.mode & 0o7777,
+        target: link,
+        resolvedTarget: target,
+      })
       continue
     }
     if (!stat.isFile()) {
@@ -602,7 +740,7 @@ function createSnapshot(context, policyFingerprint) {
       if (taskSelector) assertTaskSelectorCanonical(context, canonical, relative)
       else assertCanonicalTargetAllowed(context, canonical, `file ${relative}`)
     })
-    files.push({
+    fileNodes.set(relative, {
       path: relative,
       type: "file",
       mode: opened.stat.mode & 0o7777,
@@ -612,6 +750,7 @@ function createSnapshot(context, policyFingerprint) {
   }
 
   const directories = fingerprintAncestorDirectories(context, directoryPaths)
+  const files = [...fileNodes.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
 
   const identity = {
     root: context.root,

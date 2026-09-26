@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "node-tests",
+      "command": [
+        "bash",
+        "-c",
+        "canonical_tmp=$(cd \"${TMPDIR:-/tmp}\" && pwd -P) && TMPDIR=\"$canonical_tmp\" exec node --test --test-concurrency=4 --test-reporter=dot tests/*.test.js"
+      ],
+      "timeoutMs": 600000
+    },
+    {
+      "id": "codex-wrapper-sync",
+      "command": [
+        "node",
+        "scripts/sync-codex-skills.js",
+        "--check"
+      ],
+      "timeoutMs": 120000
+    },
+    {
+      "id": "eslint",
+      "command": [
+        "npm",
+        "run",
+        "lint"
+      ],
+      "timeoutMs": 120000
+    }
+  ]
+}

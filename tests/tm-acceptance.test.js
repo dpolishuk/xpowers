@@ -104,6 +104,19 @@ function passingCheck() {
   return { id: "tests", command: [process.execPath, "-e", "process.exit(0)"], timeoutMs: 5000 }
 }
 
+function addTrackedDirectoryLink(fixture, options = {}) {
+  const targetName = options.targetName || "generated-dir"
+  const linkName = options.linkName || "dependency-link"
+  const target = path.join(fixture.repo, targetName)
+  fs.mkdirSync(path.join(target, "empty"), { recursive: true })
+  fs.writeFileSync(path.join(target, "dependency.js"), "module.exports = 1\n")
+  fs.appendFileSync(path.join(fixture.repo, ".gitignore"), `/${targetName}/\n`)
+  fs.symlinkSync(targetName, path.join(fixture.repo, linkName))
+  git(fixture.repo, "add", ".gitignore", linkName)
+  git(fixture.repo, "commit", "-m", `track ${linkName}`)
+  return { target, link: path.join(fixture.repo, linkName) }
+}
+
 function backendCalls(fixture) {
   if (!fs.existsSync(fixture.backendLog)) return []
   return fs.readFileSync(fixture.backendLog, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -629,18 +642,230 @@ test("accepted in-worktree symlink targets are fingerprinted", () => {
   }
 })
 
-test("directory symlink targets are rejected rather than incompletely fingerprinted", () => {
+test("internal directory symlink subtrees are fingerprinted without duplicate canonical nodes", () => {
+  const scenarios = [
+    ["edit", ({ target }) => fs.writeFileSync(path.join(target, "dependency.js"), "module.exports = 2\n")],
+    ["add", ({ target }) => fs.writeFileSync(path.join(target, "ignored-new.js"), "new\n")],
+    ["delete", ({ target }) => fs.unlinkSync(path.join(target, "dependency.js"))],
+    ["file-mode", ({ target }) => fs.chmodSync(path.join(target, "dependency.js"), 0o600)],
+    ["empty-directory-mode", ({ target }) => fs.chmodSync(path.join(target, "empty"), 0o700)],
+    ["empty-directory-add", ({ target }) => fs.mkdirSync(path.join(target, "new-empty"))],
+    ["empty-directory-delete", ({ target }) => fs.rmdirSync(path.join(target, "empty"))],
+    ["target-directory-mode", ({ target }) => fs.chmodSync(target, 0o700)],
+    ["retarget", ({ fixture, link }) => {
+      const replacement = path.join(fixture.repo, "replacement-dir")
+      fs.mkdirSync(replacement)
+      fs.writeFileSync(path.join(replacement, "dependency.js"), "module.exports = 1\n")
+      fs.unlinkSync(link)
+      fs.symlinkSync("replacement-dir", link)
+    }],
+  ]
+  for (const [name, mutate] of scenarios) {
+    const fixture = makeFixture()
+    try {
+      const linked = addTrackedDirectoryLink(fixture)
+      fs.symlinkSync("generated-dir", path.join(fixture.repo, "dependency-link-two"))
+      git(fixture.repo, "add", "dependency-link-two")
+      git(fixture.repo, "commit", "-m", "add duplicate directory alias")
+      const task = `bd-directory-${name}`
+      const accepted = runTm(fixture, ["acceptance", "run", task])
+      assert.equal(accepted.status, 0, accepted.stderr)
+
+      const gitDir = git(fixture.repo, "rev-parse", "--absolute-git-dir")
+      const receiptPath = path.join(gitDir, "xpowers", "acceptance-v1", `${crypto.createHash("sha256").update(task).digest("hex")}.json`)
+      const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"))
+      assert.equal(receipt.snapshot.files.filter((entry) => entry.path === "generated-dir/dependency.js").length, 1)
+
+      mutate({ fixture, ...linked })
+      fs.writeFileSync(fixture.backendLog, "")
+      const closed = runTm(fixture, ["close", task])
+      assert.equal(closed.status, 1)
+      assert.match(closed.stderr, /evidence is stale/i)
+      assert.deepEqual(backendCalls(fixture), [])
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("nested internal directory links are covered and cycles are rejected", () => {
   const fixture = makeFixture()
   try {
-    fs.mkdirSync(path.join(fixture.repo, "generated-dir"))
-    fs.writeFileSync(path.join(fixture.repo, "generated-dir", "dependency.js"), "module.exports = 1\n")
-    fs.appendFileSync(path.join(fixture.repo, ".gitignore"), "generated-dir/\n")
-    fs.symlinkSync("generated-dir", path.join(fixture.repo, "dependency-link"))
-    git(fixture.repo, "add", ".gitignore", "dependency-link")
-    git(fixture.repo, "commit", "-m", "track generated directory link")
-    const accepted = runTm(fixture, ["acceptance", "run", "bd-symlink-directory"])
+    const linked = addTrackedDirectoryLink(fixture)
+    const shared = path.join(fixture.repo, "shared-generated")
+    fs.mkdirSync(shared)
+    fs.writeFileSync(path.join(shared, "nested.txt"), "nested one\n")
+    fs.symlinkSync("../shared-generated", path.join(linked.target, "nested-link"))
+    fs.symlinkSync("../shared-generated/nested.txt", path.join(linked.target, "nested-file-link"))
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-nested-directory"]).status, 0)
+    fs.writeFileSync(path.join(shared, "nested.txt"), "nested two\n")
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-nested-directory"]).status, 1)
+
+    fs.writeFileSync(path.join(shared, "nested.txt"), "nested one\n")
+    fs.symlinkSync(".", path.join(linked.target, "cycle"))
+    const cycle = runTm(fixture, ["acceptance", "run", "bd-directory-cycle"])
+    assert.equal(cycle.status, 1)
+    assert.match(cycle.stderr, /directory symlink cycle/i)
+
+    fs.unlinkSync(path.join(linked.target, "cycle"))
+    const cycleA = path.join(linked.target, "cycle-a")
+    const cycleB = path.join(linked.target, "cycle-b")
+    fs.mkdirSync(cycleA)
+    fs.mkdirSync(cycleB)
+    fs.symlinkSync("../cycle-b", path.join(cycleA, "to-b"))
+    fs.symlinkSync("../cycle-a", path.join(cycleB, "to-a"))
+    const crossCycle = runTm(fixture, ["acceptance", "run", "bd-directory-cross-cycle"])
+    assert.equal(crossCycle.status, 1)
+    assert.match(crossCycle.stderr, /directory symlink cycle/i)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("unsafe nodes inside directory symlink targets fail closed", () => {
+  const scenarios = [
+    ["dangling", (fixture, target) => fs.symlinkSync("missing", path.join(target, "unsafe")), /dangling symlink/i],
+    ["external", (fixture, target) => {
+      const outside = path.join(fixture.root, "outside")
+      fs.writeFileSync(outside, "outside\n")
+      fs.symlinkSync(outside, path.join(target, "unsafe"))
+    }, /resolves outside the worktree/i],
+    ["beads", (fixture, target) => fs.symlinkSync(path.join(fixture.repo, ".beads"), path.join(target, "unsafe")), /excluded \.beads metadata/i],
+    ["git", (fixture, target) => fs.symlinkSync(path.join(fixture.repo, ".git"), path.join(target, "unsafe")), /Git metadata/i],
+    ["special", (fixture, target) => {
+      const made = run("mkfifo", [path.join(target, "unsafe")], { cwd: fixture.repo })
+      assert.equal(made.status, 0, made.stderr)
+    }, /special file/i],
+  ]
+  for (const [name, arrange, expected] of scenarios) {
+    const fixture = makeFixture()
+    try {
+      const { target } = addTrackedDirectoryLink(fixture)
+      arrange(fixture, target)
+      const accepted = runTm(fixture, ["acceptance", "run", `bd-directory-${name}`])
+      assert.equal(accepted.status, 1)
+      assert.match(accepted.stderr, expected)
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+
+  const rootFixture = makeFixture()
+  try {
+    fs.symlinkSync(".", path.join(rootFixture.repo, "root-alias"))
+    git(rootFixture.repo, "add", "root-alias")
+    git(rootFixture.repo, "commit", "-m", "track unsafe root alias")
+    const accepted = runTm(rootFixture, ["acceptance", "run", "bd-directory-root"])
     assert.equal(accepted.status, 1)
-    assert.match(accepted.stderr, /directory symlink targets are unsupported/i)
+    assert.match(accepted.stderr, /worktree root.*unsupported/i)
+  } finally {
+    fs.rmSync(rootFixture.root, { recursive: true, force: true })
+  }
+
+  const ancestorFixture = makeFixture()
+  try {
+    const container = path.join(ancestorFixture.repo, "container")
+    fs.mkdirSync(path.join(container, "generated"), { recursive: true })
+    fs.writeFileSync(path.join(container, "generated", "inside.txt"), "inside\n")
+    fs.appendFileSync(path.join(ancestorFixture.repo, ".gitignore"), "/container/\n")
+    fs.symlinkSync("container/generated", path.join(ancestorFixture.repo, "ancestor-alias"))
+    git(ancestorFixture.repo, "add", ".gitignore", "ancestor-alias")
+    git(ancestorFixture.repo, "commit", "-m", "track alias with internal ancestors")
+    const outside = path.join(ancestorFixture.root, "outside-container")
+    fs.renameSync(container, outside)
+    fs.symlinkSync(outside, container)
+    const accepted = runTm(ancestorFixture, ["acceptance", "run", "bd-directory-parent-link"])
+    assert.equal(accepted.status, 1)
+    assert.match(accepted.stderr, /resolves outside the worktree|symlink parent directory is unsupported/i)
+  } finally {
+    fs.rmSync(ancestorFixture.root, { recursive: true, force: true })
+  }
+})
+
+test("directory symlink traversal rejects invalid UTF-8 names", () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "invalid-directory-entry.cjs")
+  try {
+    const { target } = addTrackedDirectoryLink(fixture)
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const originalOpen = fs.opendirSync",
+      "fs.opendirSync = function(directory, options) {",
+      "  const handle = originalOpen.apply(this, arguments)",
+      "  if (String(directory) !== process.env.INVALID_DIRECTORY_PATH) return handle",
+      "  let injected = false",
+      "  return {",
+      "    readSync() {",
+      "      if (!injected) { injected = true; return { name: Buffer.from([0xff]) } }",
+      "      return handle.readSync()",
+      "    },",
+      "    closeSync() { return handle.closeSync() },",
+      "  }",
+      "}",
+      "",
+    ].join("\n"))
+    const accepted = runTm(fixture, ["acceptance", "run", "bd-directory-invalid-utf8"], {
+      env: {
+        INVALID_DIRECTORY_PATH: fs.realpathSync(target),
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim(),
+      },
+    })
+    assert.equal(accepted.status, 1)
+    assert.match(accepted.stderr, /not valid UTF-8/i)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test("directory symlink traversal enforces depth, node, and path-byte bounds", () => {
+  for (const [name, arrange, expected] of [
+    ["depth", (target) => {
+      let current = target
+      for (let index = 0; index < 34; index += 1) {
+        current = path.join(current, "d")
+        fs.mkdirSync(current)
+      }
+    }, /depth limit/i],
+    ["nodes", (target) => {
+      for (let index = 0; index < 4100; index += 1) fs.writeFileSync(path.join(target, `f${index}`), "")
+    }, /node limit/i],
+    ["paths", (target) => {
+      for (let index = 0; index < 1200; index += 1) {
+        fs.writeFileSync(path.join(target, `${String(index).padStart(4, "0")}-${"x".repeat(215)}`), "")
+      }
+    }, /path-byte limit/i],
+  ]) {
+    const fixture = makeFixture()
+    try {
+      const { target } = addTrackedDirectoryLink(fixture)
+      arrange(target)
+      const accepted = runTm(fixture, ["acceptance", "run", `bd-directory-bound-${name}`], { timeout: 30000 })
+      assert.equal(accepted.status, 1)
+      assert.match(accepted.stderr, expected)
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("directory traversal changes during checks fail and supersede an older success", () => {
+  const fixture = makeFixture()
+  try {
+    const { target } = addTrackedDirectoryLink(fixture)
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-directory-check-change"]).status, 0)
+    writePolicy(fixture, [{
+      id: "mutate-ignored-child",
+      command: [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(path.join(target, "dependency.js"))}, 'changed\\n')`],
+      timeoutMs: 5000,
+    }])
+    const changed = runTm(fixture, ["acceptance", "run", "bd-directory-check-change"])
+    assert.equal(changed.status, 1)
+    assert.match(changed.stderr, /worktree or policy changed while acceptance checks ran/i)
+
+    writePolicy(fixture, [passingCheck()])
+    const checked = runTm(fixture, ["acceptance", "check", "bd-directory-check-change"])
+    assert.equal(checked.status, 1)
+    assert.match(checked.stderr, /latest acceptance run is failed/i)
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true })
   }
