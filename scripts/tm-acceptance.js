@@ -45,11 +45,19 @@ class AcceptanceError extends Error {
   }
 }
 
-class PendingReceiptWriteError extends AcceptanceError {
-  constructor(cause) {
-    super(cause instanceof Error ? cause.message : String(cause))
-    this.name = "PendingReceiptWriteError"
-    this.cause = cause
+class ReceiptInvalidationWriteError extends AcceptanceError {
+  constructor(operationError, invalidationError = operationError) {
+    const operationMessage = operationError instanceof Error ? operationError.message : String(operationError)
+    const invalidationMessage = invalidationError instanceof Error ? invalidationError.message : String(invalidationError)
+    super(
+      operationError === invalidationError
+        ? operationMessage
+        : `${operationMessage}; acceptance receipt invalidation could not be persisted: ${invalidationMessage}`,
+      operationError instanceof AcceptanceError ? operationError.exitCode : 1,
+    )
+    this.name = "ReceiptInvalidationWriteError"
+    this.cause = operationError
+    this.invalidationError = invalidationError
   }
 }
 
@@ -704,7 +712,7 @@ async function runAcceptance(task, context, storage) {
   try {
     writeReceipt(storage, task, pending)
   } catch (error) {
-    throw new PendingReceiptWriteError(error)
+    throw new ReceiptInvalidationWriteError(error)
   }
   let checks = []
   try {
@@ -741,7 +749,11 @@ async function runAcceptance(task, context, storage) {
     await observeOperation("acceptance run")
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    writeReceipt(storage, task, failedRecord(context, "run", reason, checks))
+    try {
+      writeReceipt(storage, task, failedRecord(context, "run", reason, checks))
+    } catch (writeError) {
+      throw new ReceiptInvalidationWriteError(error, writeError)
+    }
     throw error
   }
 }
@@ -849,7 +861,7 @@ async function main() {
     await observeOperation("guarded close")
     return exitCode
   } catch (error) {
-    if (error instanceof PendingReceiptWriteError) releaseLock = false
+    if (error instanceof ReceiptInvalidationWriteError) releaseLock = false
     throw error
   } finally {
     try {

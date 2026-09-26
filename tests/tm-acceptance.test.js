@@ -1015,6 +1015,79 @@ test("a pending receipt write failure retains the lock until full-store recovery
   }
 })
 
+test("a failed post-pass invalidation write retains the lock until full-store recovery", async () => {
+  const fixture = makeFixture()
+  const preload = path.join(fixture.root, "fail-post-pass-invalidation.cjs")
+  const passedMarker = path.join(fixture.root, "passed-receipt-persisted")
+  try {
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-post-pass-write"]).status, 0)
+    fs.writeFileSync(preload, [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const originalRenameSync = fs.renameSync",
+      "let receiptRenames = 0",
+      "fs.renameSync = function(source, target) {",
+      "  const statePart = `${path.sep}acceptance-v1${path.sep}`",
+      "  const lockPart = `${path.sep}acceptance-v1${path.sep}lock${path.sep}`",
+      "  if (String(target).includes(statePart) && !String(target).includes(lockPart)) {",
+      "    receiptRenames += 1",
+      "    if (receiptRenames === 3) {",
+      "      const error = new Error('simulated invalidation ENOSPC')",
+      "      error.code = 'ENOSPC'",
+      "      throw error",
+      "    }",
+      "    const result = originalRenameSync.apply(this, arguments)",
+      "    if (receiptRenames === 2) {",
+      "      fs.writeFileSync(process.env.RECEIPT_PASSED_MARKER, 'passed')",
+      "      const deadline = Date.now() + 800",
+      "      while (Date.now() < deadline) {}",
+      "    }",
+      "    return result",
+      "  }",
+      "  return originalRenameSync.apply(this, arguments)",
+      "}",
+      "",
+    ].join("\n"))
+    const child = spawn(tmPath, ["acceptance", "run", "bd-post-pass-write"], {
+      cwd: fixture.repo,
+      env: {
+        ...fixture.env,
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --require=${preload}`.trim(),
+        RECEIPT_PASSED_MARKER: passedMarker,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    child.stdout.on("data", () => {})
+    let stderr = ""
+    child.stderr.setEncoding("utf8")
+    child.stderr.on("data", (chunk) => { stderr += chunk })
+    await waitFor(() => fs.existsSync(passedMarker))
+    child.kill("SIGTERM")
+    const outcome = await waitForExit(child)
+    assert.equal(outcome.status, 143, stderr)
+    assert.equal(outcome.signal, null)
+    assert.match(stderr, /acceptance run interrupted by SIGTERM/i)
+    assert.match(stderr, /simulated invalidation ENOSPC/i)
+
+    const checked = runTm(fixture, ["acceptance", "check", "bd-post-pass-write"])
+    assert.equal(checked.status, 1)
+    assert.match(checked.stderr, /acceptance state is locked/i)
+    fs.writeFileSync(fixture.backendLog, "")
+    const closed = runTm(fixture, ["close", "bd-post-pass-write"])
+    assert.equal(closed.status, 1)
+    assert.match(closed.stderr, /acceptance state is locked/i)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    const gitDir = git(fixture.repo, "rev-parse", "--absolute-git-dir")
+    fs.rmSync(path.join(gitDir, "xpowers", "acceptance-v1"), { recursive: true, force: true })
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-post-pass-write"]).status, 0)
+    assert.equal(runTm(fixture, ["close", "bd-post-pass-write"]).status, 0)
+    assert.deepEqual(backendCalls(fixture), [["close", "bd-post-pass-write"]])
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("linked worktrees use isolated acceptance receipt stores", () => {
   const fixture = makeFixture()
   const linked = path.join(fixture.root, "linked")
