@@ -350,6 +350,47 @@ test("POSIX permission changes invalidate acceptance evidence", () => {
   }
 })
 
+test("POSIX permission changes on proof-covered ancestor directories invalidate acceptance evidence", () => {
+  const fixture = makeFixture()
+  try {
+    const sourceDirectory = path.join(fixture.repo, "src")
+    fs.mkdirSync(sourceDirectory)
+    fs.writeFileSync(path.join(sourceDirectory, "proof.txt"), "proof\n")
+    fs.chmodSync(sourceDirectory, 0o755)
+    writePolicy(fixture, [{
+      id: "directory-mode",
+      command: [
+        process.execPath,
+        "-e",
+        "const fs=require('node:fs'); process.exit((fs.statSync('src').mode & 0o7777) === 0o755 ? 0 : 1)",
+      ],
+      timeoutMs: 5000,
+    }])
+
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-directory-mode"]).status, 0)
+    fs.chmodSync(sourceDirectory, 0o700)
+    fs.writeFileSync(fixture.backendLog, "")
+
+    const checked = runTm(fixture, ["acceptance", "check", "bd-directory-mode"])
+    assert.equal(checked.status, 1)
+    assert.match(checked.stderr, /evidence is stale/i)
+    const closed = runTm(fixture, ["close", "bd-directory-mode"])
+    assert.equal(closed.status, 1)
+    assert.match(closed.stderr, /evidence is stale/i)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    const rejectedRerun = runTm(fixture, ["acceptance", "run", "bd-directory-mode"])
+    assert.equal(rejectedRerun.status, 1)
+    assert.deepEqual(backendCalls(fixture), [])
+
+    fs.chmodSync(sourceDirectory, 0o755)
+    assert.equal(runTm(fixture, ["acceptance", "run", "bd-directory-mode"]).status, 0)
+    assert.equal(runTm(fixture, ["acceptance", "check", "bd-directory-mode"]).status, 0)
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test("large source files are chunk-hashed through the tail without whole-file reads", () => {
   const fixture = makeFixture()
   const preload = path.join(fixture.root, "reject-large-read-file-sync.cjs")

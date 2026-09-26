@@ -388,6 +388,27 @@ function assertNoSymlinkParents(root, relative) {
   }
 }
 
+function addAncestorDirectories(directories, relative) {
+  directories.add(".")
+  const components = relative.split("/")
+  let current = ""
+  for (const component of components.slice(0, -1)) {
+    current = current ? `${current}/${component}` : component
+    directories.add(current)
+  }
+}
+
+function fingerprintAncestorDirectories(context, directoryPaths) {
+  return [...directoryPaths].sort().map((relative) => {
+    const absolute = relative === "." ? context.root : path.join(context.root, ...relative.split("/"))
+    const stat = lstatSafe(absolute)
+    if (!stat) return { path: relative, type: "missing" }
+    if (stat.isSymbolicLink()) fail(`symlink parent directory is unsupported: ${relative}`)
+    if (!stat.isDirectory()) fail(`non-directory path component is unsupported: ${relative}`)
+    return { path: relative, type: "directory", mode: stat.mode & 0o7777 }
+  })
+}
+
 function assertCanonicalTargetAllowed(context, target, label) {
   if (!isInside(context.root, target)) fail(`${label} resolves outside the worktree`)
   if (isInside(context.gitDir, target) || isInside(context.commonDir, target)) fail(`${label} resolves into Git metadata`)
@@ -453,8 +474,10 @@ function createSnapshot(context, policyFingerprint) {
   for (const selector of TASK_SELECTOR_PATHS) paths.add(selector)
 
   const files = []
+  const directoryPaths = new Set()
   for (const relative of [...paths].sort()) {
     if (relative.includes("\0") || path.isAbsolute(relative) || relative.split("/").includes("..")) fail(`unsafe Git path: ${relative}`)
+    addAncestorDirectories(directoryPaths, relative)
     assertNoSymlinkParents(context.root, relative)
     const absolute = path.join(context.root, ...relative.split("/"))
     const stat = lstatSafe(absolute)
@@ -470,6 +493,7 @@ function createSnapshot(context, policyFingerprint) {
       let realTarget
       try { realTarget = fs.realpathSync(resolved) } catch { fail(`dangling symlink is unsupported: ${relative}`) }
       const target = fingerprintResolvedTarget(context, realTarget, `symlink ${relative}`)
+      addAncestorDirectories(directoryPaths, target.path)
       files.push({ path: relative, type: "symlink", target: link, resolvedTarget: target })
       continue
     }
@@ -490,13 +514,15 @@ function createSnapshot(context, policyFingerprint) {
     })
   }
 
+  const directories = fingerprintAncestorDirectories(context, directoryPaths)
+
   const identity = {
     root: context.root,
     gitDir: context.gitDir,
     commonDir: context.commonDir,
     head: currentHead,
   }
-  const payload = { runtimeVersion: RUNTIME_VERSION, identity, policyFingerprint, index, files }
+  const payload = { runtimeVersion: RUNTIME_VERSION, identity, policyFingerprint, index, directories, files }
   return { ...payload, fingerprint: sha256(Buffer.from(JSON.stringify(payload), "utf8")) }
 }
 
@@ -690,7 +716,8 @@ function checkEligibility(task, context, storage) {
   if (receipt.policyFingerprint !== loaded.fingerprint) fail("acceptance evidence is stale: policy changed")
   if (!receipt.snapshot || typeof receipt.snapshot !== "object" || receipt.snapshot.runtimeVersion !== RUNTIME_VERSION ||
       typeof receipt.snapshot.fingerprint !== "string" || receipt.snapshot.policyFingerprint !== loaded.fingerprint ||
-      !receipt.snapshot.identity || !Array.isArray(receipt.snapshot.index) || !Array.isArray(receipt.snapshot.files)) {
+      !receipt.snapshot.identity || !Array.isArray(receipt.snapshot.index) || !Array.isArray(receipt.snapshot.directories) ||
+      !Array.isArray(receipt.snapshot.files)) {
     fail("acceptance receipt is malformed or corrupt")
   }
   const storedSnapshotPayload = {
@@ -698,6 +725,7 @@ function checkEligibility(task, context, storage) {
     identity: receipt.snapshot.identity,
     policyFingerprint: receipt.snapshot.policyFingerprint,
     index: receipt.snapshot.index,
+    directories: receipt.snapshot.directories,
     files: receipt.snapshot.files,
   }
   if (sha256(Buffer.from(JSON.stringify(storedSnapshotPayload), "utf8")) !== receipt.snapshot.fingerprint) {
