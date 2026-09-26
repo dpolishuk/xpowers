@@ -31,6 +31,20 @@ Existing XPowers agents and other host integrations keep their existing behavior
 
 `/routing-on` prints the configured coordinator model and effort; it does not
 switch the running model. Use `/model` and `/effort` to match those values.
+The generated command is intentionally tokenless. The installed `PreToolUse`
+hook observes that exact main-session command and adds a private, one-use proof
+before Bash executes it. Without a fresh one-use proof issued by the installed
+hook, the Python `on` action fails and leaves routing off; fabricated or replayed
+proofs also fail. Failed activation consumes any pending proof, so run
+`/routing-on` again rather than retrying its expanded shell command.
+
+The proof expires after five minutes and is bound to the session, hook event,
+installation identity, and current ownership manifest. Reinstall, restore,
+`/routing-off`, and relocation invalidate pending proofs. This confirms that
+the activation command crossed the installed hook at that moment. It does not
+guarantee that an administrator, managed settings, or another local process
+cannot disable hooks or replace installed runtime files afterward.
+
 Activation is stored outside the repository and scoped to the current session.
 Resuming or compacting that session restores its routing instructions; a new
 session starts with routing off. `/routing-off` disables it for the current session.
@@ -190,8 +204,11 @@ Restart Claude Code after restoring. After moving or copying an installed
 project on the same machine, rerun the installer before starting Claude Code.
 The installer recovers the original ownership record, replaces its old absolute
 hook paths, and preserves pre-install backups for restore at the new location.
-A copied project's installation can then be restored independently of the source.
-Existing sessions are not activated at the new location.
+For a real move, it transactionally retires the absent source path's external
+ownership record, pending proofs, and active sessions so that path can later host
+an unrelated project. A copied project's source record remains in place and each
+copy can be restored independently. Existing sessions are not activated at the
+new location.
 If you left a symlink at the old project path, remove that link before reinstalling;
 the installer rejects an origin that now resolves to another directory.
 

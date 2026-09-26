@@ -10,9 +10,12 @@ if sys.version_info < (3, 9):
 sys.dont_write_bytecode = True
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
+import time
 
 import common
 
@@ -65,6 +68,140 @@ def check_profile(project, config):
     unexpected = {str(target.relative_to(project / ".claude")) for target in runtime_dir.rglob("*.py")} - set(runtime_files)
     if unexpected:
         raise ValueError("Installed routing runtime changed: unowned Python files: " + ", ".join(sorted(unexpected)))
+    return manifest
+
+
+ACTIVATION_TTL_SECONDS = 300
+
+
+def _installed_cli(project):
+    expected = project / ".claude/xpowers-routing/cli.py"
+    if Path(__file__).resolve(strict=True) != expected.resolve(strict=True):
+        raise ValueError("Routing activation must run through the installed project CLI")
+    return expected
+
+
+def _profile_binding(project):
+    import install
+    config = common.load_config(project)
+    manifest = check_profile(project, config)
+    installation_id = manifest.get("installationId")
+    if (not isinstance(installation_id, str) or len(installation_id) != 32
+            or any(char not in "0123456789abcdef" for char in installation_id)):
+        raise ValueError("Routing ownership manifest has an invalid installation identity")
+    manifest_path = common.control_dir(project) / "install-manifest.json"
+    snapshot = install._snapshot(manifest_path)
+    if snapshot is None or json.loads(install._decode(snapshot)) != manifest:
+        raise ValueError("Routing ownership manifest changed during profile validation")
+    digest = hashlib.sha256(install._decode(snapshot)).hexdigest()
+    return config, installation_id, digest
+
+
+def _issue_activation(project, payload, result):
+    """Attest an exact live PreToolUse observation without changing policy."""
+    if result != {} or payload.get("hook_event_name") != "PreToolUse":
+        return result
+    session_id = payload.get("session_id")
+    tool_use_id = payload.get("tool_use_id")
+    if (not isinstance(session_id, str) or not session_id.strip()
+            or not isinstance(tool_use_id, str) or not tool_use_id.strip()
+            or len(tool_use_id) > 512 or payload.get("agent_id") is not None
+            or payload.get("tool_name") != "Bash"):
+        return result
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return result
+    import guard
+    try:
+        tokens = guard._tokens(tool_input.get("command"))
+    except ValueError:
+        return result
+    except AttributeError as error:
+        # A locally replaced guard may still return allow. Validate its owned
+        # runtime snapshot so the hook emits the normal structured denial.
+        import install
+        with install._locked(project):
+            _profile_binding(project)
+        raise ValueError("Installed routing guard cannot validate activation") from error
+    if not guard._control_command(tokens, project, session_id) or tokens[2] != "on":
+        return result
+    expected = _installed_cli(project)
+    if Path(tokens[1]).resolve(strict=True) != expected.resolve(strict=True):
+        return result
+    import install
+    with install._locked(project) as control:
+        _, installation_id, manifest_digest = _profile_binding(project)
+        token = secrets.token_hex(32)
+        proof_path = common.activation_path(project, session_id)
+        install._safe_target(proof_path, control)
+        receipt = {
+            "version": 1,
+            "project": str(project),
+            "session": session_id,
+            "toolUseId": tool_use_id,
+            "installationId": installation_id,
+            "manifestSha256": manifest_digest,
+            "token": token,
+            "issuedAt": time.time(),
+        }
+        install._commit({proof_path: install._content(install._json_bytes(receipt), 0o600)})
+    updated = dict(tool_input)
+    updated["command"] = tool_input["command"] + " --hook-token " + token
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}
+
+
+def _activate(project, session_id, token):
+    import install
+    state_path = common.session_path(project, session_id)
+    proof_path = common.activation_path(project, session_id)
+    with install._locked(project) as control:
+        install._safe_target(state_path, control)
+        install._safe_target(proof_path, control)
+        state_snapshot = install._snapshot(state_path)
+        state_mode = state_snapshot["mode"] if state_snapshot else 0o600
+        disabled = install._content(install._json_bytes({"enabled": False}), state_mode)
+        receipt_error = None
+        try:
+            receipt = install._read_json(proof_path)
+        except (OSError, ValueError, TypeError) as error:
+            receipt = None
+            receipt_error = error
+        # Every attempt consumes its observed proof and leaves the session OFF
+        # unless all validation succeeds and the final enable commit completes.
+        install._commit({proof_path: None, state_path: disabled})
+        _installed_cli(project)
+        if receipt_error is not None:
+            raise receipt_error
+        config, installation_id, manifest_digest = _profile_binding(project)
+        now = time.time()
+        issued_at = receipt.get("issuedAt") if isinstance(receipt, dict) else None
+        valid_time = (isinstance(issued_at, (int, float)) and not isinstance(issued_at, bool)
+                      and 0 <= now - issued_at <= ACTIVATION_TTL_SECONDS)
+        valid = (isinstance(receipt, dict) and type(receipt.get("version")) is int and receipt["version"] == 1
+                 and receipt.get("project") == str(project) and receipt.get("session") == session_id
+                 and isinstance(receipt.get("toolUseId"), str) and receipt["toolUseId"].strip()
+                 and receipt.get("installationId") == installation_id
+                 and receipt.get("manifestSha256") == manifest_digest
+                 and isinstance(receipt.get("token"), str) and isinstance(token, str)
+                 and secrets.compare_digest(receipt["token"], token) and valid_time)
+        if not valid:
+            raise ValueError("Routing activation requires a fresh matching PreToolUse hook proof")
+        enabled = install._content(install._json_bytes({"enabled": True}), state_mode)
+        install._commit({state_path: enabled})
+    return config
+
+
+def _disable(project, session_id):
+    import install
+    state_path = common.session_path(project, session_id)
+    proof_path = common.activation_path(project, session_id)
+    with install._locked(project) as control:
+        install._safe_target(state_path, control)
+        install._safe_target(proof_path, control)
+        state_snapshot = install._snapshot(state_path)
+        state_mode = state_snapshot["mode"] if state_snapshot else 0o600
+        disabled = install._content(install._json_bytes({"enabled": False}), state_mode)
+        install._commit({proof_path: None, state_path: disabled})
 
 
 def active(project, session):
@@ -114,9 +251,12 @@ def main():
     parser.add_argument("--preset", choices=common.PRESETS)
     parser.add_argument("--restore", action="store_true")
     parser.add_argument("--session")
+    parser.add_argument("--hook-token", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.action != "install" and (args.preset or args.restore):
         parser.error("--preset and --restore are installation options")
+    if args.action != "on" and args.hook_token is not None:
+        parser.error("--hook-token is private to observed routing activation")
     project = args.project.resolve()
     try:
         if args.action == "install":
@@ -127,7 +267,8 @@ def main():
         elif args.action == "guard":
             import guard
             data = json.load(sys.stdin)
-            print(json.dumps(guard.handle(data, project)))
+            result = guard.handle(data, project)
+            print(json.dumps(_issue_activation(project, data, result)))
         elif args.action == "session-start":
             data = json.load(sys.stdin)
             if active(project, data.get("session_id")):
@@ -137,16 +278,10 @@ def main():
             else:
                 print("{}")
         elif args.action == "off":
-            common.atomic_json(common.session_path(project, args.session), {"enabled": False})
+            _disable(project, args.session)
             print("XPowers routing is OFF for this session.")
         elif args.action == "on":
-            import install
-            # Restore holds this same lock while removing files and disabling
-            # sessions. Validation and activation must be one serialized step.
-            with install._locked(project):
-                config = common.load_config(project)
-                check_profile(project, config)
-                common.atomic_json(common.session_path(project, args.session), {"enabled": True})
+            config = _activate(project, args.session, args.hook_token)
             print(common.workflow(config))
         elif args.action == "status":
             print("ON" if active(project, args.session) else "OFF")

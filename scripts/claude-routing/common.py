@@ -105,6 +105,13 @@ def session_path(project, session_id):
     return control_dir(project) / "sessions" / (key + ".json")
 
 
+def activation_path(project, session_id):
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
+        raise ValueError("A nonempty Claude session ID is required")
+    key = hashlib.sha256(session_id.encode()).hexdigest()
+    return control_dir(project) / "activation-proofs" / (key + ".json")
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

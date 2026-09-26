@@ -112,6 +112,35 @@ def _commit(plan):
         raise
 
 
+def _missing_node(path):
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _disable_sessions(control, plan):
+    sessions = control / "sessions"
+    _safe_target(sessions, control)
+    for state_path in sorted(sessions.glob("*.json")):
+        _safe_target(state_path, control)
+        state = _read_json(state_path)
+        if type(state.get("enabled")) is not bool:
+            raise ValueError(f"Invalid routing session state: {state_path}")
+        state["enabled"] = False
+        current = _snapshot(state_path)
+        plan[state_path] = _content(_json_bytes(state), current["mode"])
+
+
+def _invalidate_activation_proofs(control, plan):
+    proofs = control / "activation-proofs"
+    _safe_target(proofs, control)
+    for proof_path in sorted(proofs.glob("*.json")):
+        _safe_target(proof_path, control)
+        plan[proof_path] = None
+
+
 @contextlib.contextmanager
 def _locked(project):
     control = common.control_dir(project)
@@ -256,7 +285,7 @@ def _installation(project):
                     raise ValueError("Routing origin does not match its ownership manifest; refusing to overwrite the installation")
             else:
                 manifest = _read_manifest(control, project)
-            yield control, manifest, source
+            yield control, manifest, source, controls[source]
             return
     raise ValueError("Routing origin changed repeatedly during installation; retry when other installers finish")
 
@@ -310,7 +339,11 @@ def _command(name, action, project):
     lines = ["---", f"description: {descriptions[action]}", "disable-model-invocation: true", "---", "",
              "Run the following command with Bash and report its result:", "", "```bash", invocation, "```", ""]
     if action == "on":
-        lines.extend(["Adopt the workflow returned by the command only after it succeeds. It reads the current routing configuration. If activation fails, report the error and do not claim routing is enabled.", ""])
+        lines.extend([
+            "Execute this tokenless command exactly as generated. The installed PreToolUse hook adds a private one-use activation proof; do not add or request a token manually.",
+            "Adopt the workflow returned by the command only after it succeeds. It reads the current routing configuration. If activation fails, report the error and do not claim routing is enabled.",
+            "",
+        ])
     return "\n".join(lines).encode("utf-8")
 
 
@@ -333,7 +366,7 @@ def install(project: Path, preset=None):
         raise ValueError("Project must be an existing directory")
     claude = project / ".claude"
     _safe_target(claude, project)
-    with _installation(project) as (control, manifest, source_project):
+    with _installation(project) as (control, manifest, source_project, source_control):
         config_path = claude / "routing.json"
         settings_path = claude / "settings.json"
         for target in (config_path, settings_path):
@@ -383,7 +416,15 @@ def install(project: Path, preset=None):
         updated = {"version": 1, "project": str(project), "installationId": installation_id, "files": snapshots, "ownedHooks": owned_hooks,
                    "settings": {"before": manifest["settings"]["before"] if manifest else before_settings,
                                 "installed": desired_settings}}
+        _invalidate_activation_proofs(control, plan)
         plan[control / "install-manifest.json"] = _content(_json_bytes(updated), 0o600)
+        if relocated and _missing_node(source_project):
+            # A real move releases its former path for an unrelated first
+            # install. Copies retain the source manifest for independent restore;
+            # prior sessions cannot become active for a replacement project.
+            _disable_sessions(source_control, plan)
+            _invalidate_activation_proofs(source_control, plan)
+            plan[source_control / "install-manifest.json"] = None
         _commit(plan)
     return f"Installed XPowers Claude routing ({config['preset']}) in {project}. Start a new Claude Code session and run /routing-on, then /routing-smoke-test."
 
@@ -426,16 +467,8 @@ def restore(project: Path):
             plan[settings_path] = (_content(_json_bytes(settings), current_settings["mode"])
                                    if settings or original is not None else None)
         # Prevent restoring then reinstalling from reviving this session's guard.
-        sessions = control / "sessions"
-        _safe_target(sessions, control)
-        for state_path in sorted(sessions.glob("*.json")):
-            _safe_target(state_path, control)
-            state = _read_json(state_path)
-            if type(state.get("enabled")) is not bool:
-                raise ValueError(f"Invalid routing session state: {state_path}")
-            state["enabled"] = False
-            current = _snapshot(state_path)
-            plan[state_path] = _content(_json_bytes(state), current["mode"])
+        _disable_sessions(control, plan)
+        _invalidate_activation_proofs(control, plan)
         plan[control / "install-manifest.json"] = None
         _commit(plan)
         for directory in (claude / "xpowers-routing", claude / "agents", claude / "commands", claude):

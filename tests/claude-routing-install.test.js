@@ -51,6 +51,14 @@ function manifestPath(f) {
   const hash = crypto.createHash("sha256").update(f.project).digest("hex").slice(0, 24)
   return path.join(f.home, ".claude", "xpowers-routing", hash, "install-manifest.json")
 }
+function sessionPath(f, session = "test-session") {
+  const hash = crypto.createHash("sha256").update(session).digest("hex")
+  return path.join(path.dirname(manifestPath(f)), "sessions", `${hash}.json`)
+}
+function activationProofPath(f, session = "test-session") {
+  const hash = crypto.createHash("sha256").update(session).digest("hex")
+  return path.join(path.dirname(manifestPath(f)), "activation-proofs", `${hash}.json`)
+}
 
 test("routing install generates configured roles, native limits and independent verification", t => {
   const f = fixture(t)
@@ -280,7 +288,9 @@ test("routing restore disables session state so reinstall never silently reactiv
     timeout: 10000,
   })
   success(invoke(f))
-  success(sessionAction("on"))
+  const state = sessionPath(f)
+  fs.mkdirSync(path.dirname(state), { recursive: true })
+  fs.writeFileSync(state, '{"enabled":true}\n')
   assert.equal(sessionAction("status").stdout.trim(), "ON")
   success(invoke(f, "restore"))
   assert.equal(sessionAction("status").stdout.trim(), "OFF")
@@ -324,7 +334,6 @@ test("routing relocation replaces only owned absolute hooks and restores origina
   write(f, "settings.json", JSON.stringify({ theme: "dark", hooks: { PreToolUse: [unrelated] } }))
   success(invoke(f))
   const oldManifest = manifestPath(f)
-  const oldBackup = fs.readFileSync(oldManifest, "utf8")
   const moved = { ...f, project: path.join(path.dirname(f.project), "moved ' project") }
   fs.renameSync(f.project, moved.project)
   success(invoke(moved))
@@ -333,7 +342,7 @@ test("routing relocation replaces only owned absolute hooks and restores origina
   assert.deepEqual(hooks.PreToolUse[0], unrelated)
   assert.match(hooks.PreToolUse[1].hooks[0].command, /moved/)
   assert.equal(hooks.SessionStart.length, 1)
-  assert.equal(fs.readFileSync(oldManifest, "utf8"), oldBackup)
+  assert.equal(fs.existsSync(oldManifest), false)
   success(invoke(moved, "restore"))
   assert.equal(read(moved, "commands/routing-on.md"), "original user command\n")
   assert.deepEqual(json(moved, "settings.json"), { theme: "dark", hooks: { PreToolUse: [unrelated] } })
@@ -353,7 +362,7 @@ test("routing ownership follows the current marker across an A to B to A roundtr
   fs.renameSync(f.project, moved.project)
   success(invoke(moved))
   const sourceManifest = manifestPath(moved)
-  assert.equal(fs.existsSync(destinationManifest), true)
+  assert.equal(fs.existsSync(destinationManifest), false)
   assert.equal(fs.existsSync(sourceManifest), true)
 
   fs.renameSync(moved.project, f.project)
@@ -363,6 +372,8 @@ test("routing ownership follows the current marker across an A to B to A roundtr
   assert.deepEqual(hooks.PreToolUse[0], unrelated)
   assert.match(hooks.PreToolUse[1].hooks[0].command, new RegExp(f.project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
   assert.equal(hooks.SessionStart.length, 1)
+  assert.equal(fs.existsSync(sourceManifest), false)
+  assert.equal(fs.existsSync(destinationManifest), true)
 
   success(invoke(f, "restore"))
   assert.equal(read(f, "commands/routing-on.md"), "original command bytes\n")
@@ -371,7 +382,42 @@ test("routing ownership follows the current marker across an A to B to A roundtr
   assert.equal(fs.existsSync(file(f, "xpowers-routing/cli.py")), false)
 })
 
-test("routing roundtrip refuses a bad hinted backup instead of using the stale destination", t => {
+test("a relocated install releases an absent source path for an independent project", t => {
+  const original = fixture(t, "project-a")
+  write(original, "commands/routing-on.md", "original project command\n")
+  write(original, "settings.json", JSON.stringify({ theme: "original" }))
+  success(invoke(original))
+  const oldManifest = manifestPath(original)
+  const oldSession = sessionPath(original)
+  fs.mkdirSync(path.dirname(oldSession), { recursive: true })
+  fs.writeFileSync(oldSession, '{"enabled":true}\n')
+  const oldProof = activationProofPath(original)
+  fs.mkdirSync(path.dirname(oldProof), { recursive: true })
+  fs.writeFileSync(oldProof, '{"pending":true}\n')
+
+  const moved = { ...original, project: path.join(path.dirname(original.project), "project-b") }
+  fs.renameSync(original.project, moved.project)
+  success(invoke(moved))
+  assert.equal(fs.existsSync(oldManifest), false)
+  assert.deepEqual(JSON.parse(fs.readFileSync(oldSession, "utf8")), { enabled: false })
+  assert.equal(fs.existsSync(oldProof), false)
+
+  fs.mkdirSync(original.project)
+  success(invoke(original))
+  const movedManifest = JSON.parse(fs.readFileSync(manifestPath(moved), "utf8"))
+  const replacementManifest = JSON.parse(fs.readFileSync(manifestPath(original), "utf8"))
+  assert.notEqual(replacementManifest.installationId, movedManifest.installationId)
+
+  success(invoke(original, "restore"))
+  assert.equal(fs.existsSync(file(original, "")), false)
+  assert.equal(fs.existsSync(file(moved, "routing.json")), true)
+
+  success(invoke(moved, "restore"))
+  assert.equal(read(moved, "commands/routing-on.md"), "original project command\n")
+  assert.deepEqual(json(moved, "settings.json"), { theme: "original" })
+})
+
+test("routing roundtrip refuses a bad hinted backup instead of using a legacy stale destination", t => {
   for (const kind of ["missing", "corrupt", "mismatched-origin", "mismatched-identity"]) {
     const f = fixture(t, `project-a-${kind}`)
     write(f, "commands/routing-on.md", `original ${kind}\n`)
@@ -382,6 +428,8 @@ test("routing roundtrip refuses a bad hinted backup instead of using the stale d
     fs.renameSync(f.project, moved.project)
     success(invoke(moved))
     const sourceManifest = manifestPath(moved)
+    assert.equal(fs.existsSync(destinationManifest), false)
+    fs.writeFileSync(destinationManifest, destinationBefore)
     fs.renameSync(moved.project, f.project)
 
     if (kind === "missing") {
@@ -414,9 +462,13 @@ test("copied routing installations keep independent ownership and restoration", 
   const f = fixture(t)
   success(invoke(f))
   const oldManifest = fs.readFileSync(manifestPath(f), "utf8")
+  const sourceProof = activationProofPath(f)
+  fs.mkdirSync(path.dirname(sourceProof), { recursive: true })
+  fs.writeFileSync(sourceProof, '{"pending":true}\n')
   const copied = { ...f, project: path.join(path.dirname(f.project), "copied") }
   fs.cpSync(f.project, copied.project, { recursive: true })
   success(invoke(copied))
+  assert.equal(fs.readFileSync(sourceProof, "utf8"), '{"pending":true}\n')
   success(invoke(copied, "restore"))
   assert.equal(fs.existsSync(file(copied, "settings.json")), false)
   assert.equal(fs.readFileSync(manifestPath(f), "utf8"), oldManifest)
@@ -508,6 +560,55 @@ install.install(Path(sys.argv[1]))
   assert.equal(fs.readFileSync(oldManifest, "utf8"), original)
   assert.equal(fs.existsSync(manifestPath(moved)), false)
   success(invoke(moved))
+})
+
+test("relocation rolls back if retiring the absent source manifest fails", t => {
+  const f = fixture(t)
+  write(f, "commands/routing-on.md", "original command\n")
+  success(invoke(f))
+  const oldManifest = manifestPath(f)
+  const originalManifest = fs.readFileSync(oldManifest)
+  const oldSession = sessionPath(f)
+  fs.mkdirSync(path.dirname(oldSession), { recursive: true })
+  fs.writeFileSync(oldSession, '{"enabled":true}\n')
+  const oldProof = activationProofPath(f)
+  fs.mkdirSync(path.dirname(oldProof), { recursive: true })
+  fs.writeFileSync(oldProof, '{"pending":true}\n')
+  const moved = { ...f, project: path.join(path.dirname(f.project), "retire-rollback") }
+  fs.renameSync(f.project, moved.project)
+  const beforeSettings = read(moved, "settings.json")
+  const beforeCommand = read(moved, "commands/routing-on.md")
+  const beforeOrigin = read(moved, "xpowers-routing/install-origin.json")
+  const script = `import sys
+from pathlib import Path
+import install
+original = install._atomic_write
+source_manifest = Path(sys.argv[2])
+def fail_retirement(target, snapshot):
+    if target == source_manifest and snapshot is None:
+        raise OSError('simulated source manifest retirement failure')
+    original(target, snapshot)
+install._atomic_write = fail_retirement
+install.install(Path(sys.argv[1]))
+`
+  const result = spawnSync("python3", ["-c", script, moved.project, oldManifest], {
+    cwd: moved.runtime,
+    env: { ...process.env, HOME: moved.home, PYTHONDONTWRITEBYTECODE: "1" },
+    encoding: "utf8",
+    timeout: 10000,
+  })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /source manifest retirement failure/)
+  assert.equal(read(moved, "settings.json"), beforeSettings)
+  assert.equal(read(moved, "commands/routing-on.md"), beforeCommand)
+  assert.equal(read(moved, "xpowers-routing/install-origin.json"), beforeOrigin)
+  assert.deepEqual(fs.readFileSync(oldManifest), originalManifest)
+  assert.deepEqual(JSON.parse(fs.readFileSync(oldSession, "utf8")), { enabled: true })
+  assert.equal(fs.readFileSync(oldProof, "utf8"), '{"pending":true}\n')
+  assert.equal(fs.existsSync(manifestPath(moved)), false)
+  success(invoke(moved))
+  assert.deepEqual(JSON.parse(fs.readFileSync(oldSession, "utf8")), { enabled: false })
+  assert.equal(fs.existsSync(oldProof), false)
 })
 
 test("relocation refuses a symlinked former project path promptly without locking the same control twice", t => {
