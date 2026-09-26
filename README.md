@@ -120,7 +120,7 @@ XPowers is **tm-first**. `tm` is the canonical user-facing task-management inter
 
 On this repo today, `br` remains the active backend.
 
-Projects using `br` can opt into an acceptance gate that requires a fresh, successful local verification run before `tm close` is dispatched. See [Acceptance gate](docs/ACCEPTANCE.md) for setup, commands, and its technical boundaries.
+Projects using `br` can opt into an acceptance gate that requires a fresh, successful local verification run before `tm close` is dispatched. XPowers uses the committed [pilot policy](.xpowers/acceptance.json) for its root Node tests, generated-wrapper check, and lint; contributors should invoke `./scripts/tm` so the checkout's wrapper and acceptance runtime match. See [Acceptance gate](docs/ACCEPTANCE.md) for setup, commands, proof coverage, prerequisites, and technical boundaries.
 
 ### tm Backend Interoperability
 
