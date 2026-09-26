@@ -817,6 +817,116 @@ test("installed hooks reject unsafe session state nodes before reading them", t 
   fs.renameSync(externalSessions, sessions)
 })
 
+test("session-start rechecks an enabled session after a reinstall under the installation lock", async t => {
+  const f = installedFixture(t)
+  const session = "session-start-reinstall"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const marker = path.join(f.dir, "session-start-ready")
+  const release = path.join(f.dir, "session-start-release")
+  assert.equal(spawnSync("mkfifo", [release]).status, 0)
+  const runner = path.join(f.dir, "paused-session-start.py")
+  fs.writeFileSync(runner, `import io, json, sys
+from pathlib import Path
+runtime, marker, release, payload, project = sys.argv[1:]
+sys.path.insert(0, runtime)
+import cli
+marker, release, project = Path(marker), Path(release), Path(project)
+original = cli.active
+paused_once = False
+def paused(project, session):
+    global paused_once
+    result = original(project, session)
+    if not paused_once:
+        paused_once = True
+        marker.write_text("ready")
+        with release.open() as stream:
+            stream.read(1)
+    return result
+cli.active = paused
+sys.stdin = io.StringIO(payload)
+sys.argv = ["cli.py", "session-start", "--project", str(project)]
+raise SystemExit(cli.main())
+`)
+  const ready = new Promise((resolve, reject) => {
+    let timeout
+    const watcher = fs.watch(f.dir, (event, name) => {
+      if (name === path.basename(marker) && fs.existsSync(marker)) {
+        clearTimeout(timeout)
+        watcher.close()
+        resolve()
+      }
+    })
+    timeout = setTimeout(() => { watcher.close(); reject(new Error("session-start did not reach active state")) }, 10000)
+  })
+  const waitForExit = (process, label) => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      process.kill("SIGKILL")
+      reject(new Error(`${label} did not exit`))
+    }, 10000)
+    process.once("error", error => { clearTimeout(timeout); reject(error) })
+    process.once("close", (status, signal) => { clearTimeout(timeout); resolve({ status, signal }) })
+  })
+  let child = spawn("python3", ["-B", runner, f.runtime, marker, release,
+    JSON.stringify({ session_id: session, cwd: f.project }), f.project], {
+    env: f.env, cwd: f.project, stdio: ["ignore", "pipe", "pipe"],
+  })
+  const childClosed = new Promise(resolve => child.once("close", resolve))
+  t.after(async () => {
+    if (child.exitCode === null) child.kill("SIGKILL")
+    await Promise.race([childClosed, new Promise(resolve => setTimeout(resolve, 1000))])
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", data => { stdout += data })
+  child.stderr.on("data", data => { stderr += data })
+  const closed = waitForExit(child, "session-start child")
+  await ready
+  const configPath = path.join(f.project, ".claude/routing.json")
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8"))
+  config.roles.worker.maxTurns = 81
+  fs.writeFileSync(configPath, JSON.stringify(config))
+  assertSuccess(f.run(["install"]))
+  const writer = spawn("python3", ["-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('go')", release], {
+    stdio: "ignore",
+  })
+  const written = await waitForExit(writer, "session-start release writer")
+  assert.equal(written.status, 0)
+  const result = await closed
+  assert.equal(result.status, 0, stderr)
+  assert.deepEqual(JSON.parse(stdout), {})
+})
+
+test("activation, smoke, and session-start reject unsafe optional settings metadata", t => {
+  const f = installedFixture(t)
+  const session = "optional-settings-metadata"
+  assertSuccess(executeObserved(f, observeActivation(f, session)))
+  const runInstalled = (args, input) => spawnSync("python3", ["-B", path.join(f.runtime, "cli.py"), ...args, "--project", f.project], {
+    env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+    input: input === undefined ? undefined : JSON.stringify(input),
+  })
+  for (const settings of [path.join(f.project, ".claude/settings.local.json"), path.join(f.env.CLAUDE_CONFIG_DIR, "settings.json")]) {
+    for (const [name, create, message] of [
+      ["FIFO", target => assert.equal(spawnSync("mkfifo", [target]).status, 0), /regular file/i],
+      ["dangling symlink", target => fs.symlinkSync(path.join(f.dir, `missing-${path.basename(target)}`), target), /symlink/i],
+      ["non-object JSON", target => fs.writeFileSync(target, "null\n"), /Invalid Claude settings object/i],
+    ]) {
+      const observed = observeActivation(f, `${session}-${name}-${path.basename(path.dirname(settings))}`)
+      fs.mkdirSync(path.dirname(settings), { recursive: true })
+      create(settings)
+      const activation = spawnSync("bash", ["-c", observed.output.hookSpecificOutput.updatedInput.command], {
+        env: f.env, cwd: f.project, encoding: "utf8", timeout: 10000,
+      })
+      const smoke = runInstalled(["smoke", "--session", session])
+      const sessionStart = runInstalled(["session-start"], { session_id: session, cwd: f.project })
+      for (const result of [activation, smoke, sessionStart]) {
+        assert.equal(result.status, 1, `${name}: ${result.stderr}`)
+        assert.match(result.stderr, message, name)
+      }
+      fs.unlinkSync(settings)
+    }
+  }
+})
+
 test("ordinary active guard commands do not enter activation attestation", t => {
   const f = installedFixture(t)
   const session = "ordinary-guard"

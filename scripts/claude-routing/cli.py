@@ -46,13 +46,15 @@ def check_profile(project, config):
     if not isinstance(settings.get("hooks"), dict):
         raise ValueError("Routing hooks are missing from project settings")
     config_dir = common.claude_config_dir()
-    for extra in (project / ".claude/settings.local.json", config_dir / "settings.json"):
-        if extra.exists():
-            value = json.loads(extra.read_text())
-            if not isinstance(value, dict):
-                raise ValueError(f"Invalid Claude settings object: {extra}")
-            if value.get("disableAllHooks"):
-                raise ValueError(f"Routing hooks are disabled in {extra}")
+    for extra, root in ((project / ".claude/settings.local.json", project), (config_dir / "settings.json", config_dir)):
+        install._safe_target(extra, root)
+        if not install._regular_file(extra, missing_ok=True):
+            continue
+        value = json.loads(extra.read_text())
+        if not isinstance(value, dict):
+            raise ValueError(f"Invalid Claude settings object: {extra}")
+        if value.get("disableAllHooks"):
+            raise ValueError(f"Routing hooks are disabled in {extra}")
     for event, entry in install._hook_entries(project).items():
         if entry not in settings.get("hooks", {}).get(event, []):
             raise ValueError(f"Missing routing {event} hook; rerun setup-claude-routing.sh")
@@ -272,6 +274,24 @@ def active(project, session):
     return data["enabled"]
 
 
+def _session_start(project, session):
+    """Emit context only from one locked, current session/profile snapshot."""
+    import install
+    # Preserve inactive and damaged-origin recovery without creating control state.
+    if not active(project, session):
+        print("{}")
+        return
+    identity = common.resolve_project(project, require_origin=True)
+    with install._locked(identity):
+        # A reinstall may have disabled the session while this hook waited.
+        if not active(identity, session):
+            print("{}")
+            return
+        config = common.load_config(identity)
+        check_profile(identity, config)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": common.workflow(config)}}))
+
+
 def smoke(project, session):
     config = common.load_config(project)
     check_profile(project, config)
@@ -329,13 +349,7 @@ def main():
             print(json.dumps(_issue_activation(project, data, result)))
         elif args.action == "session-start":
             data = json.load(sys.stdin)
-            if active(project, data.get("session_id")):
-                project = common.resolve_project(project, require_origin=True)
-                config = common.load_config(project)
-                check_profile(project, config)
-                print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": common.workflow(config)}}))
-            else:
-                print("{}")
+            _session_start(project, data.get("session_id"))
         elif args.action == "off":
             try:
                 project = common.resolve_project(project, require_origin=True)
