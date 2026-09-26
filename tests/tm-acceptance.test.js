@@ -46,21 +46,30 @@ function makeFixture() {
     "#!/usr/bin/env node",
     "const fs = require('node:fs')",
     `fs.appendFileSync(${JSON.stringify(backendLog)}, JSON.stringify(process.argv.slice(2)) + '\\n')`,
+    "const waitForRelease = (delayMs, complete) => {",
+    "  const release = process.env.BR_RELEASE_FILE",
+    "  if (!release) return setTimeout(complete, delayMs)",
+    "  const poll = setInterval(() => {",
+    "    if (!fs.existsSync(release)) return",
+    "    clearInterval(poll)",
+    "    complete()",
+    "  }, 10)",
+    "}",
     "if (process.env.BR_SIGNAL_MARKER) {",
     "  let handling = false",
     "  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {",
     "    if (handling) return",
     "    handling = true",
     "    fs.writeFileSync(process.env.BR_SIGNAL_MARKER, signal)",
-    "    setTimeout(() => {",
+    "    waitForRelease(Number(process.env.BR_SIGNAL_DELAY_MS || 0), () => {",
     "      fs.writeFileSync(process.env.BR_SIGNAL_DONE, `done:${signal}`)",
     "      process.exit(0)",
-    "    }, Number(process.env.BR_SIGNAL_DELAY_MS || 0))",
+    "    })",
     "  })",
     "  if (process.env.BR_SIGNAL_READY) fs.writeFileSync(process.env.BR_SIGNAL_READY, 'ready')",
     "  setInterval(() => {}, 1000)",
     "} else {",
-    "  setTimeout(() => process.exit(Number(process.env.BR_EXIT_CODE || 0)), Number(process.env.BR_DELAY_MS || 0))",
+    "  waitForRelease(Number(process.env.BR_DELAY_MS || 0), () => process.exit(Number(process.env.BR_EXIT_CODE || 0)))",
     "}",
     "",
   ].join("\n"))
@@ -127,6 +136,39 @@ function waitForExit(child) {
     child.once("error", reject)
     child.once("close", (status, signal) => resolve({ status, signal }))
   })
+}
+
+function killChildGroup(child, signal) {
+  if (!child?.pid) return
+  try {
+    process.kill(-child.pid, signal)
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error
+  }
+}
+
+async function releaseAndWaitForChild(child, exitPromise, releaseFile, timeoutMs = 5000) {
+  if (releaseFile && !fs.existsSync(releaseFile)) fs.writeFileSync(releaseFile, "release\n")
+  if (!child || !exitPromise) return null
+
+  const waitBounded = () => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => resolve(null), timeoutMs)
+    exitPromise.then(
+      outcome => { clearTimeout(timeout); resolve(outcome) },
+      error => { clearTimeout(timeout); reject(error) },
+    )
+  })
+  let outcome = await waitBounded()
+  if (outcome) return outcome
+
+  killChildGroup(child, "SIGTERM")
+  outcome = await waitBounded()
+  if (outcome) return outcome
+
+  killChildGroup(child, "SIGKILL")
+  outcome = await waitBounded()
+  if (outcome) return outcome
+  throw new Error("child process group did not exit after SIGKILL")
 }
 
 async function waitFor(predicate, timeoutMs = 5000) {
@@ -1113,14 +1155,19 @@ test("an unconfigured project preserves ordinary tm passthrough behavior", () =>
 
 test("guarded close holds the acceptance lock until br exits", async () => {
   const fixture = makeFixture()
+  const release = path.join(fixture.root, "br-close-release")
+  let child
+  let childExit
   try {
     assert.equal(runTm(fixture, ["acceptance", "run", "bd-lock"]).status, 0)
     fs.writeFileSync(fixture.backendLog, "")
-    const child = spawn(tmPath, ["close", "bd-lock"], {
+    child = spawn(tmPath, ["close", "bd-lock"], {
       cwd: fixture.repo,
-      env: { ...fixture.env, BR_DELAY_MS: "800" },
+      env: { ...fixture.env, BR_RELEASE_FILE: release },
       stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
     })
+    childExit = waitForExit(child)
     let stderr = ""
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk) => { stderr += chunk })
@@ -1129,10 +1176,12 @@ test("guarded close holds the acceptance lock until br exits", async () => {
     const competing = runTm(fixture, ["acceptance", "run", "bd-lock"])
     assert.equal(competing.status, 1)
     assert.match(competing.stderr, /acceptance state is locked/i)
-    const outcome = await waitForExit(child)
+    assert.equal(fs.existsSync(release), false)
+    const outcome = await releaseAndWaitForChild(child, childExit, release)
     assert.equal(outcome.status, 0, stderr)
     assert.equal(runTm(fixture, ["acceptance", "check", "bd-lock"]).status, 0)
   } finally {
+    await releaseAndWaitForChild(child, childExit, release)
     fs.rmSync(fixture.root, { recursive: true, force: true })
   }
 })
@@ -1143,20 +1192,25 @@ test("guarded close forwards graceful signals and holds the lock through backend
     const ready = path.join(fixture.root, `br-${signal}-ready`)
     const received = path.join(fixture.root, `br-${signal}-received`)
     const done = path.join(fixture.root, `br-${signal}-done`)
+    const release = path.join(fixture.root, `br-${signal}-release`)
+    let child
+    let childExit
     try {
       assert.equal(runTm(fixture, ["acceptance", "run", `bd-${signal.toLowerCase()}`]).status, 0)
       fs.writeFileSync(fixture.backendLog, "")
-      const child = spawn(tmPath, ["close", `bd-${signal.toLowerCase()}`], {
+      child = spawn(tmPath, ["close", `bd-${signal.toLowerCase()}`], {
         cwd: fixture.repo,
         env: {
           ...fixture.env,
           BR_SIGNAL_READY: ready,
           BR_SIGNAL_MARKER: received,
           BR_SIGNAL_DONE: done,
-          BR_SIGNAL_DELAY_MS: "1200",
+          BR_RELEASE_FILE: release,
         },
         stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
       })
+      childExit = waitForExit(child)
       let stderr = ""
       child.stderr.setEncoding("utf8")
       child.stderr.on("data", (chunk) => { stderr += chunk })
@@ -1171,12 +1225,14 @@ test("guarded close forwards graceful signals and holds the lock through backend
       assert.equal(competing.status, 1)
       assert.match(competing.stderr, /acceptance state is locked/i)
       assert.equal(fs.existsSync(done), false)
+      assert.equal(fs.existsSync(release), false)
 
-      const outcome = await waitForExit(child)
+      const outcome = await releaseAndWaitForChild(child, childExit, release)
       assert.equal(outcome.status, expectedStatus, stderr)
       assert.equal(fs.readFileSync(done, "utf8"), `done:${signal}`)
       assert.equal(runTm(fixture, ["acceptance", "check", `bd-${signal.toLowerCase()}`]).status, 0)
     } finally {
+      await releaseAndWaitForChild(child, childExit, release)
       fs.rmSync(fixture.root, { recursive: true, force: true })
     }
   }
