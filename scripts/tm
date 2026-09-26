@@ -57,6 +57,82 @@ find_repo_root_from() {
   done
 }
 
+acceptance_policy_configured() {
+  local root="$1"
+  local policy="${root}/.xpowers/acceptance.json"
+  [[ -e "$policy" || -L "$policy" ]]
+}
+
+acceptance_reject_unsafe_command() {
+  local args=("$@")
+  local arg
+  for arg in "${args[@]}"; do
+    case "$arg" in
+      --db|--db=*|--database|--database=*|--data-dir|--data-dir=*|--store|--store=*)
+        echo "tm: repository and database overrides are unsupported while acceptance policy is enabled" >&2
+        return 0
+        ;;
+    esac
+  done
+
+  if [[ "${args[0]:-}" == -* ]]; then
+    echo "tm: root flags are unsupported while acceptance policy is enabled" >&2
+    return 0
+  fi
+  if [[ "${args[0]:-}" == "epic" ]]; then
+    for arg in "${args[@]:1}"; do
+      if [[ "$arg" == "close-eligible" ]]; then
+        echo "tm: epic close-eligible is unsupported while acceptance policy is enabled; close explicit task ids" >&2
+        return 0
+      fi
+    done
+  fi
+  if [[ "${args[0]:-}" == "create" ]]; then
+    for arg in "${args[@]:1}"; do
+      case "$arg" in
+        -f|-f?*|--file|--file=*)
+          echo "tm: bulk create files are unsupported while acceptance policy is enabled" >&2
+          return 0
+          ;;
+      esac
+    done
+  fi
+  if [[ "${args[0]:-}" == "create" || "${args[0]:-}" == "update" ]]; then
+    for arg in "${args[@]:1}"; do
+      if [[ "$arg" == -??* && "$arg" != --* ]]; then
+        echo "tm: compact or clustered short options are unsupported for create/update while acceptance policy is enabled; use separate short options and values or long options" >&2
+        return 0
+      fi
+    done
+    local i=1
+    while [[ $i -lt ${#args[@]} ]]; do
+      arg="${args[$i]}"
+      local status=""
+      if [[ "$arg" == "--status" || "$arg" == "-s" ]]; then
+        i=$((i + 1))
+        status="${args[$i]:-}"
+      elif [[ "$arg" == --status=* ]]; then
+        status="${arg#--status=}"
+      elif [[ "$arg" == -s=* ]]; then
+        status="${arg#-s=}"
+      elif [[ "$arg" == -s?* ]]; then
+        status="${arg#-s}"
+      elif [[ "$arg" == --close* ]]; then
+        status="closed"
+      fi
+      status="$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')"
+      case "$status" in
+        closed|done|completed)
+          echo "tm: terminal create/update status is unsupported while acceptance policy is enabled; use tm close with explicit task ids" >&2
+          return 0
+          ;;
+      esac
+      i=$((i + 1))
+    done
+  fi
+  return 1
+}
+
 # ── Backend detection ────────────────────────────────────────────────────────
 
 detect_backend() {
@@ -280,6 +356,62 @@ main() {
   validate_backend "$backend"
 
   local ORIGINAL_PWD="$PWD"
+  local repo_root
+  repo_root="$(find_repo_root)"
+
+  if [[ -n "$repo_root" ]] && acceptance_policy_configured "$repo_root"; then
+    local acceptance_redirect="${repo_root}/.beads/redirect"
+    if [[ -L "$acceptance_redirect" || -e "$acceptance_redirect" ]]; then
+      echo "tm: task-store redirect is unsupported while acceptance policy is enabled" >&2
+      exit 1
+    fi
+    if [[ "$backend" != "br" ]]; then
+      echo "tm: acceptance policy currently supports only the br backend (configured: $backend)" >&2
+      exit 1
+    fi
+    if [[ -n "${GIT_DIR:-}" || -n "${GIT_WORK_TREE:-}" || -n "${GIT_INDEX_FILE:-}" || -n "${GIT_COMMON_DIR:-}" || -n "${GIT_OBJECT_DIRECTORY:-}" || -n "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" || -n "${GIT_CEILING_DIRECTORIES:-}" || -n "${GIT_DISCOVERY_ACROSS_FILESYSTEM:-}" || -n "${GIT_NAMESPACE:-}" ]]; then
+      echo "tm: Git repository/index overrides are unsupported while acceptance policy is enabled" >&2
+      exit 1
+    fi
+    if [[ -n "${BD_DB:-}" || -n "${BD_DATABASE:-}" || -n "${BD_NO_DB:-}" || -n "${BEADS_DIR:-}" || -n "${BEADS_DB:-}" || -n "${BEADS_JSONL:-}" ]]; then
+      echo "tm: br database environment overrides are unsupported while acceptance policy is enabled" >&2
+      exit 1
+    fi
+    if acceptance_reject_unsafe_command "$@"; then
+      exit 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+      echo "tm: acceptance policy is enabled but Node.js is unavailable" >&2
+      exit 1
+    fi
+    if [[ ! -f "$TM_SCRIPT_DIR/tm-acceptance.js" ]]; then
+      echo "tm: acceptance policy is enabled but tm-acceptance.js is missing" >&2
+      exit 1
+    fi
+    if [[ "${1:-}" == "acceptance" ]]; then
+      if [[ "$#" -ne 3 || ( "${2:-}" != "run" && "${2:-}" != "check" ) ]]; then
+        echo "tm: usage: tm acceptance <run|check> TASK" >&2
+        exit 2
+      fi
+      cd "$repo_root"
+      exec env TM_REPO_ROOT="$repo_root" node "$TM_SCRIPT_DIR/tm-acceptance.js" "$2" "$3"
+    fi
+    if [[ "${1:-}" == "close" ]]; then
+      if [[ "$#" -lt 2 ]]; then
+        echo "tm: acceptance-controlled close requires one or more explicit task ids and no flags" >&2
+        exit 1
+      fi
+      local close_arg
+      for close_arg in "${@:2}"; do
+        if [[ "$close_arg" == -* ]]; then
+          echo "tm: acceptance-controlled close accepts explicit task ids only; flags including --force cannot bypass evidence" >&2
+          exit 1
+        fi
+      done
+      cd "$repo_root"
+      exec env TM_REPO_ROOT="$repo_root" node "$TM_SCRIPT_DIR/tm-acceptance.js" guard-close "${@:2}"
+    fi
+  fi
 
   case "$backend" in
     bd|br|tk)
@@ -295,7 +427,6 @@ main() {
         fi
         exit 1
       fi
-      local repo_root
       repo_root="$(find_repo_root)"
       if [[ -n "$repo_root" ]]; then
         cd "$repo_root"
@@ -414,7 +545,6 @@ main() {
       exec "$backend_cmd" "${args[@]}"
       ;;
     linear)
-      local repo_root
       repo_root="$(find_repo_root)"
       if [[ -n "$repo_root" ]]; then
         cd "$repo_root"

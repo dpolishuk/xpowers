@@ -8,6 +8,7 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 
 - [../README.md](../README.md) — canonical front door for installation, usage, and the tm-first model
 - [QUICKSTART.md](QUICKSTART.md) — shortest path to the tm-first workflow in this repo
+- [ACCEPTANCE.md](ACCEPTANCE.md) — opt-in current-code verification before `tm close` with the `br` backend
 - [linear-mcp-setup.md](linear-mcp-setup.md) — canonical Linear setup and `tm sync` guide
 - [model-configuration.md](model-configuration.md) — model/provider configuration guide for supported hosts
 - [CODEX-ROUTING.md](CODEX-ROUTING.md) — optional repository-local native Codex routing setup and verification
@@ -23,8 +24,8 @@ XPowers is **tm-first** on this branch: use `tm` as the day-to-day task-manageme
 ## Backend / Tracker Context
 
 - `tm` — canonical user-facing interface
-- `bd` — current backend in this repo
-- `br` — Beads Rust / classic beads-compatible backend alternative
+- `br` — current backend in this repo (Beads Rust)
+- `bd` — legacy Beads backend, retained in migration guides
 - `tk` — Ticket / git-backed markdown tracker alternative
 - `linear` — Linear-native backend preview (core commands only on this repo branch)
 

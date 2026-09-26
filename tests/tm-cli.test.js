@@ -1,17 +1,23 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const os = require("node:os")
 const path = require("node:path")
 const { spawnSync } = require("node:child_process")
 
 const repoRoot = path.resolve(__dirname, "..")
 const tmPath = path.resolve(repoRoot, "scripts/tm")
 const tmBackendsPath = path.resolve(repoRoot, "scripts/tm-backends.sh")
+const isolatedTmRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tm-cli-unconfigured-root-"))
+fs.mkdirSync(path.join(isolatedTmRoot, ".beads"))
+test.after(() => fs.rmSync(isolatedTmRoot, { recursive: true, force: true }))
 
 function runTm(args = [], opts = {}) {
+  const env = { ...process.env, ...opts.env, TM_REPO_ROOT: opts.repoRoot || isolatedTmRoot }
   return spawnSync(tmPath, args, {
     cwd: opts.cwd || repoRoot,
     encoding: "utf8",
-    env: { ...process.env, ...opts.env },
+    env,
     timeout: 10000,
   })
 }
@@ -26,7 +32,9 @@ test("tm with no config defaults to bd backend", () => {
     fs.mkdirSync(path.join(tmpRoot, ".beads"))
     const result = runTm(["--version"], {
       cwd: tmpRoot,
-      env: { TM_BACKEND: "", TM_REPO_ROOT: tmpRoot },
+      repoRoot: tmpRoot,
+      // Acceptance checks export their real repository root to child processes.
+      env: { TM_BACKEND: "", TM_REPO_ROOT: repoRoot },
     })
     assert.equal(result.status, 0)
     assert.match(result.stdout, /backend: bd/)
@@ -86,7 +94,7 @@ test("tm with TM_BACKEND=linear routes commands through the linear backend entry
     const result = spawnSync(symlinkTmPath, ["ready"], {
       cwd: outsideDir,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "linear", LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
+      env: { ...process.env, TM_REPO_ROOT: "", TM_BACKEND: "linear", LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
       timeout: 10000,
     })
 
@@ -122,7 +130,7 @@ test("tm with TM_BACKEND=linear reports missing Node.js clearly", () => {
     const result = spawnSync(bashPath, [fakeTmPath, "ready"], {
       cwd: fakeRepo,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "linear", PATH: tmpBinDir, LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
+      env: { ...process.env, TM_REPO_ROOT: "", TM_BACKEND: "linear", PATH: tmpBinDir, LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
       timeout: 10000,
     })
 
@@ -152,7 +160,7 @@ test("tm with TM_BACKEND=linear reports missing backend script clearly", () => {
     const result = spawnSync(bashPath, [fakeTmPath, "ready"], {
       cwd: fakeRepo,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "linear", LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
+      env: { ...process.env, TM_REPO_ROOT: "", TM_BACKEND: "linear", LINEAR_API_KEY: "lin_api_test123", LINEAR_TEAM_KEY: "ENG" },
       timeout: 10000,
     })
 
@@ -218,7 +226,7 @@ test("tm discovers repo config from the script location when cwd is outside the 
     const result = spawnSync(fakeTmPath, ["--version"], {
       cwd: outsideDir,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "" },
+      env: { ...process.env, TM_REPO_ROOT: "", TM_BACKEND: "" },
       timeout: 10000,
     })
 
@@ -253,7 +261,7 @@ test("tm discovers repo config when invoked through a symlinked entrypoint", () 
     const result = spawnSync(symlinkTmPath, ["--version"], {
       cwd: outsideDir,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "" },
+      env: { ...process.env, TM_REPO_ROOT: "", TM_BACKEND: "" },
       timeout: 10000,
     })
 
@@ -293,7 +301,12 @@ test("tm sync resolves tm-linear-sync.js from the real script directory when inv
     fs.writeFileSync(fakeBdPath, `#!${bashPath}\nif [[ \"$1\" == \"sync\" ]]; then exit 0; fi\nif [[ \"$1\" == \"config\" && \"$2\" == \"get\" ]]; then\n  if [[ \"$3\" == \"linear.api-key\" ]]; then echo \"lin_api_cfg\"; exit 0; fi\n  if [[ \"$3\" == \"linear.team-key\" ]]; then echo \"ENG\"; exit 0; fi\n  echo \"$3 (not set)\"\n  exit 0\nfi\nexit 0\n`)
     fs.chmodSync(fakeBdPath, 0o755)
 
-    const env = { ...process.env, TM_BACKEND: "bd", PATH: `${symlinkBinDir}${path.delimiter}${process.env.PATH || ""}` }
+    const env = {
+      ...process.env,
+      TM_REPO_ROOT: "",
+      TM_BACKEND: "bd",
+      PATH: `${symlinkBinDir}${path.delimiter}${process.env.PATH || ""}`,
+    }
     delete env.LINEAR_API_KEY
     delete env.LINEAR_TEAM_KEY
 
@@ -399,6 +412,7 @@ exit 0
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "bd",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "",
@@ -436,6 +450,7 @@ test("tm sync fails when Linear is configured but node is unavailable", () => {
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "bd",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -473,6 +488,7 @@ test("tm sync skips Linear when only team key is present and node is unavailable
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "bd",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "",
@@ -510,6 +526,7 @@ test("tm sync skips Linear when only api key is present and node is unavailable"
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "bd",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -556,6 +573,7 @@ exit 0
 
     const env = {
       ...process.env,
+      TM_REPO_ROOT: isolatedTmRoot,
       TM_BACKEND: "bd",
       PATH: tmpBinDir,
     }
@@ -605,6 +623,7 @@ exit 0
 
     const env = {
       ...process.env,
+      TM_REPO_ROOT: isolatedTmRoot,
       TM_BACKEND: "bd",
       PATH: tmpBinDir,
     }
@@ -654,6 +673,7 @@ exit 0
 
     const env = {
       ...process.env,
+      TM_REPO_ROOT: isolatedTmRoot,
       TM_BACKEND: "bd",
       PATH: tmpBinDir,
     }
@@ -707,6 +727,7 @@ exit 0
 
     const env = {
       ...process.env,
+      TM_REPO_ROOT: tmpRepo,
       TM_BACKEND: "bd",
       PATH: tmpBinDir,
     }
@@ -832,7 +853,7 @@ test("tm when bd not in PATH gives helpful error message", () => {
     const result = spawnSync(bashPath, [tmPath, "ready"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "bd", PATH: tmpBinDir },
+      env: { ...process.env, TM_REPO_ROOT: isolatedTmRoot, TM_BACKEND: "bd", PATH: tmpBinDir },
       timeout: 10000,
     })
 
@@ -859,7 +880,7 @@ test("tm when br not in PATH gives helpful error message", () => {
     const result = spawnSync(bashPath, [tmPath, "ready"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "br", PATH: tmpBinDir },
+      env: { ...process.env, TM_REPO_ROOT: isolatedTmRoot, TM_BACKEND: "br", PATH: tmpBinDir },
       timeout: 10000,
     })
 
@@ -886,7 +907,7 @@ test("tm when tk not in PATH gives helpful error message", () => {
     const result = spawnSync(bashPath, [tmPath, "ready"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "tk", PATH: tmpBinDir },
+      env: { ...process.env, TM_REPO_ROOT: isolatedTmRoot, TM_BACKEND: "tk", PATH: tmpBinDir },
       timeout: 10000,
     })
 
@@ -920,6 +941,7 @@ test("tm sync under br performs local flush and reports unsupported follow-on sy
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "br",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -959,7 +981,7 @@ test("tm sync under br does not duplicate an explicit flush-only flag", () => {
     const result = spawnSync(bashPath, [tmPath, "sync", "--flush-only"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "br", PATH: tmpBinDir },
+      env: { ...process.env, TM_REPO_ROOT: isolatedTmRoot, TM_BACKEND: "br", PATH: tmpBinDir },
       timeout: 10000,
     })
 
@@ -991,7 +1013,7 @@ test("tm sync under br preserves surrounding args when flush-only is already pre
     const result = spawnSync(bashPath, [tmPath, "sync", "--dry-run", "--flush-only", "--verbose"], {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, TM_BACKEND: "br", PATH: tmpBinDir },
+      env: { ...process.env, TM_REPO_ROOT: isolatedTmRoot, TM_BACKEND: "br", PATH: tmpBinDir },
       timeout: 10000,
     })
 
@@ -1024,6 +1046,7 @@ test("tm sync under br propagates local sync failure and skips follow-on sync", 
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "br",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -1063,6 +1086,7 @@ test("tm sync under tk performs direct local sync and reports unsupported follow
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "tk",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -1103,6 +1127,7 @@ test("tm sync under tk propagates local sync failure and skips follow-on sync", 
       encoding: "utf8",
       env: {
         ...process.env,
+        TM_REPO_ROOT: isolatedTmRoot,
         TM_BACKEND: "tk",
         PATH: tmpBinDir,
         LINEAR_API_KEY: "lin_api_test123",
@@ -1154,6 +1179,7 @@ exit 0
 
     const env = {
       ...process.env,
+      TM_REPO_ROOT: tmpRepo,
       TM_BACKEND: "bd",
       PATH: tmpBinDir,
     }

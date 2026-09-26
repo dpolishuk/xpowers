@@ -223,6 +223,23 @@ node --test tests/*.test.js
 node --test tests/cass-memory.test.js
 ```
 
+### Acceptance gate for this repository
+
+XPowers commits `.xpowers/acceptance.json`. Install the dependencies exercised by its Node suite, finish and commit the intended source changes, then use the matching runtime from this checkout:
+
+```bash
+npm ci
+bun install --frozen-lockfile --cwd .opencode
+```
+
+```bash
+./scripts/tm acceptance run <task-id>
+./scripts/tm acceptance check <task-id>
+./scripts/tm close <task-id>
+```
+
+The policy runs the root Node `.test.js` suite with concurrency 4 and compact output, checks generated Codex skill wrappers, and runs ESLint. The Node suite includes an OpenCode runtime test that invokes Bun and resolves `.opencode` dependencies, so the policy requires Node.js 20 or later, npm dependencies, Bun with `.opencode` dependencies installed, Git, and Bash. The receipt covers the exact worktree snapshot, including bounded internal directory-symlink subtrees; it does not stand in for the remaining Bun, Gemini, package typecheck, security-audit, or other full-CI jobs. See `docs/ACCEPTANCE.md` for the proof boundary, traversal caps, recovery procedure, and local-trust limits.
+
 ### Test Structure
 
 Tests use Node.js built-in test runner:
