@@ -21,15 +21,7 @@ name: security-scanner
 description: Security scanner - performs OWASP Top 10 scanning, secrets detection, and dependency vulnerability checks. Returns PASS or ISSUES_FOUND with severity.
 # Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
 model: sonnet
-tools:
-  Read: true
-  Grep: true
-  Glob: true
-  WebFetch: true
-disallowedTools:
-  Edit: false
-  Write: false
-  Bash: false
+tools: Read, Grep, Glob, WebFetch
 ---
 
 ## Tool contract (read-only reviewer)

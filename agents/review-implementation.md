@@ -3,15 +3,7 @@ name: review-implementation
 description: Spec-focused implementation reviewer - verifies code achieves stated goals and requirements alignment. Checks each requirement against actual code with file:line evidence. Contrast with code-reviewer (human-facing, broad quality) and autonomous-reviewer (machine-facing, verdict-only). Returns PASS or ISSUES_FOUND.
 # Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
 model: sonnet
-tools:
-  Read: true
-  Grep: true
-  Glob: true
-disallowedTools:
-  Edit: false
-  Write: false
-  Bash: false
-  WebFetch: false
+tools: Read, Grep, Glob
 ---
 > 📚 See the main xpowers documentation: [Global README](../README.md)
 

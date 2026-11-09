@@ -23,14 +23,7 @@ description: >
   Use this agent when you need to aggregate context from project documentation, issue trackers, and team communications. Gathers knowledge from local docs, Linear, GitHub Issues, Slack, and other MCP sources. Examples: <example>Context: Starting brainstorming and need to understand prior team decisions about a feature area. user: "What has the team discussed about authentication?" assistant: "Let me use the knowledge-aggregator agent to search project docs, issues, and team communications for authentication context" <commentary>Knowledge aggregator checks all available sources, not just code, to find decisions and context.</commentary></example> <example>Context: Debugging an issue and want to find related past bugs or discussions. user: "Has anyone reported this error before?" assistant: "I'll use the knowledge-aggregator agent to search issues, PRs, and team communications for similar reports" <commentary>Aggregating from multiple sources finds context that searching code alone would miss.</commentary></example>
 # Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
 model: sonnet
-tools:
-  Read: true
-  Grep: true
-  Glob: true
-disallowedTools:
-  Edit: false
-  Write: false
-  Bash: false
+disallowedTools: Edit, Write, NotebookEdit, Bash
 
 ---
 

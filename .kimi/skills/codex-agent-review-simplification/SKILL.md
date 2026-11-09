@@ -21,15 +21,7 @@ name: review-simplification
 description: Simplification reviewer - detects over-engineering, unnecessary complexity, premature abstractions. Returns PASS or ISSUES_FOUND.
 # Tier: sonnet - mid-complexity analysis; sufficient capability at lower cost/latency than parent
 model: sonnet
-tools:
-  Read: true
-  Grep: true
-  Glob: true
-disallowedTools:
-  Edit: false
-  Write: false
-  Bash: false
-  WebFetch: false
+tools: Read, Grep, Glob
 ---
 
 ## Tool contract (read-only reviewer)
